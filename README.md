@@ -1,7 +1,7 @@
-3d_cell_tracking
+cell_interactome
 ==============================
 
-automated detection of events of interest in cell interactions
+Automated detection of events of interest in cell interactions.
 
 Project Organization
 ------------
@@ -29,7 +29,7 @@ Project Organization
     │
     ├── environment.yml   <- The requirements file for reproducing the analysis environment (conda).
     │
-    ├── setup.py           <- makes project pip installable (pip install -e .) so src can be imported
+    ├── pyproject.toml           <- makes project pip installable (pip install -e .) so src can be imported
     ├── src                <- Source code for use in this project.
     │   ├── __init__.py    <- Makes src a Python module
     │   │
