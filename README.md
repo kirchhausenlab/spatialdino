@@ -1,4 +1,4 @@
-cell_interactome
+Cell Interactome
 ==============================
 
 Automated detection of events of interest in cell interactions.
