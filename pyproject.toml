@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cell_interactome"
+authors = [{ name = "Alex Lavaee", email = "alavaee@bu.edu" }]
+description = "My package description"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dynamic = ["version"]
+
+[tool.setuptools]
+packages = ["cell_interactome"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cell_interactome.VERSION" }
