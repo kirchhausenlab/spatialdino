@@ -1,9 +1,10 @@
 import numpy as np
-import tifffile as tif
 import matplotlib.pyplot as plt
 from matplotlib.animation import ArtistAnimation
 from pathlib import Path
+
 plt.style.use("seaborn-v0_8-notebook")
+
 
 def save_cell_animation(
     img: np.ndarray,
