@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 python prepare_data.py /nfs/datasync4/tklab-llsm \
 --target_directory DS \
@@ -6,4 +6,4 @@ python prepare_data.py /nfs/datasync4/tklab-llsm \
 --max_parent_directories 1 \
 --min_tif_files 50 \
 --max_search_depth 6 \
---max_workers 10
+--max_workers 1

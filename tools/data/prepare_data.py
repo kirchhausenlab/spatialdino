@@ -1,4 +1,5 @@
 from collections import defaultdict
+from concurrent.futures import as_completed
 from functools import partial
 import tifffile as tif
 from pathlib import Path
@@ -8,6 +9,10 @@ import numpy as np
 from loky import get_reusable_executor
 import h5py
 from dataclasses import dataclass
+from loguru import logger
+from tqdm import tqdm
+import numpy.typing as npt
+import torch
 
 # - **make new data folder**
 #     - **flatten data (avg or max on z)**
@@ -55,8 +60,8 @@ class DataExtractor:
         max_parent_directories: int,
         min_tif_files: int,
         max_search_depth: int,
+        timeout: int,
         max_workers: int = 4,
-        timeout: Optional[int] = None,
     ) -> None:
         self.max_parent_directories = max_parent_directories
         self.min_tif_files = min_tif_files
@@ -102,73 +107,81 @@ class DataExtractor:
         self, parent_directory: Path, target_directory: str, save_path: Path
     ) -> None:
         experiments = self.extract_experiments(parent_directory, target_directory)
-        executor = get_reusable_executor(
-            max_workers=self.max_workers, timeout=self.timeout
-        )
         save_path.mkdir(parents=True, exist_ok=True)
-        save_data = partial(DataExtractor.save_data, save_path=save_path)
-        executor.map(save_data, experiments)
+        DataExtractor.save_data(
+            experiments[0], save_path, self.max_workers, self.timeout
+        )
 
     @staticmethod
-    def save_data(experiment: Experiment, save_path: Path) -> None:
-        data = DataExtractor.extract_data(experiment.tif_files)
-        save_file_path = save_path.joinpath(f"{experiment.experiment_name}.h5")
-        with h5py.File(save_file_path, "w") as f:
-            DataExtractor.save_dict_to_hdf5(data, f)
-
-        print("Successaved data to: ", save_file_path)
-
-    @staticmethod
-    def save_dict_to_hdf5(data: Dict[str, Any], hdf5_group: h5py.Group) -> None:
-        """
-        Recursively saves a nested dictionary to an HDF5 group.
-
-        Parameters
-        ----------
-        data : Dict[str, Any])
-            The dictionary to save.
-        hdf5_group : h5py.Group
-            The HDF5 group to save the data into. This can be the HDF5 file itself or a subgroup within the file.
-        """
-        for key, value in data.items():
-            if isinstance(value, dict):
-                # Create a subgroup for nested dictionaries
-                subgroup = hdf5_group.create_group(key)
-                DataExtractor.save_dict_to_hdf5(value, subgroup)
-            else:
-                # Directly save non-dictionary values
-                hdf5_group[key] = value
+    def save_data(
+        experiment: Experiment, save_path: Path, max_workers: int, timeout: int
+    ) -> None:
+        data = DataExtractor.extract_data(
+            experiment.tif_files, max_workers=max_workers, timeout=timeout
+        )
+        save_file_path = save_path.joinpath(f"{experiment.experiment_name}.pt")
+        torch.save(data, save_file_path, pickle_protocol=4)
 
     @staticmethod
-    def extract_data(tif_files: List[Path]) -> Dict[str, dict]:
+    def process_file(tif_file: Path) -> Tuple[np.ndarray, dict]:
+        file_name = tif_file.name
+        metadata = DataExtractor.extract_tif_file_metadata(file_name)
+        image_data = DataExtractor.extract_tif_file_image(tif_file)
+        return image_data, metadata
+
+    @staticmethod
+    def _peek_image_shape(tif_file: Path) -> Tuple[int, ...]:
+        image = DataExtractor.extract_tif_file_image(tif_file)
+        return image.shape
+
+    @logger.catch
+    @staticmethod
+    def extract_data(
+        tif_files: List[Path], max_workers: int, timeout: int
+    ) -> Dict[str, dict]:
         data = DataExtractor.create_data_dict()
-        for tif_file in tif_files:
-            file_name = tif_file.name
-            metadata = DataExtractor.extract_tif_file_metadata(file_name)
-            wavelength = metadata["wavelength"]
-            data["data"][wavelength].append(
-                DataExtractor.extract_tif_file_image(tif_file)
-            )
-            data["metadata"][wavelength]["stack"].append(metadata["stack"])
-        for wavelength in data["data"].keys():
-            data["data"][wavelength] = np.vstack(data["data"][wavelength])
+
+        # peek to find np.array shape
+        dims = DataExtractor._peek_image_shape(tif_files[0])
+
+        with get_reusable_executor(
+            max_workers=max_workers, timeout=timeout
+        ) as executor:
+            futures = [
+                executor.submit(DataExtractor.process_file, tif_file)
+                for tif_file in tif_files
+            ]
+
+            for future in as_completed(futures):
+                image_data, metadata = future.result()
+                wavelength = metadata["wavelength"]
+                if "wavelength" not in data["data"]:
+                    data["data"][wavelength] = np.zeros(
+                        (len(tif_files), *dims), dtype=np.float32
+                    )
+                data["data"][wavelength][metadata["stack"]] = image_data
+                data["metadata"][wavelength]["stack"].append(metadata["stack"])
+
+        for wavelength in data["metadata"].keys():
+            data["metadata"][wavelength]["stack"].sort()
+
         return data
 
     @staticmethod
     def create_data_dict() -> Dict[str, dict]:
         data = {
-            "data": defaultdict(list),
+            "data": dict(),
             "metadata": defaultdict(lambda: {"stack": []}),
         }
         return data
 
     @staticmethod
     def extract_tif_file_image(file_name: Path) -> np.ndarray:
-        data = tif.imread(file_name)
+        data = tif.imread(file_name)  # (Z, Y, X)
         return data
 
     @staticmethod
-    def extract_tif_file_metadata(file_name: str) -> Dict[str, list]:
+    def extract_tif_file_metadata(file_name: str) -> Dict[str, str]:
         metadata = dict()
         fname = file_name.split("_")
         stack = int(fname[3][5:])  # e.g. stack0145 -> 145
@@ -201,13 +214,12 @@ class DataExtractor:
         max_search_depth: int,
     ) -> List[Path]:
         target_directories = []
-        while max_parent_directories > 0:
+        for _ in range(max_parent_directories):
             target_directories.extend(
                 DataExtractor.directory_walk(
                     next(parent_directory.iterdir()), target_folder, max_search_depth
                 )
             )
-            max_parent_directories -= 1
         return target_directories
 
     @staticmethod
