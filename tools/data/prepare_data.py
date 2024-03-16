@@ -107,7 +107,7 @@ class DataExtractor:
             try:
                 DataExtractor.save_data(
                     experiment,
-                    save_path.joinpath(f"{uuid4().hex}.pt"),
+                    save_path.joinpath(f"{uuid4().hex}.h5"),
                     self.max_workers,
                     self.timeout,
                 )
@@ -257,7 +257,7 @@ class DataExtractor:
 
 if __name__ == "__main__":
     parser = ArgumentParser(
-        description="Prepare data for lattice microscopy data into .pt format."
+        description="Prepare data for lattice microscopy data into .h5 format."
     )
     parser.add_argument(
         "--parent_directory",
