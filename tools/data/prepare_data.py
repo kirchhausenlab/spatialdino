@@ -185,7 +185,7 @@ class DataExtractor:
         ) as executor:
             futures = [
                 executor.submit(DataExtractor.process_file, tif_file)
-                for tif_file in tif_files[:5]  # TODO remove this line
+                for tif_file in tif_files
             ]
 
             for idx, future in tqdm(
