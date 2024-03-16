@@ -1,19 +1,17 @@
 from collections import defaultdict
 from concurrent.futures import as_completed
-from functools import partial
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass
 from loguru import logger
 from tqdm import tqdm
-import torch
 from uuid import uuid4
 import h5py
-
+import glob
 # - **make new data folder**
 #     - **flatten data (avg or max on z)**
 # - **take several tif files and stack them on the time axis**
@@ -33,35 +31,37 @@ import h5py
 
 @dataclass
 class Experiment:
-    tif_files: List[str]
-    parent_directory: Path
+    tif_files: List[Path]
+    experiment_name: str
 
 
 @dataclass
 class DataExtractor:
-    max_search_depth: int
     found_directories_limit: int
     min_tif_files_in_folder: int
     timeout: int
     max_workers: int = 4
 
     def extract_experiments(
-        self, parent_directory: Path, target_directory: str
+        self,
+        parent_directory: Path,
+        search_pattern: str,
+        directories_up: int,
     ) -> List[Experiment]:
         target_directories = DataExtractor.directory_walk(
             parent_directory,
-            target_directory,
-            self.max_search_depth,
+            search_pattern,
             self.found_directories_limit,
+            directories_up,
         )
 
         experiments = DataExtractor._extract_experiments(
-            target_directories, self.min_tif_files_in_folder
+            target_directories, self.min_tif_files_in_folder, directories_up
         )
 
         experiments = [
-            Experiment(tif_files, parent_directory)
-            for parent_directory, tif_files in experiments.items()
+            Experiment(tif_files, experiment_name)
+            for experiment_name, tif_files in experiments.items()
         ]
 
         return experiments
@@ -69,56 +69,53 @@ class DataExtractor:
     @staticmethod
     def directory_walk(
         parent_directory: Path,
-        target_folder: str,
-        max_search_depth: int,
+        search_pattern: str,
         found_directories_limit: int,
-        found_so_far: Optional[List[Path]] = None,
+        directories_up: int,
     ) -> List[Path]:
-        if found_so_far is None:
-            found_so_far = []
+        found_so_far = set()
+        for directory in parent_directory.iterdir():
+            if len(found_so_far) >= found_directories_limit:
+                return list(found_so_far)
+            for matched_dir in glob.glob(
+                str(directory.joinpath(search_pattern)), recursive=True
+            ):
+                matched_dir = Path(matched_dir)
+                if matched_dir.is_dir():  # Ensure matched_dir is a directory
+                    if len(found_so_far) >= found_directories_limit:
+                        return list(found_so_far)
+                    else:
+                        if directories_up == 0:
+                            found_so_far.add(matched_dir)
+                        else:
+                            found_so_far.add(matched_dir.parents[directories_up - 1])
 
-        elif (
-            max_search_depth == 0
-            or parent_directory.is_file()
-            or len(found_so_far) >= found_directories_limit
-        ):
-            return found_so_far
-
-        elif parent_directory.name == target_folder:
-            found_so_far.append(parent_directory)
-
-        for child in parent_directory.iterdir():
-            if len(found_so_far) < found_directories_limit:
-                DataExtractor.directory_walk(
-                    child,
-                    target_folder,
-                    max_search_depth - 1,
-                    found_directories_limit,
-                    found_so_far,
-                )
-            else:
-                return found_so_far
-        return found_so_far
+        return list(found_so_far)
 
     def __call__(
-        self, parent_directory: Path, target_directory: str, save_path: Path
+        self,
+        parent_directory: Path,
+        search_pattern: str,
+        directories_up: int,
+        save_path: Path,
     ) -> None:
-        experiments = self.extract_experiments(parent_directory, target_directory)
+        experiments = self.extract_experiments(
+            parent_directory, search_pattern, directories_up
+        )
         save_path.mkdir(parents=True, exist_ok=True)
         for experiment in experiments:
             try:
                 DataExtractor.save_data(
                     experiment,
-                    save_path.joinpath(f"{uuid4().hex}.h5"),
+                    save_path.joinpath(f"{uuid4().hex}.pt"),
                     self.max_workers,
                     self.timeout,
                 )
-                logger.log("info", f"Saved data for {experiment.parent_directory}")
+                logger.info(f"Saved data for {experiment.experiment_name}")
             except Exception as e:
-                logger.log(
-                    "error", f"Failed to save data for {experiment.parent_directory}"
+                logger.error(
+                    f"Failed to save data for {experiment.experiment_name} with error: {e}"
                 )
-                logger.log("error", e)
 
     @staticmethod
     def _peek_image_shape(tif_file: Path) -> Tuple[int, ...]:
@@ -158,13 +155,11 @@ class DataExtractor:
     ) -> None:
         data = DataExtractor.extract_data(
             experiment.tif_files,
-            experiment.parent_directory,
             max_workers=max_workers,
             timeout=timeout,
         )
         with h5py.File(save_path, "w") as f:
             DataExtractor.save_dict_to_hdf5(data, f)
-        # torch.save(data, save_path, pickle_protocol=4)
 
     @staticmethod
     def process_file(tif_file: Path) -> Tuple[np.ndarray, dict]:
@@ -176,24 +171,21 @@ class DataExtractor:
     @logger.catch
     @staticmethod
     def extract_data(
-        tif_files: List[str],
-        parent_directory: Path,
+        tif_files: List[Path],
         max_workers: int,
         timeout: int,
     ) -> Dict[str, dict]:
         data = DataExtractor.create_data_dict()
 
-        tif_file_paths = [parent_directory.joinpath(tif_file) for tif_file in tif_files]
-
-        dims = DataExtractor._peek_image_shape(tif_file_paths[0])
-        shape = (len(tif_file_paths), *dims)
+        dims = DataExtractor._peek_image_shape(tif_files[0])
+        shape = (len(tif_files), *dims)
 
         with get_reusable_executor(
             max_workers=max_workers, timeout=timeout
         ) as executor:
             futures = [
                 executor.submit(DataExtractor.process_file, tif_file)
-                for tif_file in tif_file_paths
+                for tif_file in tif_files[:5]  # TODO remove this line
             ]
 
             for idx, future in tqdm(
@@ -207,18 +199,15 @@ class DataExtractor:
                             "values": np.zeros(shape, dtype=np.float32),
                             "indices": [],
                         },
-                        "metadata": {
-                            "file_names": [],
-                            "parent_directory": str(parent_directory).encode("utf-8"),
-                        },
+                        "metadata": {"original_file_paths": []},
                     }
                 data["wavelength"][wavelength]["data"]["values"][idx] = image_data
                 data["wavelength"][wavelength]["data"]["indices"].append(
                     metadata["index"]
                 )
-                data["wavelength"][wavelength]["metadata"]["file_names"].append(
-                    metadata["file_name"].encode("utf-8")
-                )
+                data["wavelength"][wavelength]["metadata"][
+                    "original_file_paths"
+                ].append(metadata["original_file_path"].encode("utf-8"))
 
         return data
 
@@ -245,7 +234,7 @@ class DataExtractor:
         wavelength = fname[4]
         metadata["index"] = index
         metadata["wavelength"] = wavelength
-        metadata["file_name"] = file_name
+        metadata["original_file_path"] = file_name
         return metadata
 
     @staticmethod
@@ -254,17 +243,15 @@ class DataExtractor:
 
     @staticmethod
     def _extract_experiments(
-        directories: List[Path],
-        min_tif_files: int,
-    ) -> Dict[Path, List[str]]:
+        directories: List[Path], min_tif_files: int, directories_up: int
+    ) -> Dict[str, List[Path]]:
         experiments = defaultdict(list)
         for directory in directories:
             files = DataExtractor.get_tif_files(directory)
             if len(files) >= min_tif_files:
                 for file in files:
-                    parent_directory = file.parent
-                    for file in files:
-                        experiments[parent_directory].append(file.name)
+                    experiment_name = file.parents[directories_up].name
+                    experiments[experiment_name].append(file)
         return experiments
 
 
@@ -273,20 +260,30 @@ if __name__ == "__main__":
         description="Prepare data for lattice microscopy data into .pt format."
     )
     parser.add_argument(
-        "parent_directory", type=Path, help="Parent directory of the data."
+        "--parent_directory",
+        type=Path,
+        required=True,
+        help="Parent directory to start searching.",
     )
     parser.add_argument(
-        "--target_directory", type=str, help="Name of the target directory."
+        "--search_pattern",
+        type=str,
+        required=True,
+        help="Pattern of directory to match including parent directory.",
+    )
+    parser.add_argument(
+        "--directories_up",
+        type=int,
+        required=False,
+        default=0,
+        help="Number of directories to go up from the matched directory.",
     )
     parser.add_argument("--save_path", type=Path, help="Path to save the .h5 files.")
     parser.add_argument(
-        "--max_search_depth",
+        "--found_directories_limit",
         type=int,
-        default=6,
-        help="Max depth to search for the target directory.",
-    )
-    parser.add_argument(
-        "--found_directories_limit", type=int, help="Max number of directories to find."
+        default=1,
+        help="Max number of directories to find.",
     )
     parser.add_argument(
         "--min_tif_files_in_folder",
@@ -303,14 +300,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     data_extractor = DataExtractor(
-        args.max_search_depth,
         args.found_directories_limit,
         args.min_tif_files_in_folder,
-        args.max_workers,
         args.timeout,
+        args.max_workers,
     )
     data_extractor(
         args.parent_directory,
-        args.target_directory,
+        args.search_pattern,
+        args.directories_up,
         args.save_path,
     )
