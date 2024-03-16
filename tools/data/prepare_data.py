@@ -1,17 +1,17 @@
-from collections import defaultdict
 from concurrent.futures import as_completed
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass
 from loguru import logger
 from tqdm import tqdm
-from uuid import uuid4
 import h5py
 import glob
+import time
+import numpy.typing as npt
 # - **make new data folder**
 #     - **flatten data (avg or max on z)**
 # - **take several tif files and stack them on the time axis**
@@ -32,7 +32,8 @@ import glob
 @dataclass
 class Experiment:
     tif_files: List[Path]
-    experiment_name: str
+    name: str
+    path: Path
 
 
 @dataclass
@@ -56,13 +57,11 @@ class DataExtractor:
         )
 
         experiments = DataExtractor._extract_experiments(
-            target_directories, self.min_tif_files_in_folder, directories_up
+            target_directories,
+            self.min_tif_files_in_folder,
+            directories_up,
+            search_pattern,
         )
-
-        experiments = [
-            Experiment(tif_files, experiment_name)
-            for experiment_name, tif_files in experiments.items()
-        ]
 
         return experiments
 
@@ -107,14 +106,13 @@ class DataExtractor:
             try:
                 DataExtractor.save_data(
                     experiment,
-                    save_path.joinpath(f"{uuid4().hex}.h5"),
+                    save_path.joinpath(f"{experiment.name}.h5"),
                     self.max_workers,
                     self.timeout,
                 )
-                logger.info(f"Saved data for {experiment.experiment_name}")
             except Exception as e:
                 logger.error(
-                    f"Failed to save data for {experiment.experiment_name} with error: {e}"
+                    f"Failed to save data for {experiment.name} with error: {e}"
                 )
 
     @staticmethod
@@ -139,9 +137,10 @@ class DataExtractor:
                 # Create a subgroup for nested dictionaries
                 subgroup = hdf5_group.create_group(key)
                 DataExtractor.save_dict_to_hdf5(value, subgroup)
-            elif type(value) in {str, bytes}:
-                # Directly save non-dictionary values
+            elif isinstance(value, bytes):
                 hdf5_group[key] = value
+            elif isinstance(value, str):
+                hdf5_group[key] = value.encode("utf-8")
             else:
                 # Convert non-dictionary values to numpy arrays and save them
                 hdf5_group.create_dataset(key, data=value, compression="gzip")
@@ -154,37 +153,47 @@ class DataExtractor:
         timeout: int,
     ) -> None:
         data = DataExtractor.extract_data(
-            experiment.tif_files,
+            experiment,
             max_workers=max_workers,
             timeout=timeout,
         )
+        logger.info(f"Saving data for {experiment.name}")
+        start = time.perf_counter()
         with h5py.File(save_path, "w") as f:
             DataExtractor.save_dict_to_hdf5(data, f)
+        end = time.perf_counter()
+        time_elapsed = end - start
+        logger.info(f"Saved data for {experiment.name} in {time_elapsed} seconds.")
 
     @staticmethod
-    def process_file(tif_file: Path) -> Tuple[np.ndarray, dict]:
+    def process_file(tif_file: Path, base_path: Path) -> Tuple[np.ndarray, dict]:
         file_name = tif_file.name
         metadata = DataExtractor.extract_tif_file_metadata(file_name)
-        image_data = DataExtractor.extract_tif_file_image(tif_file)
+        image_data = DataExtractor.extract_tif_file_image(base_path.joinpath(tif_file))
         return image_data, metadata
 
     @logger.catch
     @staticmethod
     def extract_data(
-        tif_files: List[Path],
+        experiment: Experiment,
         max_workers: int,
         timeout: int,
+        dtype: npt.DTypeLike = np.float32,
     ) -> Dict[str, dict]:
-        data = DataExtractor.create_data_dict()
+        data = DataExtractor.create_data_dict(experiment.path)
+        data["metadata"]["base_path"] = data["metadata"]["base_path"]
 
-        dims = DataExtractor._peek_image_shape(tif_files[0])
+        base_path = experiment.path
+        tif_files = experiment.tif_files
+
+        dims = DataExtractor._peek_image_shape(base_path.joinpath(tif_files[0]))
         shape = (len(tif_files), *dims)
 
         with get_reusable_executor(
             max_workers=max_workers, timeout=timeout
         ) as executor:
             futures = [
-                executor.submit(DataExtractor.process_file, tif_file)
+                executor.submit(DataExtractor.process_file, tif_file, base_path)
                 for tif_file in tif_files
             ]
 
@@ -196,25 +205,26 @@ class DataExtractor:
                 if wavelength not in data["wavelength"]:
                     data["wavelength"][wavelength] = {
                         "data": {
-                            "values": np.zeros(shape, dtype=np.float32),
+                            "values": np.zeros(shape, dtype=dtype),
                             "indices": [],
                         },
-                        "metadata": {"original_file_paths": []},
+                        "metadata": {"relative_paths": []},
                     }
                 data["wavelength"][wavelength]["data"]["values"][idx] = image_data
                 data["wavelength"][wavelength]["data"]["indices"].append(
                     metadata["index"]
                 )
-                data["wavelength"][wavelength]["metadata"][
-                    "original_file_paths"
-                ].append(metadata["original_file_path"].encode("utf-8"))
+                data["wavelength"][wavelength]["metadata"]["relative_paths"].append(
+                    metadata["relative_path"]
+                )
 
         return data
 
     @staticmethod
-    def create_data_dict() -> Dict[str, dict]:
+    def create_data_dict(experiment_path: Path) -> Dict[str, dict]:
         data = {
             "wavelength": dict(),
+            "metadata": {"base_path": str(experiment_path)},
         }
         return data
 
@@ -234,24 +244,28 @@ class DataExtractor:
         wavelength = fname[4]
         metadata["index"] = index
         metadata["wavelength"] = wavelength
-        metadata["original_file_path"] = file_name
+        metadata["relative_path"] = file_name
         return metadata
 
     @staticmethod
-    def get_tif_files(directory: Path) -> List[Path]:
-        return list(file for file in directory.rglob("*.tif"))
+    def get_tif_files(directory: Path, search_pattern: str) -> List[Path]:
+        return list(file for file in directory.rglob(f"{search_pattern}/*.tif"))
 
     @staticmethod
     def _extract_experiments(
-        directories: List[Path], min_tif_files: int, directories_up: int
-    ) -> Dict[str, List[Path]]:
-        experiments = defaultdict(list)
+        directories: List[Path],
+        min_tif_files: int,
+        directories_up: int,
+        search_pattern: str,
+    ) -> List[Experiment]:
+        experiments = []
         for directory in directories:
-            files = DataExtractor.get_tif_files(directory)
+            files = DataExtractor.get_tif_files(directory, search_pattern)
             if len(files) >= min_tif_files:
-                for file in files:
-                    experiment_name = file.parents[directories_up].name
-                    experiments[experiment_name].append(file)
+                experiment_path = files[0].parents[directories_up]
+                experiment_name = experiment_path.name
+                files = [file.relative_to(experiment_path) for file in files]
+                experiments.append(Experiment(files, experiment_name, experiment_path))
         return experiments
 
 
@@ -269,7 +283,7 @@ if __name__ == "__main__":
         "--search_pattern",
         type=str,
         required=True,
-        help="Pattern of directory to match including parent directory.",
+        help="Pattern of directory to match including parent directory. Should not have a leading /.",
     )
     parser.add_argument(
         "--directories_up",

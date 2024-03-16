@@ -5,6 +5,6 @@ python prepare_data.py \
 --search_pattern "**/DS" \
 --directories_up 2 \
 --save_path /nfs/datasync4/alavaee/tklab-llsm \
---found_directories_limit 10 \
+--found_directories_limit 100 \
 --min_tif_files_in_folder 20 \
 --max_workers 100
