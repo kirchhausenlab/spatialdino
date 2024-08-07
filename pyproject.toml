@@ -1,18 +1,20 @@
-[build-system]
-requires = ["setuptools", "setuptools-scm"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "cell_interactome"
-authors = [{ name = "Alex Lavaee", email = "alavaee@bu.edu" }]
-description = "My package description"
+[tool.poetry]
+name = "cell-interactome"
+version = "0.0.0"
+description = ""
+authors = ["Alex Lavaee <alavaee@tklab.hms.harvard.edu>, Arkash Jain <ajain@tklab.hms.harvard.edu>"]
+license = "MIT"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "MIT" }
-dynamic = ["version"]
 
-[tool.setuptools]
-packages = ["cell_interactome"]
+[tool.poetry.dependencies]
+python = "^3.7"
+poetry-version-plugin = "0.2.0"
 
-[tool.setuptools.dynamic]
-version = { attr = "cell_interactome.VERSION" }
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.poetry-version-plugin]
+source = "init"
+
