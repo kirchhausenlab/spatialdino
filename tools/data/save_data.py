@@ -37,53 +37,46 @@ class DataExtractor:
         min_tif_files: int,
         save_path: Path
     ) -> List[Experiment]:
-        target_directories, experiment_names = DataExtractor.directory_walk(
+        experiments = DataExtractor._extract_experiments(
             parent_directory,
             search_pattern,
             min_tif_files,
             self.found_directories_limit,
             save_path
         )
-
-        experiments = DataExtractor._extract_experiments(
-            target_directories,
-            experiment_names,
-            self.min_tif_files_in_folder,
-            search_pattern,
-        )
-
         return experiments
 
     @staticmethod
-    def directory_walk(
+    def _extract_experiments(
         parent_directory: Path,
         search_pattern: str,
         found_directories_limit: int,
         min_tif_files: int,
         save_path: Path
-    ) -> Tuple[List[Path], List[str]]:
+    ) -> List[Experiment]:
         found_so_far = set()
-        experiment_names= []
+        experiments = []
 
         for directory in parent_directory.iterdir():
             for matched_dir in glob.glob(
                 str(directory.joinpath(search_pattern)), recursive=True
             ):
-                experiment_name= DataExtractor.get_experiment_name(matched_dir=matched_dir, len_parent_directory=len(str(parent_directory))) 
+                experiment_name= DataExtractor.get_experiment_name(matched_dir=matched_dir,
+                                                                   len_parent_directory=len(str(parent_directory))) 
                 if save_path.joinpath(f"{experiment_name}.h5").is_file():
                     logger.info("Data for %s already exists. Skipping." % (experiment_name))
                     continue
                 
                 matched_path = Path(matched_dir)
                 if matched_path.is_dir() and len(found_so_far) >= found_directories_limit:
-                    return list(found_so_far), experiment_names
+                    return experiments
         
-                files = DataExtractor.get_tif_files(matched_path, search_pattern)
-                if len(files) >= min_tif_files:
+                tif_files = DataExtractor.get_tif_files(matched_path, search_pattern)
+                if len(tif_files) >= min_tif_files:
                     found_so_far.add(matched_path)
-                    experiment_names.append(experiment_name)
+                    experiments.append(Experiment(tif_files, experiment_name, matched_path))
                     
-        return list(found_so_far), experiment_names
+        return experiments
     
     @staticmethod
     def get_experiment_name(
@@ -166,7 +159,7 @@ class DataExtractor:
         timeout: int,
         dtype: npt.DTypeLike = np.float32,
     ) -> Dict[str, dict]:
-        data = DataExtractor.create_data_dict(experiment.path)
+        data = DataExtractor.create_data_dict()
         data["metadata"]["base_path"] = data["metadata"]["base_path"]
 
         base_path = experiment.path
@@ -207,10 +200,9 @@ class DataExtractor:
         return data
 
     @staticmethod
-    def create_data_dict(experiment_path: Path) -> Dict[str, dict]:
+    def create_data_dict() -> Dict[str, dict]:
         data = {
-            "wavelength": dict(),
-            "metadata": {"base_path": str(experiment_path)},
+            "wavelength": dict()
         }
         return data
 
@@ -237,24 +229,24 @@ class DataExtractor:
     def get_tif_files(directory: Path, search_pattern: str) -> List[Path]:
         return list(file for file in directory.rglob(f"{search_pattern}/*.tif"))
 
-    @staticmethod
-    def _extract_experiments(
-        directories: List[Path],
-        experiment_names: List[str],
-        min_tif_files: int,
-        search_pattern: str,
-    ) -> List[Experiment]:
-        experiments = []
-        print("HERE")
-        for idx, experiment_path in enumerate(directories):
-            files = DataExtractor.get_tif_files(experiment_path, search_pattern)
-            if len(files) >= min_tif_files:
-                experiment_name = experiment_names[idx]
-                logger.info("***** \n \n experiment name is %s and the experiment_path is %s, path relative to it are %s" % (experiment_name, experiment_path, files[0].relative_to(experiment_path)))
-                raise ValueError
-                files = [file.relative_to(experiment_path) for file in files]
-                experiments.append(Experiment(files, experiment_name, experiment_path))
-        return experiments
+    # @staticmethod
+    # def _extract_experiments(
+    #     directories: List[Path],
+    #     experiment_names: List[str],
+    #     min_tif_files: int,
+    #     search_pattern: str,
+    # ) -> List[Experiment]:
+    #     experiments = []
+    #     print("HERE")
+    #     for idx, experiment_path in enumerate(directories):
+    #         files = DataExtractor.get_tif_files(experiment_path, search_pattern)
+    #         if len(files) >= min_tif_files:
+    #             experiment_name = experiment_names[idx]
+    #             logger.info("***** \n \n experiment name is %s and the experiment_path is %s, path relative to it are %s" % (experiment_name, experiment_path, files[0].relative_to(experiment_path)))
+    #             raise ValueError
+    #             files = [file.relative_to(experiment_path) for file in files]
+    #             experiments.append(Experiment(files, experiment_name, experiment_path))
+    #     return experiments
 
 
 if __name__ == "__main__":
