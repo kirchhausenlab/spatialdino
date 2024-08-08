@@ -58,20 +58,27 @@ class DataExtractor:
         directories_up: int,
     ) -> List[Path]:
         found_so_far = set()
+        #lst = [parent_directory.iterdir()]
         for directory in parent_directory.iterdir():
-            if len(found_so_far) >= found_directories_limit:
-                return list(found_so_far)
+            # if len(found_so_far) >= found_directories_limit:
+            #     return list(found_so_far)
             for matched_dir in glob.glob(
                 str(directory.joinpath(search_pattern)), recursive=True
             ):
                 matched_dir = Path(matched_dir)
+                print(f"********* matched_dir is{matched_dir} and the parent is {matched_dir.parent}\n ")                
+
                 if matched_dir.is_dir():  # Ensure matched_dir is a directory
                     if len(found_so_far) >= found_directories_limit:
                         return list(found_so_far)
                     else:
+                        # if save_path.joinpath(f"{experiment.name}.h5").is_file():
+                        #     logger.info(f"Data for {experiment.name} already exists. Skipping.")
+                        #     continue
                         if directories_up == 0:
                             found_so_far.add(matched_dir)
                         else:
+                            print(f"\n\n ||||| PRINTING MATCH DIR PARENTS {matched_dir.parents[directories_up - 1]}")
                             found_so_far.add(matched_dir.parents[directories_up - 1])
 
         return list(found_so_far)
