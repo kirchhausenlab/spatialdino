@@ -63,18 +63,21 @@ class DataExtractor:
             ):
                 experiment_name= DataExtractor.get_experiment_name(matched_dir=matched_dir,
                                                                    len_parent_directory=len(str(parent_directory))) 
+                #logger.info(f"{list(save_path.iterdir())} and matched dir is {matched_dir} found_so far {found_so_far}")
                 if save_path.joinpath(f"{experiment_name}.h5").is_file():
                     logger.info("Data for %s already exists. Skipping." % (experiment_name))
                     continue
                 
                 matched_path = Path(matched_dir)
+                print(f"*****************{len(experiments)}\n\n\n\n")
                 if matched_path.is_dir() and len(found_so_far) >= found_directories_limit:
                     return experiments
-        
-                tif_files = DataExtractor.get_tif_files(matched_path, search_pattern)
-                if len(tif_files) >= min_tif_files:
-                    found_so_far.add(matched_path)
-                    experiments.append(Experiment(tif_files, experiment_name, matched_path))
+
+                if matched_path not in found_so_far:
+                    tif_files = DataExtractor.get_tif_files(matched_path, search_pattern)
+                    if len(tif_files) >= min_tif_files:
+                        found_so_far.add(matched_path)
+                        experiments.append(Experiment(tif_files, experiment_name, matched_path))
                     
         return experiments
     
@@ -90,9 +93,6 @@ class DataExtractor:
         matched_dir = matched_dir[len_parent_directory+1:]
         split_dir = matched_dir.split("/")[:-2]
         experiment_name= "__".join(split_dir)
-        # if you want to rename the files in a unqiue manner
-        #experiment_name = sha512(experiment_name.encode()).hexdigest()
-        logger.info("Found a unique name %s" % (experiment_name))
         return experiment_name 
 
     def __call__(
@@ -122,6 +122,7 @@ class DataExtractor:
     @staticmethod
     def _peek_image_shape(tif_file: Path) -> Tuple[int, ...]:
         image = DataExtractor.extract_tif_file_image(tif_file)
+
         return image.shape
 
     @staticmethod
@@ -151,7 +152,6 @@ class DataExtractor:
         image_data = DataExtractor.extract_tif_file_image(base_path.joinpath(tif_file))
         return image_data, metadata
 
-    @logger.catch
     @staticmethod
     def extract_data(
         experiment: Experiment,
@@ -160,8 +160,6 @@ class DataExtractor:
         dtype: npt.DTypeLike = np.float32,
     ) -> Dict[str, dict]:
         data = DataExtractor.create_data_dict()
-        data["metadata"]["base_path"] = data["metadata"]["base_path"]
-
         base_path = experiment.path
         tif_files = experiment.tif_files
 
@@ -175,7 +173,7 @@ class DataExtractor:
                 executor.submit(DataExtractor.process_file, tif_file, base_path)
                 for tif_file in tif_files
             ]
-
+            # shows the number of tiff files
             for idx, future in tqdm(
                 enumerate(as_completed(futures)), total=len(futures)
             ):
@@ -187,14 +185,14 @@ class DataExtractor:
                             "values": np.zeros(shape, dtype=dtype),
                             "indices": [],
                         },
-                        "metadata": {"relative_paths": []},
+                        "metadata": {"paths": []},
                     }
                 data["wavelength"][wavelength]["data"]["values"][idx] = image_data
                 data["wavelength"][wavelength]["data"]["indices"].append(
                     metadata["index"]
                 )
-                data["wavelength"][wavelength]["metadata"]["relative_paths"].append(
-                    metadata["relative_path"]
+                data["wavelength"][wavelength]["metadata"]["paths"].append(
+                    metadata["path"]
                 )
 
         return data
@@ -206,11 +204,16 @@ class DataExtractor:
         }
         return data
 
-    @logger.catch
     @staticmethod
     def extract_tif_file_image(file_name: Path) -> np.ndarray:
-        data = tif.imread(file_name)  # (Z, Y, X)
-        return data
+        try:
+            data = tif.imread(file_name) # (Z, Y, X)
+            return data
+        except Exception as e:
+            print(f"Failed with error {e}")
+            raise ValueError
+        # print(type(data), data))
+        #raise ValueError
 
     @staticmethod
     def extract_tif_file_metadata(file_name: str) -> Dict[str, str]:
@@ -222,31 +225,13 @@ class DataExtractor:
         wavelength = fname[4]
         metadata["index"] = index
         metadata["wavelength"] = wavelength
-        metadata["relative_path"] = file_name
+        metadata["path"] = file_name
         return metadata
 
     @staticmethod
     def get_tif_files(directory: Path, search_pattern: str) -> List[Path]:
-        return list(file for file in directory.rglob(f"{search_pattern}/*.tif"))
+        return list(file for file in directory.rglob("*.tif"))
 
-    # @staticmethod
-    # def _extract_experiments(
-    #     directories: List[Path],
-    #     experiment_names: List[str],
-    #     min_tif_files: int,
-    #     search_pattern: str,
-    # ) -> List[Experiment]:
-    #     experiments = []
-    #     print("HERE")
-    #     for idx, experiment_path in enumerate(directories):
-    #         files = DataExtractor.get_tif_files(experiment_path, search_pattern)
-    #         if len(files) >= min_tif_files:
-    #             experiment_name = experiment_names[idx]
-    #             logger.info("***** \n \n experiment name is %s and the experiment_path is %s, path relative to it are %s" % (experiment_name, experiment_path, files[0].relative_to(experiment_path)))
-    #             raise ValueError
-    #             files = [file.relative_to(experiment_path) for file in files]
-    #             experiments.append(Experiment(files, experiment_name, experiment_path))
-    #     return experiments
 
 
 if __name__ == "__main__":
