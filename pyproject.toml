@@ -2,13 +2,14 @@
 name = "cell-interactome"
 version = "0.0.0"
 description = ""
-authors = ["Alex Lavaee <alavaee@tklab.hms.harvard.edu>, Arkash Jain <ajain@tklab.hms.harvard.edu>"]
+authors = ["Alex Lavaee <alavaee@tklab.hms.harvard.edu>", "Arkash Jain <ajain@tklab.hms.harvard.edu>"]
 license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.7"
 poetry-version-plugin = "0.2.0"
+rapidfuzz = "^1.4.1"
 
 [build-system]
 requires = ["poetry-core"]
