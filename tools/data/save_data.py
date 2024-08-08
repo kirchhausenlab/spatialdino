@@ -1,3 +1,5 @@
+from cell_interactome.data.utils import save_dict_to_hdf5
+from hashlib import sha512
 from concurrent.futures import as_completed
 import tifffile as tif
 from pathlib import Path
@@ -32,19 +34,21 @@ class DataExtractor:
         self,
         parent_directory: Path,
         search_pattern: str,
-        directories_up: int,
+        min_tif_files: int,
+        save_path: Path
     ) -> List[Experiment]:
-        target_directories = DataExtractor.directory_walk(
+        target_directories, experiment_names = DataExtractor.directory_walk(
             parent_directory,
             search_pattern,
+            min_tif_files,
             self.found_directories_limit,
-            directories_up,
+            save_path
         )
 
         experiments = DataExtractor._extract_experiments(
             target_directories,
+            experiment_names,
             self.min_tif_files_in_folder,
-            directories_up,
             search_pattern,
         )
 
@@ -55,49 +59,61 @@ class DataExtractor:
         parent_directory: Path,
         search_pattern: str,
         found_directories_limit: int,
-        directories_up: int,
-    ) -> List[Path]:
+        min_tif_files: int,
+        save_path: Path
+    ) -> Tuple[List[Path], List[str]]:
         found_so_far = set()
-        #lst = [parent_directory.iterdir()]
+        experiment_names= []
+
         for directory in parent_directory.iterdir():
-            # if len(found_so_far) >= found_directories_limit:
-            #     return list(found_so_far)
             for matched_dir in glob.glob(
                 str(directory.joinpath(search_pattern)), recursive=True
             ):
-                matched_dir = Path(matched_dir)
-                print(f"********* matched_dir is{matched_dir} and the parent is {matched_dir.parent}\n ")                
-
-                if matched_dir.is_dir():  # Ensure matched_dir is a directory
-                    if len(found_so_far) >= found_directories_limit:
-                        return list(found_so_far)
-                    else:
-                        # if save_path.joinpath(f"{experiment.name}.h5").is_file():
-                        #     logger.info(f"Data for {experiment.name} already exists. Skipping.")
-                        #     continue
-                        if directories_up == 0:
-                            found_so_far.add(matched_dir)
-                        else:
-                            print(f"\n\n ||||| PRINTING MATCH DIR PARENTS {matched_dir.parents[directories_up - 1]}")
-                            found_so_far.add(matched_dir.parents[directories_up - 1])
-
-        return list(found_so_far)
+                experiment_name= DataExtractor.get_experiment_name(matched_dir=matched_dir, len_parent_directory=len(str(parent_directory))) 
+                if save_path.joinpath(f"{experiment_name}.h5").is_file():
+                    logger.info("Data for %s already exists. Skipping." % (experiment_name))
+                    continue
+                
+                matched_path = Path(matched_dir)
+                if matched_path.is_dir() and len(found_so_far) >= found_directories_limit:
+                    return list(found_so_far), experiment_names
+        
+                files = DataExtractor.get_tif_files(matched_path, search_pattern)
+                if len(files) >= min_tif_files:
+                    found_so_far.add(matched_path)
+                    experiment_names.append(experiment_name)
+                    
+        return list(found_so_far), experiment_names
+    
+    @staticmethod
+    def get_experiment_name(
+        matched_dir: str,
+        len_parent_directory: int
+    ) -> str:
+        """
+        Get the specific experiment from parent folder 
+        full path looks like - /nfs/datasync4/tklab-llsm/20220121_p5_p55_sCMOS_Anand_phrodo_NPC/CS1_Phrodo_NPC/Ex03_488_300mW_560_500mW_642_500mW_z0p5/ch560nmCamB/DS
+        """
+        matched_dir = matched_dir[len_parent_directory+1:]
+        split_dir = matched_dir.split("/")[:-2]
+        experiment_name= "__".join(split_dir)
+        # if you want to rename the files in a unqiue manner
+        #experiment_name = sha512(experiment_name.encode()).hexdigest()
+        logger.info("Found a unique name %s" % (experiment_name))
+        return experiment_name 
 
     def __call__(
         self,
         parent_directory: Path,
+        min_tif_files: int,
         search_pattern: str,
-        directories_up: int,
         save_path: Path,
     ) -> None:
         experiments = self.extract_experiments(
-            parent_directory, search_pattern, directories_up
+            parent_directory, search_pattern, min_tif_files, save_path
         )
         save_path.mkdir(parents=True, exist_ok=True)
         for experiment in experiments:
-            if save_path.joinpath(f"{experiment.name}.h5").is_file():
-                logger.info(f"Data for {experiment.name} already exists. Skipping.")
-                continue
             try:
                 DataExtractor.save_data(
                     experiment,
@@ -116,31 +132,6 @@ class DataExtractor:
         return image.shape
 
     @staticmethod
-    def save_dict_to_hdf5(data: Dict[str, Any], hdf5_group: h5py.Group) -> None:
-        """
-        Recursively saves a nested dictionary to an HDF5 group.
-
-        Parameters
-        ----------
-        data : Dict[str, Any])
-            The dictionary to save.
-        hdf5_group : h5py.Group
-            The HDF5 group to save the data into. This can be the HDF5 file itself or a subgroup within the file.
-        """
-        for key, value in data.items():
-            if isinstance(value, dict):
-                # Create a subgroup for nested dictionaries
-                subgroup = hdf5_group.create_group(key)
-                DataExtractor.save_dict_to_hdf5(value, subgroup)
-            elif isinstance(value, bytes):
-                hdf5_group[key] = value
-            elif isinstance(value, str):
-                hdf5_group[key] = value.encode("utf-8")
-            else:
-                # Convert non-dictionary values to numpy arrays and save them
-                hdf5_group.create_dataset(key, data=value, compression="gzip")
-
-    @staticmethod
     def save_data(
         experiment: Experiment,
         save_path: Path,
@@ -155,7 +146,7 @@ class DataExtractor:
         logger.info(f"Saving data for {experiment.name}")
         start = time.perf_counter()
         with h5py.File(save_path, "w") as f:
-            DataExtractor.save_dict_to_hdf5(data, f)
+            save_dict_to_hdf5(data, f)
         end = time.perf_counter()
         time_elapsed = end - start
         logger.info(f"Saved data for {experiment.name} in {time_elapsed} seconds.")
@@ -249,16 +240,18 @@ class DataExtractor:
     @staticmethod
     def _extract_experiments(
         directories: List[Path],
+        experiment_names: List[str],
         min_tif_files: int,
-        directories_up: int,
         search_pattern: str,
     ) -> List[Experiment]:
         experiments = []
-        for directory in directories:
-            files = DataExtractor.get_tif_files(directory, search_pattern)
+        print("HERE")
+        for idx, experiment_path in enumerate(directories):
+            files = DataExtractor.get_tif_files(experiment_path, search_pattern)
             if len(files) >= min_tif_files:
-                experiment_path = files[0].parents[directories_up]
-                experiment_name = experiment_path.name
+                experiment_name = experiment_names[idx]
+                logger.info("***** \n \n experiment name is %s and the experiment_path is %s, path relative to it are %s" % (experiment_name, experiment_path, files[0].relative_to(experiment_path)))
+                raise ValueError
                 files = [file.relative_to(experiment_path) for file in files]
                 experiments.append(Experiment(files, experiment_name, experiment_path))
         return experiments
@@ -280,13 +273,7 @@ if __name__ == "__main__":
         required=True,
         help="Pattern of directory to match including parent directory. Should not have a leading /.",
     )
-    parser.add_argument(
-        "--directories_up",
-        type=int,
-        required=False,
-        default=0,
-        help="Number of directories to go up from the matched directory.",
-    )
+    
     parser.add_argument("--save_path", type=Path, help="Path to save the .h5 files.")
     parser.add_argument(
         "--found_directories_limit",
@@ -316,7 +303,7 @@ if __name__ == "__main__":
     )
     data_extractor(
         args.parent_directory,
+        args.min_tif_files_in_folder,
         args.search_pattern,
-        args.directories_up,
         args.save_path,
     )
