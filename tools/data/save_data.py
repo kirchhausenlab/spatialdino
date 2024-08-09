@@ -1,157 +1,177 @@
+from cell_interactome.data.utils import save_dict_to_hdf5
 from concurrent.futures import as_completed
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass
 from loguru import logger
-from tqdm import tqdm
 import h5py
 import glob
 import time
 import numpy.typing as npt
 
 
-@dataclass
-class Experiment:
+class Experiment(TypedDict):
     tif_files: List[Path]
     name: str
     path: Path
+    metadata: Dict[str, Any]
 
 
 @dataclass
 class DataExtractor:
     found_directories_limit: int
     min_tif_files_in_folder: int
-    timeout: int
+    timeout: Optional[int]
     max_workers: int = 4
+
+    def __post_init__(self) -> None:
+        if self.timeout == 0:
+            self.timeout = None
 
     def extract_experiments(
         self,
         parent_directory: Path,
         search_pattern: str,
-        directories_up: int,
+        min_tif_files: int,
+        save_path: Path,
     ) -> List[Experiment]:
-        target_directories = DataExtractor.directory_walk(
-            parent_directory,
-            search_pattern,
-            self.found_directories_limit,
-            directories_up,
-        )
-
         experiments = DataExtractor._extract_experiments(
-            target_directories,
-            self.min_tif_files_in_folder,
-            directories_up,
-            search_pattern,
+            parent_directory=parent_directory,
+            search_pattern=search_pattern,
+            found_directories_limit=self.found_directories_limit,
+            min_tif_files=min_tif_files,
+            save_path=save_path,
         )
+        return experiments
+
+    @staticmethod
+    def _extract_experiments(
+        parent_directory: Path,
+        search_pattern: str,
+        found_directories_limit: int,
+        min_tif_files: int,
+        save_path: Path,
+    ) -> List[Experiment]:
+        found_so_far = set()
+        experiments_found_so_far = set()
+        experiments = []
+
+        for directory in parent_directory.iterdir():
+            for matched_dir in glob.glob(
+                str(directory.joinpath(search_pattern)), recursive=True
+            ):
+                experiment_name = DataExtractor.get_experiment_name(
+                    matched_dir=matched_dir,
+                    prefix_length=len(str(parent_directory)),
+                )
+                if save_path.joinpath(experiment_name).is_dir():
+                    logger.info(
+                        "Data for %s already exists. Skipping." % (experiment_name)
+                    )
+                    continue
+                experiments_found_so_far.add(experiment_name)
+
+                if len(experiments_found_so_far) > found_directories_limit:
+                    return experiments
+
+                matched_path = Path(matched_dir)
+                if matched_path.is_dir() and matched_path not in found_so_far:
+                    tif_files = DataExtractor.get_tif_files(matched_path)
+                    if len(tif_files) >= min_tif_files:
+                        found_so_far.add(matched_path)
+                        metadata = DataExtractor.get_experiment_metadata(matched_dir)
+                        experiments.append(
+                            Experiment(
+                                tif_files=tif_files,
+                                name=experiment_name,
+                                path=matched_path,
+                                metadata=metadata,
+                            )
+                        )
 
         return experiments
 
     @staticmethod
-    def directory_walk(
-        parent_directory: Path,
-        search_pattern: str,
-        found_directories_limit: int,
-        directories_up: int,
-    ) -> List[Path]:
-        found_so_far = set()
-        for directory in parent_directory.iterdir():
-            if len(found_so_far) >= found_directories_limit:
-                return list(found_so_far)
-            for matched_dir in glob.glob(
-                str(directory.joinpath(search_pattern)), recursive=True
-            ):
-                matched_dir = Path(matched_dir)
-                if matched_dir.is_dir():  # Ensure matched_dir is a directory
-                    if len(found_so_far) >= found_directories_limit:
-                        return list(found_so_far)
-                    else:
-                        if directories_up == 0:
-                            found_so_far.add(matched_dir)
-                        else:
-                            found_so_far.add(matched_dir.parents[directories_up - 1])
+    def get_experiment_metadata(matched_dir: str) -> Dict[str, str]:
+        metadata_string = matched_dir.split("/")[-2]
+        wavelength = metadata_string[2:7]
+        camera = metadata_string[7:]
+        metadata = {"wavelength": wavelength, "camera": camera}
+        return metadata
 
-        return list(found_so_far)
+    @staticmethod
+    def get_experiment_name(matched_dir: str, prefix_length: int) -> str:
+        """
+        Get the specific experiment from parent folder
+        full path looks like - /nfs/datasync4/tklab-llsm/20220121_p5_p55_sCMOS_Anand_phrodo_NPC/CS1_Phrodo_NPC/Ex03_488_300mW_560_500mW_642_500mW_z0p5/ch560nmCamB/DS
+        """
+        matched_dir = matched_dir[prefix_length + 1 :]
+        split_dir = matched_dir.split("/")[:-2]
+        experiment_name = "__".join(split_dir)
+        return experiment_name
 
     def __call__(
         self,
         parent_directory: Path,
+        min_tif_files: int,
         search_pattern: str,
-        directories_up: int,
         save_path: Path,
     ) -> None:
         experiments = self.extract_experiments(
-            parent_directory, search_pattern, directories_up
+            parent_directory=parent_directory,
+            search_pattern=search_pattern,
+            min_tif_files=min_tif_files,
+            save_path=save_path,
         )
-        save_path.mkdir(parents=True, exist_ok=True)
-        for experiment in experiments:
-            if save_path.joinpath(f"{experiment.name}.h5").is_file():
-                logger.info(f"Data for {experiment.name} already exists. Skipping.")
-                continue
-            try:
-                DataExtractor.save_data(
-                    experiment,
-                    save_path.joinpath(f"{experiment.name}.h5"),
-                    self.max_workers,
-                    self.timeout,
+
+        with get_reusable_executor(max_workers=self.max_workers) as executor:
+            futures = []
+            for experiment in experiments:
+                data_save_path = save_path.joinpath(experiment["name"])
+                data_save_path.mkdir(parents=True, exist_ok=True)
+                file_name = f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}.h5"
+                future = executor.submit(
+                    DataExtractor.save_data,
+                    base_path=experiment["path"],
+                    tif_files=experiment["tif_files"],
+                    experiment_metadata=experiment["metadata"],
+                    experiment_name=experiment["name"],
+                    save_path=data_save_path.joinpath(file_name),
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to save data for {experiment.name} with error: {e}"
-                )
+                futures.append(future)
+
+            for future in as_completed(futures, timeout=self.timeout):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Failed to save data with error: {e}")
 
     @staticmethod
     def _peek_image_shape(tif_file: Path) -> Tuple[int, ...]:
         image = DataExtractor.extract_tif_file_image(tif_file)
+
         return image.shape
 
     @staticmethod
-    def save_dict_to_hdf5(data: Dict[str, Any], hdf5_group: h5py.Group) -> None:
-        """
-        Recursively saves a nested dictionary to an HDF5 group.
-
-        Parameters
-        ----------
-        data : Dict[str, Any])
-            The dictionary to save.
-        hdf5_group : h5py.Group
-            The HDF5 group to save the data into. This can be the HDF5 file itself or a subgroup within the file.
-        """
-        for key, value in data.items():
-            if isinstance(value, dict):
-                # Create a subgroup for nested dictionaries
-                subgroup = hdf5_group.create_group(key)
-                DataExtractor.save_dict_to_hdf5(value, subgroup)
-            elif isinstance(value, bytes):
-                hdf5_group[key] = value
-            elif isinstance(value, str):
-                hdf5_group[key] = value.encode("utf-8")
-            else:
-                # Convert non-dictionary values to numpy arrays and save them
-                hdf5_group.create_dataset(key, data=value, compression="gzip")
-
-    @staticmethod
     def save_data(
-        experiment: Experiment,
+        base_path: Path,
+        tif_files: List[Path],
+        experiment_metadata: Dict[str, Any],
+        experiment_name: str,
         save_path: Path,
-        max_workers: int,
-        timeout: int,
     ) -> None:
-        data = DataExtractor.extract_data(
-            experiment,
-            max_workers=max_workers,
-            timeout=timeout,
-        )
-        logger.info(f"Saving data for {experiment.name}")
+        logger.info(f"Saving data for {experiment_name}")
         start = time.perf_counter()
+        data = DataExtractor.extract_data(base_path, tif_files, experiment_metadata)
         with h5py.File(save_path, "w") as f:
-            DataExtractor.save_dict_to_hdf5(data, f)
+            save_dict_to_hdf5(data, f)
         end = time.perf_counter()
         time_elapsed = end - start
-        logger.info(f"Saved data for {experiment.name} in {time_elapsed} seconds.")
+        logger.info(f"Saved data for {experiment_name} in {time_elapsed} seconds.")
 
     @staticmethod
     def process_file(tif_file: Path, base_path: Path) -> Tuple[np.ndarray, dict]:
@@ -160,63 +180,38 @@ class DataExtractor:
         image_data = DataExtractor.extract_tif_file_image(base_path.joinpath(tif_file))
         return image_data, metadata
 
-    @logger.catch
     @staticmethod
     def extract_data(
-        experiment: Experiment,
-        max_workers: int,
-        timeout: int,
+        base_path: Path,
+        tif_files: List[Path],
+        experiment_metadata: Dict[str, Any],
         dtype: npt.DTypeLike = np.float32,
     ) -> Dict[str, dict]:
-        data = DataExtractor.create_data_dict(experiment.path)
-        data["metadata"]["base_path"] = data["metadata"]["base_path"]
-
-        base_path = experiment.path
-        tif_files = experiment.tif_files
-
         dims = DataExtractor._peek_image_shape(base_path.joinpath(tif_files[0]))
         shape = (len(tif_files), *dims)
-
-        with get_reusable_executor(
-            max_workers=max_workers, timeout=timeout
-        ) as executor:
-            futures = [
-                executor.submit(DataExtractor.process_file, tif_file, base_path)
-                for tif_file in tif_files
-            ]
-
-            for idx, future in tqdm(
-                enumerate(as_completed(futures)), total=len(futures)
-            ):
-                image_data, metadata = future.result()
-                wavelength = metadata["wavelength"]
-                if wavelength not in data["wavelength"]:
-                    data["wavelength"][wavelength] = {
-                        "data": {
-                            "values": np.zeros(shape, dtype=dtype),
-                            "indices": [],
-                        },
-                        "metadata": {"relative_paths": []},
-                    }
-                data["wavelength"][wavelength]["data"]["values"][idx] = image_data
-                data["wavelength"][wavelength]["data"]["indices"].append(
-                    metadata["index"]
-                )
-                data["wavelength"][wavelength]["metadata"]["relative_paths"].append(
-                    metadata["relative_path"]
-                )
+        data = DataExtractor.create_data_dict(
+            metadata=experiment_metadata, shape=shape, dtype=dtype
+        )
+        for idx, tif_file in enumerate(tif_files):
+            image_data, metadata = DataExtractor.process_file(tif_file, base_path)
+            data["data"]["values"][idx] = image_data
+            data["data"]["indices"].append(metadata["index"])
+            data["metadata"]["paths"].append(metadata["path"])
 
         return data
 
     @staticmethod
-    def create_data_dict(experiment_path: Path) -> Dict[str, dict]:
+    def create_data_dict(
+        metadata: Dict[str, Any], shape: Tuple[int, ...], dtype: npt.DTypeLike
+    ) -> Dict[str, Any]:
         data = {
-            "wavelength": dict(),
-            "metadata": {"base_path": str(experiment_path)},
+            "data": {"values": np.zeros(shape, dtype=dtype), "indices": []},
+            "metadata": {"paths": []},
         }
+        data["metadata"].update(metadata)
         return data
 
-    @logger.catch
+    @logger.catch()
     @staticmethod
     def extract_tif_file_image(file_name: Path) -> np.ndarray:
         data = tif.imread(file_name)  # (Z, Y, X)
@@ -229,32 +224,13 @@ class DataExtractor:
         index = int(
             fname[3][5:]
         )  # e.g. stack0145 -> 145 (will later be used as index for sparse tensor)
-        wavelength = fname[4]
         metadata["index"] = index
-        metadata["wavelength"] = wavelength
-        metadata["relative_path"] = file_name
+        metadata["path"] = file_name
         return metadata
 
     @staticmethod
-    def get_tif_files(directory: Path, search_pattern: str) -> List[Path]:
-        return list(file for file in directory.rglob(f"{search_pattern}/*.tif"))
-
-    @staticmethod
-    def _extract_experiments(
-        directories: List[Path],
-        min_tif_files: int,
-        directories_up: int,
-        search_pattern: str,
-    ) -> List[Experiment]:
-        experiments = []
-        for directory in directories:
-            files = DataExtractor.get_tif_files(directory, search_pattern)
-            if len(files) >= min_tif_files:
-                experiment_path = files[0].parents[directories_up]
-                experiment_name = experiment_path.name
-                files = [file.relative_to(experiment_path) for file in files]
-                experiments.append(Experiment(files, experiment_name, experiment_path))
-        return experiments
+    def get_tif_files(directory: Path) -> List[Path]:
+        return list(file for file in directory.rglob("*.tif"))
 
 
 if __name__ == "__main__":
@@ -273,13 +249,7 @@ if __name__ == "__main__":
         required=True,
         help="Pattern of directory to match including parent directory. Should not have a leading /.",
     )
-    parser.add_argument(
-        "--directories_up",
-        type=int,
-        required=False,
-        default=0,
-        help="Number of directories to go up from the matched directory.",
-    )
+
     parser.add_argument("--save_path", type=Path, help="Path to save the .h5 files.")
     parser.add_argument(
         "--found_directories_limit",
@@ -297,7 +267,7 @@ if __name__ == "__main__":
         "--max_workers", type=int, default=4, help="Max number of workers."
     )
     parser.add_argument(
-        "--timeout", type=int, default=10, help="Timeout for each worker."
+        "--timeout", type=int, default=0, help="Timeout for each worker."
     )
 
     args = parser.parse_args()
@@ -309,7 +279,7 @@ if __name__ == "__main__":
     )
     data_extractor(
         args.parent_directory,
+        args.min_tif_files_in_folder,
         args.search_pattern,
-        args.directories_up,
         args.save_path,
     )
