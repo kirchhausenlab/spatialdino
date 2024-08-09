@@ -3,7 +3,7 @@ from concurrent.futures import as_completed
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass, field
@@ -26,8 +26,12 @@ class Experiment:
 class DataExtractor:
     found_directories_limit: int
     min_tif_files_in_folder: int
-    timeout: int
+    timeout: Optional[int]
     max_workers: int = 4
+
+    def __post_init__(self) -> None:
+        if self.timeout == 0:
+            self.timeout = None
 
     def extract_experiments(
         self,
@@ -259,7 +263,7 @@ if __name__ == "__main__":
         "--max_workers", type=int, default=4, help="Max number of workers."
     )
     parser.add_argument(
-        "--timeout", type=int, default=10, help="Timeout for each worker."
+        "--timeout", type=int, default=0, help="Timeout for each worker."
     )
 
     args = parser.parse_args()
