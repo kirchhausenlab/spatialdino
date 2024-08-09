@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass
-from loguru import logger
+from cell_interactome.logging.logging_config import logger
+from functools import lru_cache
 import h5py
 import glob
 import time
@@ -48,6 +49,7 @@ class DataExtractor:
         )
         return experiments
 
+    @lru_cache
     @staticmethod
     def _extract_experiments(
         parent_directory: Path,
