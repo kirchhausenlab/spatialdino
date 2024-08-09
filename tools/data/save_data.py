@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import numpy as np
 from loky import get_reusable_executor
 from dataclasses import dataclass
-from cell_interactome.logging.config import logger
-from functools import lru_cache
+from loguru import logger
 import h5py
 import glob
 import time
@@ -49,7 +48,6 @@ class DataExtractor:
         )
         return experiments
 
-    @lru_cache
     @staticmethod
     def _extract_experiments(
         parent_directory: Path,
@@ -66,6 +64,7 @@ class DataExtractor:
             for matched_dir in glob.glob(
                 str(directory.joinpath(search_pattern)), recursive=True
             ):
+                logger.info(f"****\n\n matched_dir is {matched_dir}")
                 experiment_name = DataExtractor.get_experiment_name(
                     matched_dir=matched_dir,
                     prefix_length=len(str(parent_directory)),
