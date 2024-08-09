@@ -3,10 +3,10 @@ from concurrent.futures import as_completed
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import numpy as np
 from loky import get_reusable_executor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from loguru import logger
 import h5py
 import glob
@@ -14,12 +14,11 @@ import time
 import numpy.typing as npt
 
 
-@dataclass
-class Experiment:
+class Experiment(TypedDict):
     tif_files: List[Path]
     name: str
     path: Path
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any]
 
 
 @dataclass
@@ -58,6 +57,7 @@ class DataExtractor:
         save_path: Path,
     ) -> List[Experiment]:
         found_so_far = set()
+        experiments_found_so_far = set()
         experiments = []
 
         for directory in parent_directory.iterdir():
@@ -68,20 +68,18 @@ class DataExtractor:
                     matched_dir=matched_dir,
                     prefix_length=len(str(parent_directory)),
                 )
-                if save_path.joinpath(f"{experiment_name}.h5").is_file():
+                if save_path.joinpath(experiment_name).is_dir():
                     logger.info(
                         "Data for %s already exists. Skipping." % (experiment_name)
                     )
                     continue
+                experiments_found_so_far.add(experiment_name)
 
-                matched_path = Path(matched_dir)
-                if (
-                    matched_path.is_dir()
-                    and len(found_so_far) >= found_directories_limit
-                ):
+                if len(experiments_found_so_far) > found_directories_limit:
                     return experiments
 
-                if matched_path not in found_so_far:
+                matched_path = Path(matched_dir)
+                if matched_path.is_dir() and matched_path not in found_so_far:
                     tif_files = DataExtractor.get_tif_files(matched_path)
                     if len(tif_files) >= min_tif_files:
                         found_so_far.add(matched_path)
@@ -133,12 +131,15 @@ class DataExtractor:
         with get_reusable_executor(max_workers=self.max_workers) as executor:
             futures = []
             for experiment in experiments:
-                data_save_path = save_path.joinpath(experiment.name)
+                data_save_path = save_path.joinpath(experiment["name"])
                 data_save_path.mkdir(parents=True, exist_ok=True)
-                file_name = f"{experiment.metadata['wavelength']}_{experiment.metadata['camera']}.h5"
+                file_name = f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}.h5"
                 future = executor.submit(
                     DataExtractor.save_data,
-                    experiment=experiment,
+                    base_path=experiment["path"],
+                    tif_files=experiment["tif_files"],
+                    experiment_metadata=experiment["metadata"],
+                    experiment_name=experiment["name"],
                     save_path=data_save_path.joinpath(file_name),
                 )
                 futures.append(future)
@@ -157,17 +158,20 @@ class DataExtractor:
 
     @staticmethod
     def save_data(
-        experiment: Experiment,
+        base_path: Path,
+        tif_files: List[Path],
+        experiment_metadata: Dict[str, Any],
+        experiment_name: str,
         save_path: Path,
     ) -> None:
-        data = DataExtractor.extract_data(experiment)
-        logger.info(f"Saving data for {experiment.name}")
+        logger.info(f"Saving data for {experiment_name}")
         start = time.perf_counter()
+        data = DataExtractor.extract_data(base_path, tif_files, experiment_metadata)
         with h5py.File(save_path, "w") as f:
             save_dict_to_hdf5(data, f)
         end = time.perf_counter()
         time_elapsed = end - start
-        logger.info(f"Saved data for {experiment.name} in {time_elapsed} seconds.")
+        logger.info(f"Saved data for {experiment_name} in {time_elapsed} seconds.")
 
     @staticmethod
     def process_file(tif_file: Path, base_path: Path) -> Tuple[np.ndarray, dict]:
@@ -178,15 +182,15 @@ class DataExtractor:
 
     @staticmethod
     def extract_data(
-        experiment: Experiment,
+        base_path: Path,
+        tif_files: List[Path],
+        experiment_metadata: Dict[str, Any],
         dtype: npt.DTypeLike = np.float32,
     ) -> Dict[str, dict]:
-        base_path = experiment.path
-        tif_files = experiment.tif_files
         dims = DataExtractor._peek_image_shape(base_path.joinpath(tif_files[0]))
         shape = (len(tif_files), *dims)
         data = DataExtractor.create_data_dict(
-            metadata=experiment.metadata, shape=shape, dtype=dtype
+            metadata=experiment_metadata, shape=shape, dtype=dtype
         )
         for idx, tif_file in enumerate(tif_files):
             image_data, metadata = DataExtractor.process_file(tif_file, base_path)
