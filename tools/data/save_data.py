@@ -39,8 +39,8 @@ class Voxel(TypedDict):
 class DataExtractor:
     # instance vars
     z_voxel_size: int = 32
-    y_voxel_size: int = 256
-    x_voxel_size: int = 256
+    y_voxel_size: int = 224
+    x_voxel_size: int = 224
     found_experiments_limit: int = 1
     timeout: Optional[float] = None
     max_workers: int = 4
@@ -51,6 +51,8 @@ class DataExtractor:
     def __post_init__(self) -> None:
         if self.timeout == 0:
             self.timeout = None
+        self.experiment_workers = max(int(0.1 * self.max_workers), 1)
+        self.save_data_workers = max(self.max_workers - self.experiment_workers, 1)
 
     @staticmethod
     def extract_experiments(
@@ -91,10 +93,6 @@ class DataExtractor:
                 )
 
                 if save_path.joinpath(experiment_name).is_dir():
-                    logger.info(
-                        "Data for experiment: %s, already exists. Skipping."
-                        % (experiment_name)
-                    )
                     continue
 
                 experiment_names.append(experiment_name)
@@ -150,32 +148,42 @@ class DataExtractor:
             save_path=save_path,
         )
 
-        for experiment in experiments:
-            experiment_save_path = save_path.joinpath(
-                experiment["name"],
-                f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}",
-            )
-            try:
-                DataExtractor.save_data(
-                    z_voxel_size=self.z_voxel_size,
-                    y_voxel_size=self.y_voxel_size,
-                    x_voxel_size=self.x_voxel_size,
-                    base_path=experiment["path"],
-                    tif_files=experiment["tif_files"],
-                    save_path=experiment_save_path,
-                    dtype=DataExtractor.DTYPE,
-                    max_workers=self.max_workers,
-                    timeout=self.timeout,  # type: ignore
+        with get_reusable_executor(max_workers=self.experiment_workers) as executor:
+            futures = []
+            experiment_paths = []
+
+            for experiment in experiments:
+                experiment_save_path = save_path.joinpath(
+                    experiment["name"],
+                    f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}",
                 )
-                logger.info("Data saved successfully in %s" % (experiment_save_path))
-            except Exception as e:
-                logger.error(
-                    "Error while saving data in %s. Error: %s."
-                    % (experiment_save_path, e)
+                experiment_save_path.mkdir(parents=True, exist_ok=False)
+                experiment_paths.append(experiment_save_path)
+
+                futures.append(
+                    executor.submit(
+                        self.save_data,
+                        z_voxel_size=self.z_voxel_size,
+                        y_voxel_size=self.y_voxel_size,
+                        x_voxel_size=self.x_voxel_size,
+                        base_path=experiment["path"],
+                        tif_files=experiment["tif_files"],
+                        save_path=experiment_save_path,
+                        dtype=DataExtractor.DTYPE,
+                    )
                 )
 
-    @staticmethod
+            for future in as_completed(futures, timeout=self.timeout):
+                experiment_save_path = experiment_paths[futures.index(future)]
+                try:
+                    future.result()
+                    logger.info(f"Successfully saved data in {experiment_save_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save data in {experiment_save_path}")
+                    logger.error(str(e))
+
     def save_data(
+        self,
         z_voxel_size: int,
         y_voxel_size: int,
         x_voxel_size: int,
@@ -183,10 +191,8 @@ class DataExtractor:
         tif_files: List[Path],
         save_path: Path,
         dtype: npt.DTypeLike,
-        max_workers: int,
-        timeout: float,
     ) -> None:
-        with get_reusable_executor(max_workers=max_workers) as executor:
+        with get_reusable_executor(max_workers=self.save_data_workers) as executor:
             futures = [
                 executor.submit(
                     DataExtractor._save_data,
@@ -200,7 +206,8 @@ class DataExtractor:
                 )
                 for tif_file in tif_files
             ]
-            for future in as_completed(futures, timeout=timeout):
+
+            for future in as_completed(futures, timeout=self.timeout):
                 future.result()
 
     @staticmethod
@@ -215,7 +222,7 @@ class DataExtractor:
     ) -> None:
         image_data, metadata = DataExtractor.process_file(tif_file, base_path, dtype)
         stack_save_path = save_path.joinpath(f"stack_{metadata['stack']}")
-        stack_save_path.mkdir(parents=True, exist_ok=True)
+        stack_save_path.mkdir(parents=False, exist_ok=False)
         voxels = DataExtractor.voxelize(
             image_data=image_data,
             metadata=metadata,
