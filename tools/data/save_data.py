@@ -162,7 +162,7 @@ class DataExtractor:
                     experiment["name"],
                     f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}",
                 )
-                experiment_save_path.mkdir(parents=True, exist_ok=False)
+                experiment_save_path.mkdir(parents=True, exist_ok=True)
                 experiment_paths.append(experiment_save_path)
 
                 futures.append(
@@ -227,7 +227,7 @@ class DataExtractor:
     ) -> None:
         image_data, metadata = DataExtractor.process_file(tif_file, base_path, dtype)
         stack_save_path = save_path.joinpath(f"stack_{metadata['stack']}")
-        stack_save_path.mkdir(parents=False, exist_ok=False)
+        stack_save_path.mkdir(parents=False, exist_ok=True)
         voxels = DataExtractor.voxelize(
             image_data=image_data,
             metadata=metadata,
