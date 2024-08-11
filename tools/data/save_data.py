@@ -51,8 +51,13 @@ class DataExtractor:
     def __post_init__(self) -> None:
         if self.timeout == 0:
             self.timeout = None
-        self.experiment_workers = max(int(0.1 * self.max_workers), 1)
-        self.save_data_workers = max(self.max_workers - self.experiment_workers, 1)
+        self.experiment_workers = max(
+            int(0.1 * self.max_workers), 1
+        )  # 10% of max workers
+        available_workers = self.max_workers - self.experiment_workers
+        self.save_data_workers = max(
+            available_workers // self.experiment_workers, 1
+        )  # evenly distribute workers
 
     @staticmethod
     def extract_experiments(
