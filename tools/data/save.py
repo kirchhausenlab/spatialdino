@@ -150,7 +150,9 @@ class DataExtractor:
                         x_voxel_size=self.x_voxel_size,
                         base_path=str(experiment["path"]),
                         tif_file=str(tif_file),
-                        wavelength=int(experiment["metadata"]["wavelength"].split("nm")[0]),
+                        wavelength=int(
+                            experiment["metadata"]["wavelength"].split("nm")[0]
+                        ),
                         save_path=str(experiment_save_path),
                         dtype=DataExtractor.DTYPE,
                         max_worker=self.max_workers,
@@ -177,7 +179,7 @@ class DataExtractor:
         wavelength: int,
         save_path: str,
         dtype: str,
-        max_workers: int
+        max_workers: int,
     ) -> Path:
         base_path = Path(base_path)  # type: ignore
         tif_file = Path(tif_file)  # type: ignore
@@ -249,12 +251,14 @@ class DataExtractor:
                     x_end = min(x_idx + x_voxel_size, x)
                     voxel_data = image_data[z_idx:z_end, y_idx:y_end, x_idx:x_end]
                     voxel_metadata = VoxelMetadata(
-                        path=metadata["path"], stack=metadata["stack"], wavelength=metadata["wavelength"]
+                        path=metadata["path"],
+                        stack=metadata["stack"],
+                        wavelength=metadata["wavelength"],
                     )
                     voxel = Voxel(
                         data=VoxelData(
                             values=voxel_data,
-                            position=(z_idx, y_idx, x_idx),
+                            position=np.array([z_idx, y_idx, x_idx]),
                         ),
                         metadata=voxel_metadata,
                     )
