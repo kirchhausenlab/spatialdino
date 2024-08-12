@@ -1,12 +1,13 @@
 visuals
 
+.venv
+logs
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 
 # C extensions
 *.so
-
 # Distribution / packaging
 .Python
 env/
@@ -24,7 +25,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-
+dist
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 python save_data.py \
---parent_directory /nfs/datasync4/tklab-llsm \
---search_pattern "**/DS" \
---directories_up 2 \
---save_path /nfs/datasync4/alavaee/tklab-llsm \
---found_directories_limit 200 \
---min_tif_files_in_folder 20 \
---max_workers 100
+--z_voxel_size 32 \
+--y_voxel_size 224 \
+--x_voxel_size 224 \
+--parent_directory /nfs/scratch \
+--save_path /nfs/scratch/alavaee/data/processed/tklab-llsm \
+--found_experiments_limit 50 \
+--max_workers 150
