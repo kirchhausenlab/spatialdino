@@ -6,5 +6,5 @@ python save_data.py \
 --x_voxel_size 224 \
 --parent_directory /nfs/scratch \
 --save_path /nfs/scratch/alavaee/data/processed/tklab-llsm \
---found_experiments_limit 1 \
+--found_experiments_limit 50 \
 --max_workers 150
