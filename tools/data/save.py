@@ -145,14 +145,17 @@ class DataExtractor:
                 futures = [
                     executor.submit(
                         DataExtractor._save_data,
-                        self.z_voxel_size,
-                        self.y_voxel_size,
-                        self.x_voxel_size,
-                        str(experiment["path"]),
-                        str(tif_file),
-                        str(experiment_save_path),
-                        DataExtractor.DTYPE,
-                        self.max_workers,
+                        z_voxel_size=self.z_voxel_size,
+                        y_voxel_size=self.y_voxel_size,
+                        x_voxel_size=self.x_voxel_size,
+                        base_path=str(experiment["path"]),
+                        tif_file=str(tif_file),
+                        wavelength=int(
+                            experiment["metadata"]["wavelength"].split("nm")[0]
+                        ),
+                        save_path=str(experiment_save_path),
+                        dtype=DataExtractor.DTYPE,
+                        max_worker=self.max_workers,
                     )
                     for tif_file in experiment["tif_files"]
                 ]
@@ -173,6 +176,7 @@ class DataExtractor:
         x_voxel_size: int,
         base_path: str,
         tif_file: str,
+        wavelength: int,
         save_path: str,
         dtype: str,
         max_workers: int,
@@ -181,6 +185,7 @@ class DataExtractor:
         tif_file = Path(tif_file)  # type: ignore
         save_path = Path(save_path)  # type: ignore
         image_data, metadata = DataExtractor.process_file(tif_file, base_path, dtype)  # type: ignore
+        metadata["wavelength"] = wavelength
         stack_save_path = save_path.joinpath(f"stack_{metadata['stack']}")  # type: ignore
         stack_save_path.mkdir(parents=False, exist_ok=True)
         voxels = DataExtractor.voxelize(
@@ -246,12 +251,14 @@ class DataExtractor:
                     x_end = min(x_idx + x_voxel_size, x)
                     voxel_data = image_data[z_idx:z_end, y_idx:y_end, x_idx:x_end]
                     voxel_metadata = VoxelMetadata(
-                        path=metadata["path"], stack=metadata["stack"]
+                        path=metadata["path"],
+                        stack=metadata["stack"],
+                        wavelength=metadata["wavelength"],
                     )
                     voxel = Voxel(
                         data=VoxelData(
                             values=voxel_data,
-                            position=(z_idx, y_idx, x_idx),
+                            position=np.array([z_idx, y_idx, x_idx]),
                         ),
                         metadata=voxel_metadata,
                     )
