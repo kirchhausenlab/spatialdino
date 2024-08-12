@@ -1,6 +1,6 @@
 #!/bin/bash
 
-python save_data.py \
+python save.py \
 --z_voxel_size 32 \
 --y_voxel_size 224 \
 --x_voxel_size 224 \
