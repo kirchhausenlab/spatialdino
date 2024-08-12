@@ -1,16 +1,24 @@
+from cell_interactome.data import Voxel, VoxelData, VoxelMetadata
 from cell_interactome.data.utils import save_dict_to_hdf5
-from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tifffile as tif
 from pathlib import Path
 from argparse import ArgumentParser
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, ClassVar, Generator
+from typing import (
+    Any,
+    Dict,
+    List,
+    Tuple,
+    TypedDict,
+    ClassVar,
+    Generator,
+)
 import numpy as np
-from loky import get_reusable_executor
 from dataclasses import dataclass
 from loguru import logger
 import h5py
 import glob
-import numpy.typing as npt
+from loky import ProcessPoolExecutor
 
 
 class Experiment(TypedDict):
@@ -20,21 +28,6 @@ class Experiment(TypedDict):
     metadata: Dict[str, Any]
 
 
-class VoxelData(TypedDict):
-    values: np.ndarray
-    position: Tuple[int, int, int]
-
-
-class VoxelMetadata(TypedDict):
-    path: str
-    stack: int
-
-
-class Voxel(TypedDict):
-    data: VoxelData
-    metadata: VoxelMetadata
-
-
 @dataclass
 class DataExtractor:
     # instance vars
@@ -42,22 +35,10 @@ class DataExtractor:
     y_voxel_size: int = 224
     x_voxel_size: int = 224
     found_experiments_limit: int = 1
-    timeout: Optional[float] = None
     max_workers: int = 4
     # class vars
     SEARCH_PATTERN: ClassVar[str] = "**/DS"
-    DTYPE: ClassVar[npt.DTypeLike] = np.float32
-
-    def __post_init__(self) -> None:
-        if self.timeout == 0:
-            self.timeout = None
-        self.experiment_workers = max(
-            int(0.1 * self.max_workers), 1
-        )  # 10% of max workers
-        available_workers = self.max_workers - self.experiment_workers
-        self.save_data_workers = max(
-            available_workers // self.experiment_workers, 1
-        )  # evenly distribute workers
+    DTYPE: ClassVar[str] = "float32"
 
     @staticmethod
     def extract_experiments(
@@ -146,87 +127,61 @@ class DataExtractor:
         parent_directory: Path,
         save_path: Path,
     ) -> None:
-        experiments = self.extract_experiments(
+        experiments = DataExtractor.extract_experiments(
             parent_directory=parent_directory,
             search_pattern=DataExtractor.SEARCH_PATTERN,
             found_experiments_limit=self.found_experiments_limit,
             save_path=save_path,
         )
 
-        with get_reusable_executor(max_workers=self.experiment_workers) as executor:
-            futures = []
-            experiment_paths = []
-
+        all_futures = []
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             for experiment in experiments:
                 experiment_save_path = save_path.joinpath(
                     experiment["name"],
                     f"{experiment['metadata']['wavelength']}_{experiment['metadata']['camera']}",
                 )
                 experiment_save_path.mkdir(parents=True, exist_ok=True)
-                experiment_paths.append(experiment_save_path)
-
-                futures.append(
+                futures = [
                     executor.submit(
-                        self.save_data,
-                        z_voxel_size=self.z_voxel_size,
-                        y_voxel_size=self.y_voxel_size,
-                        x_voxel_size=self.x_voxel_size,
-                        base_path=experiment["path"],
-                        tif_files=experiment["tif_files"],
-                        save_path=experiment_save_path,
-                        dtype=DataExtractor.DTYPE,
+                        DataExtractor._save_data,
+                        self.z_voxel_size,
+                        self.y_voxel_size,
+                        self.x_voxel_size,
+                        str(experiment["path"]),
+                        str(tif_file),
+                        str(experiment_save_path),
+                        DataExtractor.DTYPE,
+                        self.max_workers,
                     )
-                )
+                    for tif_file in experiment["tif_files"]
+                ]
 
-            for future in as_completed(futures, timeout=self.timeout):
-                experiment_save_path = experiment_paths[futures.index(future)]
-                try:
-                    future.result()
-                    logger.info(f"Successfully saved data in {experiment_save_path}")
-                except Exception as e:
-                    logger.error(f"Failed to save data in {experiment_save_path}")
-                    logger.error(str(e))
+                all_futures.extend(futures)
 
-    def save_data(
-        self,
-        z_voxel_size: int,
-        y_voxel_size: int,
-        x_voxel_size: int,
-        base_path: Path,
-        tif_files: List[Path],
-        save_path: Path,
-        dtype: npt.DTypeLike,
-    ) -> None:
-        with get_reusable_executor(max_workers=self.save_data_workers) as executor:
-            futures = [
-                executor.submit(
-                    DataExtractor._save_data,
-                    z_voxel_size=z_voxel_size,
-                    y_voxel_size=y_voxel_size,
-                    x_voxel_size=x_voxel_size,
-                    base_path=base_path,
-                    tif_file=tif_file,
-                    save_path=save_path,
-                    dtype=dtype,
-                )
-                for tif_file in tif_files
-            ]
-
-            for future in as_completed(futures, timeout=self.timeout):
-                future.result()
+        for future in as_completed(all_futures, timeout=None):
+            try:
+                stack_save_path = future.result()
+                logger.info("Successfully saved data in %s" % (stack_save_path))
+            except Exception as e:
+                logger.error("Failed to save data due to error: %s" % (e))
 
     @staticmethod
     def _save_data(
         z_voxel_size: int,
         y_voxel_size: int,
         x_voxel_size: int,
-        base_path: Path,
-        tif_file: Path,
-        save_path: Path,
-        dtype: npt.DTypeLike,
-    ) -> None:
-        image_data, metadata = DataExtractor.process_file(tif_file, base_path, dtype)
-        stack_save_path = save_path.joinpath(f"stack_{metadata['stack']}")
+        base_path: str,
+        tif_file: str,
+        save_path: str,
+        dtype: str,
+        max_workers: int,
+    ) -> Path:
+        base_path = Path(base_path)  # type: ignore
+        tif_file = Path(tif_file)  # type: ignore
+        save_path = Path(save_path)  # type: ignore
+        image_data, metadata = DataExtractor.process_file(tif_file, base_path, dtype)  # type: ignore
+        stack_save_path = save_path.joinpath(f"stack_{metadata['stack']}")  # type: ignore
         stack_save_path.mkdir(parents=False, exist_ok=True)
         voxels = DataExtractor.voxelize(
             image_data=image_data,
@@ -235,14 +190,20 @@ class DataExtractor:
             y_voxel_size=y_voxel_size,
             x_voxel_size=x_voxel_size,
         )
-        for idx, voxel in enumerate(voxels):
-            voxel_save_path = stack_save_path.joinpath(f"part_{idx}.h5")
-            with h5py.File(voxel_save_path, "w") as f:
-                save_dict_to_hdf5(voxel, f)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, voxel in enumerate(voxels):
+                voxel_save_path = stack_save_path.joinpath(f"part_{idx}.h5")
+                executor.submit(DataExtractor.save_voxel, voxel, voxel_save_path)
+        return stack_save_path
+
+    @staticmethod
+    def save_voxel(voxel: Voxel, save_path: Path) -> None:
+        with h5py.File(save_path, "w") as f:
+            save_dict_to_hdf5(voxel, f)
 
     @staticmethod
     def process_file(
-        tif_file: Path, base_path: Path, dtype: npt.DTypeLike
+        tif_file: Path, base_path: Path, dtype: str
     ) -> Tuple[np.ndarray, dict]:
         file_name = tif_file.name
         stack = DataExtractor.extract_stack(file_name)
@@ -252,7 +213,7 @@ class DataExtractor:
         return image_data, metadata
 
     @staticmethod
-    def extract_tif_file_image(file_name: Path, dtype: npt.DTypeLike) -> np.ndarray:
+    def extract_tif_file_image(file_name: Path, dtype: str) -> np.ndarray:
         data = tif.imread(file_name, chunkdtype=dtype)  # (Z, Y, X)
         return data
 
@@ -327,19 +288,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_workers", type=int, default=4, help="Max number of workers."
     )
-    parser.add_argument(
-        "--timeout", type=float, default=0, help="Timeout for each worker."
-    )
 
     args = parser.parse_args()
+
     data_extractor = DataExtractor(
         z_voxel_size=args.z_voxel_size,
         y_voxel_size=args.y_voxel_size,
         x_voxel_size=args.x_voxel_size,
         found_experiments_limit=args.found_experiments_limit,
-        timeout=args.timeout,
         max_workers=args.max_workers,
     )
+
     data_extractor(
         parent_directory=args.parent_directory,
         save_path=args.save_path,
