@@ -1,5 +1,4 @@
 from cell_interactome.data import Voxel, VoxelData, VoxelMetadata
-from cell_interactome.data.utils import save_dict_to_hdf5
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tifffile as tif
 from pathlib import Path
@@ -16,9 +15,9 @@ from typing import (
 import numpy as np
 from dataclasses import dataclass
 from loguru import logger
-import h5py
 import glob
 from loky import ProcessPoolExecutor
+import torch
 
 
 class Experiment(TypedDict):
@@ -203,14 +202,13 @@ class DataExtractor:
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for idx, voxel in enumerate(voxels):
-                voxel_save_path = stack_save_path.joinpath(f"part_{idx}.h5")
+                voxel_save_path = stack_save_path.joinpath(f"part_{idx}.pth")
                 executor.submit(DataExtractor.save_voxel, voxel, voxel_save_path)
         return stack_save_path
 
     @staticmethod
     def save_voxel(voxel: Voxel, save_path: Path) -> None:
-        with h5py.File(save_path, "w") as f:
-            save_dict_to_hdf5(voxel, f)
+        torch.save(voxel, save_path)
 
     @staticmethod
     def process_file(
@@ -273,7 +271,7 @@ class DataExtractor:
 
 if __name__ == "__main__":
     parser = ArgumentParser(
-        description="Prepare data for lattice microscopy data into .h5 format."
+        description="Prepare data for lattice microscopy data into .pth format."
     )
 
     parser.add_argument(
@@ -291,7 +289,7 @@ if __name__ == "__main__":
         required=True,
         help="Parent directory to start searching.",
     )
-    parser.add_argument("--save_path", type=Path, help="Path to save the .h5 files.")
+    parser.add_argument("--save_path", type=Path, help="Path to save the .pth files.")
     parser.add_argument(
         "--found_experiments_limit",
         type=int,
