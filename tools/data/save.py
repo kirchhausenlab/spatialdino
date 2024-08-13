@@ -35,6 +35,7 @@ class DataExtractor:
     y_voxel_size: int = 224
     x_voxel_size: int = 224
     found_experiments_limit: int = 1
+    min_tif_files: int = 20
     max_workers: int = 4
     # class vars
     SEARCH_PATTERN: ClassVar[str] = "**/DS"
@@ -45,12 +46,14 @@ class DataExtractor:
         parent_directory: Path,
         search_pattern: str,
         found_experiments_limit: int,
+        min_tif_files: int,
         save_path: Path,
     ) -> List[Experiment]:
         experiments = DataExtractor._extract_experiments(
             parent_directory=parent_directory,
             search_pattern=search_pattern,
             found_experiments_limit=found_experiments_limit,
+            min_tif_files=min_tif_files,
             save_path=save_path,
         )
         return experiments
@@ -60,6 +63,7 @@ class DataExtractor:
         parent_directory: Path,
         search_pattern: str,
         found_experiments_limit: int,
+        min_tif_files: int,
         save_path: Path,
     ) -> List[Experiment]:
         experiment_names = []
@@ -71,18 +75,19 @@ class DataExtractor:
                 break
 
             directory = Path(directory)
-            parent_dir = directory.parents[1]
+            experiment_dir = directory.parents[1]
             if directory.is_dir():
                 experiment_name = DataExtractor.get_experiment_name(
-                    directory=str(parent_dir),
+                    directory=str(experiment_dir),
                     prefix_length=len(str(parent_directory)),
                 )
-
                 if save_path.joinpath(experiment_name).is_dir():
                     continue
 
-                experiment_names.append(experiment_name)
-                experiment_dirs.append(parent_dir)
+                num_tif_files = len(DataExtractor.get_tif_files(experiment_dir))
+                if num_tif_files >= min_tif_files:
+                    experiment_names.append(experiment_name)
+                    experiment_dirs.append(experiment_dir)
 
         experiments = []
         for experiment_name, experiment_dir in zip(experiment_names, experiment_dirs):
@@ -131,6 +136,7 @@ class DataExtractor:
             parent_directory=parent_directory,
             search_pattern=DataExtractor.SEARCH_PATTERN,
             found_experiments_limit=self.found_experiments_limit,
+            min_tif_files=self.min_tif_files,
             save_path=save_path,
         )
 
@@ -155,7 +161,7 @@ class DataExtractor:
                         ),
                         save_path=str(experiment_save_path),
                         dtype=DataExtractor.DTYPE,
-                        max_worker=self.max_workers,
+                        max_workers=self.max_workers,
                     )
                     for tif_file in experiment["tif_files"]
                 ]
@@ -292,6 +298,14 @@ if __name__ == "__main__":
         default=1,
         help="Max number of experiments to extract.",
     )
+
+    parser.add_argument(
+        "--min_tif_files",
+        type=int,
+        default=20,
+        help="Minimum number of tif files to consider an experiment valid.",
+    )
+
     parser.add_argument(
         "--max_workers", type=int, default=4, help="Max number of workers."
     )
@@ -303,6 +317,7 @@ if __name__ == "__main__":
         y_voxel_size=args.y_voxel_size,
         x_voxel_size=args.x_voxel_size,
         found_experiments_limit=args.found_experiments_limit,
+        min_tif_files=args.min_tif_files,
         max_workers=args.max_workers,
     )
 
