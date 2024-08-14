@@ -65,7 +65,7 @@ class DataExtractor:
         min_tif_files: int,
         save_path: Path,
     ) -> List[Experiment]:
-        experiment_names = []
+        experiment_names = set()
         experiment_dirs = []
         for directory in glob.iglob(
             str(parent_directory.joinpath(search_pattern)), recursive=True
@@ -85,8 +85,9 @@ class DataExtractor:
 
                 num_tif_files = len(DataExtractor.get_tif_files(experiment_dir))
                 if num_tif_files >= min_tif_files:
-                    experiment_names.append(experiment_name)
-                    experiment_dirs.append(experiment_dir)
+                    if experiment_name not in experiment_names:
+                        experiment_names.add(experiment_name)
+                        experiment_dirs.append(experiment_dir)
 
         experiments = []
         for experiment_name, experiment_dir in zip(experiment_names, experiment_dirs):
