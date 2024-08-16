@@ -27,6 +27,7 @@ tqdm = "^4.66.5"
 h5py = "^3.11.0"
 loky = "^3.4.1"
 imagecodecs = "^2024.6.1"
+pillow = "^10.4.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
