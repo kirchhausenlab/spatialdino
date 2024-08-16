@@ -1,5 +1,5 @@
 visuals
-
+*.mp4
 .venv
 logs
 # Byte-compiled / optimized / DLL files
