@@ -28,6 +28,7 @@ h5py = "^3.11.0"
 loky = "^3.4.1"
 imagecodecs = "^2024.6.1"
 pillow = "^10.4.0"
+opencv-python = "^4.10.0.84"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
