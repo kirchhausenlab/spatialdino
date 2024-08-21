@@ -1,0 +1,26 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+fvcore==0.1.5.post20221221
+omegaconf==2.3.0
+pip-chill==1.0.3
+submitit==1.5.1
+torchaudio==2.4.0
+torchmetrics==0.10.3
+torchvision==0.19.0
+xformers==0.0.27.post2
+numpy>=1.23,<2.0
+--extra-index-url https://pypi.nvidia.com
+cuml-cu12==24.8.0
+tifffile==2024.7.24
+matplotlib==3.9.1.post1
+pandas==2.2.2
+seaborn==0.13.2
+loguru==0.7.2
+wandb==0.17.6
+ipykernel==6.29.5
+tqdm==4.66.5
+h5py==3.11.0
+loky==3.4.1
+imagecodecs==2024.6.1
+pillow==10.4.0
+opencv-python==4.10.0.84
+-e .
