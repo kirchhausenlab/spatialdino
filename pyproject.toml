@@ -4,22 +4,15 @@ version = "0.0.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "torch==2.1.2+cu121",
-    "torchvision==0.16.2+cu121",
-    # "dinov2[extras]",
-]
+dependencies = ["torch==2.1.2+cu121", "torchvision==0.16.2+cu121"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-dev-dependencies = []
+dev-dependencies = ["pytest>=8.3.2", "ruff>=0.6.2"]
 extra-index-url = [
     "https://download.pytorch.org/whl/cu121",
     "https://pypi.nvidia.com",
 ]
-
-[tool.uv.sources]
-dinov2 = { git = "https://github.com/kirchhausenlab/dinov2.git" }
