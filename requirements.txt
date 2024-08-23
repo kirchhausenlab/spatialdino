@@ -26,3 +26,4 @@ torch==2.4.0+cu121
 torchvision==0.2.0
 triton==3.0.0
 typing-extensions==4.9.0
+git+https://github.com/kirchhausenlab/dinov2.git
