@@ -1,23 +1,17 @@
 [project]
 name = "cell-interactome"
-dynamic = ["version", "dependencies"]
-description = ""
-authors = [
-    { name = "Alex Lavaee", email = "alavaee@tklab.hms.harvard.edu" },
-    { name = "Arkash Jain", email = "ajain@tklab.hms.harvard.edu" },
-]
-license = { text = "MIT" }
+version = "0.0.1"
+description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.7"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["cell_interactome"]
-namespaces = false
-
-[tool.setuptools.dynamic]
-version = { attr = "cell_interactome.__version__" }
+requires-python = ">=3.10"
 
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+# [tool.uv.sources]
+# dinov2 = { git = "https://github.com/kirchhausenlab/dinov2.git" }
+# uv pip install git+https://github.com/kirchhausenlab/dinov2.git#egg=dinov2[extras]
