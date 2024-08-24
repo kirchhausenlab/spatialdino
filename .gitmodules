@@ -1,0 +1,3 @@
+[submodule "src/third_party/FeatUp"]
+	path = src/third_party/FeatUp
+	url = git@github.com:kirchhausenlab/FeatUp.git
