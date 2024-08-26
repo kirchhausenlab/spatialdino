@@ -17,7 +17,6 @@ dependencies = [
     "featup",
     "ipython>=8.26.0",
 ]
-
 [build-system]
 requires = ["setuptools", "wheel", "ninja", "torch"]
 build-backend = "setuptools.build_meta"
