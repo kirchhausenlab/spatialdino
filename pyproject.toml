@@ -14,15 +14,12 @@ dependencies = [
     "h5py>=3.11.0",
     "pillow>=10.2.0",
     "tqdm>=4.64.1",
-    "setuptools>=70.0.0",
-    "ninja>=1.11.1.1",
-    "wheel>=0.44.0",
     "featup",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools", "wheel", "ninja", "torch"]
+build-backend = "setuptools.build_meta"
 
 [tool.uv]
 dev-dependencies = ["pytest>=8.3.2", "ruff>=0.6.2"]
