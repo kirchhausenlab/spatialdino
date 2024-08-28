@@ -173,7 +173,7 @@ dev = [
 requires-dist = [
     { name = "featup", editable = "src/third_party/FeatUp" },
     { name = "h5py", specifier = ">=3.11.0" },
-    { name = "imagecodecs" },
+    { name = "imagecodecs", specifier = ">=2024.6.1" },
     { name = "ipython", specifier = ">=8.26.0" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "loky", specifier = ">=3.4.1" },
