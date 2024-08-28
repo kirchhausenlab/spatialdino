@@ -149,10 +149,12 @@ dependencies = [
     { name = "h5py" },
     { name = "ipython" },
     { name = "loguru" },
+    { name = "loky" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pillow" },
+    { name = "tifffile" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "tqdm" },
@@ -172,10 +174,12 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.11.0" },
     { name = "ipython", specifier = ">=8.26.0" },
     { name = "loguru", specifier = ">=0.7.2" },
+    { name = "loky" },
     { name = "matplotlib", specifier = ">=3.9.2" },
     { name = "numpy", specifier = ">=1.26.3" },
     { name = "pandas", specifier = ">=2.2.2" },
     { name = "pillow", specifier = ">=10.2.0" },
+    { name = "tifffile" },
     { name = "torch", specifier = "==2.4.0+cu121" },
     { name = "torchvision", specifier = "==0.2.0" },
     { name = "tqdm", specifier = ">=4.64.1" },
@@ -187,6 +191,15 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.3.2" },
     { name = "ruff", specifier = ">=0.6.2" },
+]
+
+[[package]]
+name = "cloudpickle"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/72/42a6570fc61b1f8913529728ad314c7cf5961540728dcad22c33fb2db6b6/cloudpickle-3.0.0.tar.gz", hash = "sha256:996d9a482c6fb4f33c1a35335cf8afd065d2a56e973270364840712d9131a882", size = 21231 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/43/dae06432d0c4b1dc9e9149ad37b4ca8384cf6eb7700cd9215b177b914f0a/cloudpickle-3.0.0-py3-none-any.whl", hash = "sha256:246ee7d0c295602a036e86369c77fecda4ab17b506496730f2f576d9016fd9c7", size = 20088 },
 ]
 
 [[package]]
@@ -644,6 +657,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9e/30/d87a423766b24db416a46e9335b9602b054a72b96a88a241f2b09b560fa8/loguru-0.7.2.tar.gz", hash = "sha256:e671a53522515f34fd406340ee968cb9ecafbc4b36c679da03c18fd8d0bd51ac", size = 145103 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/0a/4f6fed21aa246c6b49b561ca55facacc2a44b87d65b8b92362a8e99ba202/loguru-0.7.2-py3-none-any.whl", hash = "sha256:003d71e3d3ed35f0f8984898359d65b79e5b21943f78af86aa5491210429b8eb", size = 62549 },
+]
+
+[[package]]
+name = "loky"
+version = "3.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7e/7d/a66ba4e28ee37b87771f7cdf36e91e0d94a429cd2297a406443f34f6b9f0/loky-3.4.1.tar.gz", hash = "sha256:66db350de68c301299c882ace3b8f06ba5c4cb2c45f8fcffd498160ce8280753", size = 100148 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/4b/d5f8d45c28b193fe5974f95ecfa2bac87e268a543da298bab258ded6ae95/loky-3.4.1-py3-none-any.whl", hash = "sha256:7132da80d1a057b5917ff32c7867b65ed164aae84c259a1dbc44375791280c87", size = 54570 },
 ]
 
 [[package]]
@@ -1396,6 +1421,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bd/55/b5148dcbf72f5cde221f8bfe3b6a540da7aa1842f6b491ad979a6c8b84af/threadpoolctl-3.5.0.tar.gz", hash = "sha256:082433502dd922bf738de0d8bcc4fdcbf0979ff44c42bd40f5af8a282f6fa107", size = 41936 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/2c/ffbf7a134b9ab11a67b0cf0726453cedd9c5043a4fe7a35d1cefa9a1bcfb/threadpoolctl-3.5.0-py3-none-any.whl", hash = "sha256:56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467", size = 18414 },
+]
+
+[[package]]
+name = "tifffile"
+version = "2024.8.28"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/7d/02b7ba8e953c5e63c39f8e715ad0a66c11504db28730f2d8eed0af49ad40/tifffile-2024.8.28.tar.gz", hash = "sha256:a84056c02865d20090235816cddabc99a34493e870effcd119499548583f3204", size = 362845 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/3a/22edea4fd64c40394e4c38ead42c95f5f339c52650ea9b3a870d1c091697/tifffile-2024.8.28-py3-none-any.whl", hash = "sha256:7b618100c9043f2b7f196287ae5e9d139a6f4a0fa603d3698fd5b8f679ca2c66", size = 226058 },
 ]
 
 [[package]]
