@@ -18,8 +18,9 @@ dependencies = [
     "ipython>=8.26.0",
     "xformers>=0.0.27.post2",
     "triton>=3.0.0",
-    "loky>=3.4.1",
+
     "tifffile>=2024.8.28",
+    "loky>=3.4.1",
     "imagecodecs>=2024.6.1",
 ]
 [build-system]

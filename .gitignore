@@ -66,6 +66,7 @@ target/
 # Database
 *.db
 *.rdb
+*.nfs
 
 # Pycharm
 .idea
