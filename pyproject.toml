@@ -1,33 +1,37 @@
-[tool.poetry]
+[project]
 name = "cell-interactome"
 version = "0.0.1"
-description = ""
-authors = [
-    "Alex Lavaee <alavaee@tklab.hms.harvard.edu>",
-    "Arkash Jain <ajain@tklab.hms.harvard.edu>",
-]
-license = "MIT"
+description = "A foundation model for molecular biology."
 readme = "README.md"
-packages = [{ include = "cell_interactome", from = "src" }]
-
-[tool.poetry.dependencies]
-python = "^3.9"
-torch = "^2.4.0"
-torchvision = "^0.19.0"
-torchaudio = "^2.4.0"
-numpy = "^2.0.1"
-tifffile = "^2024.7.24"
-matplotlib = "^3.9.1.post1"
-pandas = "^2.2.2"
-seaborn = "^0.13.2"
-loguru = "^0.7.2"
-wandb = "^0.17.6"
-ipykernel = "^6.29.5"
-tqdm = "^4.66.5"
-h5py = "^3.11.0"
-loky = "^3.4.1"
-imagecodecs = "^2024.6.1"
-
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.4.0+cu121",
+    "torchvision==0.2.0",
+    "loguru>=0.7.2",
+    "numpy>=1.26.3",
+    "pandas>=2.2.2",
+    "matplotlib>=3.9.2",
+    "h5py>=3.11.0",
+    "pillow>=10.2.0",
+    "tqdm>=4.64.1",
+    "featup",
+    "ipython>=8.26.0",
+    "xformers>=0.0.27.post2",
+    "triton>=3.0.0",
+    "loky>=3.4.1",
+    "tifffile>=2024.8.28",
+    "imagecodecs>=2024.6.1",
+]
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools", "wheel", "ninja", "torch"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+dev-dependencies = ["pytest>=8.3.2", "ruff>=0.6.2"]
+extra-index-url = [
+    "https://download.pytorch.org/whl/cu121",
+    "https://pypi.nvidia.com",
+]
+
+[tool.uv.sources]
+featup = { path = "src/third_party/FeatUp", editable = true }
