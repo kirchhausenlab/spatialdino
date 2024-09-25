@@ -4,12 +4,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="cell-interactome",
+    name="cell_interactome",
     version="0.0.1",
     description="A foundation model for molecular biology.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    packages=find_packages(),
+    packages=find_packages(where="src"),
+    package_dir={"": "src"},
     python_requires=">=3.10",
     install_requires=[
         "torch>=2.4.0",
