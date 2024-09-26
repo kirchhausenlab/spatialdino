@@ -2,8 +2,13 @@ experiment_name: "llsm_224_1000"
 project_name: "cell-interactome"
 MODEL:
   WEIGHTS: ""
-sharding_strategy: SHARD_GRAD_OP
 precision: 16-mixed
+fsdp:
+  sharding_strategy: SHARD_GRAD_OP
+  mixed_precision:
+    param_dtype: fp16
+    reduce_dtype: fp16
+    buffer_dtype: fp32
 dino:
   loss_weight: 1.0
   head_n_prototypes: 65536
@@ -23,7 +28,7 @@ ibot:
   head_nlayers: 3
   head_hidden_dim: 2048
 train:
-  batch_size_per_gpu: 64
+  batch_size_per_gpu: 32
   dataset_path: /nfs/scratch2/shared_image_recog_ml/llsm_224
   path_to_txt: ${train.dataset_path}/train.txt
   output_dir: /nfs/scratch2/shared_image_recog_ml/weights/dinov2/llsm_224
@@ -53,11 +58,11 @@ student:
   interpolate_antialias: false
   interpolate_offset: 0.1
 teacher:
-  momentum_teacher: 0.992
-  final_momentum_teacher: 1
-  warmup_teacher_temp: 0.04
-  teacher_temp: 0.07
-  warmup_teacher_temp_epochs: 30
+  momentum: 0.992
+  final_momentum: 1
+  warmup_temperature: 0.04
+  temperature: 0.07
+  warmup_temperature_epochs: 30
 optim:
   epochs: 100
   weight_decay: 0.04
