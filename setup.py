@@ -29,6 +29,8 @@ setup(
         "lightning>=2.4.0",
         "wandb>=0.18.1",
         "hydra-core>=1.3.2",
+        "fvcore>=0.1.5.post20221221",
+        "submitit>=1.5.2",
     ],
     extras_require={
         "xformers": ["xformers>=0.0.27.post2", "triton>=3.0.0"],

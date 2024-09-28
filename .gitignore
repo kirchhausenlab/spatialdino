@@ -3,6 +3,7 @@ visuals
 *.mp4
 .venv
 logs
+outputs
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
