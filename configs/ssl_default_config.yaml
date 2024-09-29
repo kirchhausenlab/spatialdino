@@ -39,6 +39,7 @@ compute_precision:
         reduce_dtype: fp32
         buffer_dtype: fp32
 dino:
+  freeze_head: false
   loss_weight: 1.0
   head_n_prototypes: 65536
   head_bottleneck_dim: 256
@@ -46,6 +47,7 @@ dino:
   head_hidden_dim: 2048
   koleo_loss_weight: 0.1
 ibot:
+  freeze_head: false
   loss_weight: 1.0
   mask_sample_probability: 0.5
   mask_ratio_min_max:
@@ -72,12 +74,12 @@ train:
   cache_dataset: true
   centering: "centering" # or "sinkhorn_knopp"
 student:
+  freeze_backbone: false
   arch: vit_large
   patch_size: 16
   drop_path_rate: 0.3
   layerscale: 1.0e-05
   drop_path_uniform: true
-  pretrained_weights: ""
   ffn_layer: "mlp"
   block_chunks: 0
   qkv_bias: true
