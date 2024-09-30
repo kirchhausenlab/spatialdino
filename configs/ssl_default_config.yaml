@@ -58,11 +58,6 @@ ibot:
   head_bottleneck_dim: 256
   head_nlayers: 3
   head_hidden_dim: 2048
-logger:
-  use_wandb: true
-  wandb_config:
-    project: cell-interactome
-    entity: lavaalex
 train:
   log_interval: 10
   max_files: 1000
