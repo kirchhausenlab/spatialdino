@@ -1,34 +1,21 @@
 defaults:
-  - ssl_default_config
-  - model/train/vitg14_reg4
+  - model: vitg14_reg4
+  - ddp: fsdp
+  - optim: adamw
+  - train: vitg14_reg4
+  - logging: wandb
   - _self_
 
+seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
 model_checkpoint_name: dinov2_vitg14_reg4_pretrain_ckpt
 
-logger:
+logging:
   use_wandb: true
-  wandb_config:
-    project: cell-interactome
-    entity: lavaalex
-    name: heads_pretrain
+  name: heads_pretrain
 
-MODEL:
-  WEIGHTS: ${base_path}/weights/dinov2/pretrained/${model_checkpoint_name}.pth
+model:
+  weights: ${base_path}/weights/dinov2/pretrained/${model_checkpoint_name}.pth
 
-train:
-  dataset_path: ${base_path}/llsm_518
-  path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${base_path}/weights/dinov2/llsm_518
-
-optim:
-  epochs: 500
-
-dino:
-  freeze_head: false
-
-ibot:
-  freeze_head: false
-
-student:
-  freeze_backbone: true
+evaluation:
+  eval_period_steps: 12500

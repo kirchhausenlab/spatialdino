@@ -1,0 +1,5 @@
+use_wandb: true
+wandb_config:
+  project: cell-interactome
+  entity: lavaalex
+  name: null
