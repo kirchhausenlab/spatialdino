@@ -5,9 +5,9 @@ num_workers: 100
 max_steps: 625000
 cache_dataset: true
 centering: sinkhorn_knopp
-dataset_path: ${base_path}/llsm_518
-path_to_txt: ${train.dataset_path}/train.txt
-output_dir: ${base_path}/weights/dinov2/llsm_518
+dataset_path: ""
+path_to_txt: ""
+output_dir: "output"
 max_files: 100000
 crops:
   global_crops_scale:

@@ -31,6 +31,8 @@ setup(
         "hydra-core>=1.3.2",
         "fvcore>=0.1.5.post20221221",
         "submitit>=1.5.2",
+        "scipy>=1.14.1",
+        "scikit-learn>=1.5.2",
     ],
     extras_require={
         "xformers": ["xformers>=0.0.27.post2", "triton>=3.0.0"],
