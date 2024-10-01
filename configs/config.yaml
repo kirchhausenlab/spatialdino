@@ -8,7 +8,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-model_checkpoint_name: dinov2_vitg14_reg4_pretrain_ckpt
+model_checkpoint_name: dinov2_vitg14_reg4_pretrain_ckpt_test
 TARGET_FILE_EXTENSION: ".pth"
 search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
 max_files: 100000
