@@ -18,7 +18,7 @@ logging:
   wandb_config:
     name: heads_pretrain
   log_preds: true
-  log_pred_steps: 10
+  log_pred_steps: 200
   num_images: 5
 
 train:
@@ -39,4 +39,4 @@ model:
   weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
 
 evaluation:
-  eval_period_steps: 20
+  eval_period_steps: 1500
