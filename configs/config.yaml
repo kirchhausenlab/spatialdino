@@ -30,7 +30,7 @@ train:
   num_workers: 150
 
 test:
-  dataset_path: ${base_path}/llsm_full_res
+  dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${test.dataset_path}/test.txt
   search_suffix: ${search_suffix}
   max_files: ${max_files}
