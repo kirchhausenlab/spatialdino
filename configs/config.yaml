@@ -27,6 +27,7 @@ train:
   output_dir: ${weights_path}/care_llsm_518
   search_suffix: ${search_suffix}
   max_files: ${max_files}
+  num_workers: 150
 
 test:
   dataset_path: ${base_path}/llsm_full_res
