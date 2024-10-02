@@ -18,14 +18,13 @@ logging:
   wandb_config:
     name: heads_pretrain
   log_preds: true
-  log_pred_steps: 100
+  log_pred_steps: 200
   num_images: 5
-  test_dataset_path: ${base_path}/llsm_518
 
 train:
-  dataset_path: ${base_path}/llsm_518
+  dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${base_path}/weights/dinov2/llsm_518
+  output_dir: ${weights_path}/care_llsm_518
   search_suffix: ${search_suffix}
   max_files: ${max_files}
 
@@ -36,7 +35,7 @@ test:
   max_files: ${max_files}
 
 model:
-  weights: ${weights_path}/llsm_518/ckpt_step_99.pth
+  weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
 
 evaluation:
-  eval_period_steps: 100
+  eval_period_steps: 1500
