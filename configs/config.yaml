@@ -16,7 +16,7 @@ max_files: 100000
 logging:
   use_wandb: true
   wandb_config:
-    name: heads_pretrain
+    name: pretrain
   log_preds: true
   log_pred_steps: 200
   num_images: 5
@@ -24,11 +24,12 @@ logging:
 train:
   dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${weights_path}/care_llsm_518
+  output_dir: ${weights_path}/care_llsm_518/pretrain
   search_suffix: ${search_suffix}
   max_files: ${max_files}
   num_workers: 150
   log_interval: 10
+  batch_size_per_gpu: 6
 
 test:
   dataset_path: ${base_path}/care_llsm_518
@@ -37,7 +38,13 @@ test:
   max_files: ${max_files}
 
 model:
-  weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
+  weights: ${weights_path}/care_llsm_518/pretrain_head/ckpt_step_1499.pth
+  dino:
+    freeze_head: false
+  ibot:
+    freeze_head: false
+  student:
+    freeze_backbone: false
 
 evaluation:
-  eval_period_steps: 1500
+  eval_period_steps: 1000
