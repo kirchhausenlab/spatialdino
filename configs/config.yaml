@@ -11,12 +11,11 @@ base_path: /nfs/scratch2/shared_image_recog_ml
 weights_path: ${base_path}/weights/dinov2
 TARGET_FILE_EXTENSION: ".pth"
 search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
-max_files: 100000
 
 logging:
   use_wandb: true
   wandb_config:
-    name: pretrain
+    name: pretrain_scratch
   log_preds: true
   log_pred_steps: 200
   num_images: 5
@@ -24,9 +23,9 @@ logging:
 train:
   dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${weights_path}/care_llsm_518/pretrain
+  output_dir: ${weights_path}/care_llsm_518/pretrain_scratch
   search_suffix: ${search_suffix}
-  max_files: ${max_files}
+  max_files: 1000000
   num_workers: 150
   log_interval: 10
   batch_size_per_gpu: 6
@@ -35,10 +34,11 @@ test:
   dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${test.dataset_path}/test.txt
   search_suffix: ${search_suffix}
-  max_files: ${max_files}
+  max_files: 25000
 
 model:
-  weights: ${weights_path}/care_llsm_518/pretrain_head/ckpt_step_1499.pth
+  # weights: ${weights_path}/care_llsm_518/pretrain_head/ckpt_step_1499.pth
+  weights: ""
   dino:
     freeze_head: false
   ibot:
