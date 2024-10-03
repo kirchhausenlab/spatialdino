@@ -15,7 +15,7 @@ search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
 logging:
   use_wandb: true
   wandb_config:
-    name: pretrain_scratch
+    name: pretrain_scratch_fixed
   log_preds: true
   log_pred_steps: 200
   num_images: 5
@@ -23,7 +23,7 @@ logging:
 train:
   dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${weights_path}/care_llsm_518/pretrain_scratch
+  output_dir: ${weights_path}/care_llsm_518/pretrain_scratch_fixed
   search_suffix: ${search_suffix}
   max_files: 1000000
   num_workers: 150
