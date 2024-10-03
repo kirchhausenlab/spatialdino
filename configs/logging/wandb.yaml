@@ -3,3 +3,4 @@ wandb_config:
   project: cell-interactome
   entity: artificial-intelligence-research
   name: null
+  resume: false
