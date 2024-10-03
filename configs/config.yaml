@@ -21,7 +21,7 @@ logging:
   num_images: 5
 
 train:
-  dataset_path: ${base_path}/llsm_518
+  dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
   output_dir: ${weights_path}/${logging.wandb_config.name}
   search_suffix: ${search_suffix}
@@ -37,8 +37,7 @@ test:
   max_files: 25000
 
 model:
-  # weights: ${weights_path}/care_llsm_518/pretrain_head/ckpt_step_1499.pth
-  weights: ""
+  weights: ${train.output_dir}/ckpt_step_5999.pth
   dino:
     freeze_head: false
   ibot:
