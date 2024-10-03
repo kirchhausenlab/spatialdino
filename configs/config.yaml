@@ -1,0 +1,50 @@
+defaults:
+  - model: vitg14_reg4
+  - ddp: fsdp
+  - optim: adamw
+  - train: vitg14_reg4
+  - logging: wandb
+  - _self_
+
+seed: 0
+base_path: /nfs/scratch2/shared_image_recog_ml
+weights_path: ${base_path}/weights/dinov2
+TARGET_FILE_EXTENSION: ".pth"
+search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
+
+logging:
+  use_wandb: true
+  wandb_config:
+    name: pretrain_noise_no_noise
+    resume: true
+  log_preds: true
+  log_pred_steps: 200
+  num_images: 5
+
+train:
+  dataset_path: ${base_path}/care_llsm_518
+  path_to_txt: ${train.dataset_path}/train.txt
+  output_dir: ${weights_path}/${logging.wandb_config.name}
+  search_suffix: ${search_suffix}
+  max_files: 1000000
+  num_workers: 175
+  log_interval: 10
+  batch_size_per_gpu: 6
+
+test:
+  dataset_path: ${train.dataset_path}
+  path_to_txt: ${test.dataset_path}/test.txt
+  search_suffix: ${search_suffix}
+  max_files: 25000
+
+model:
+  weights: ${train.output_dir}/ckpt_step_5999.pth
+  dino:
+    freeze_head: false
+  ibot:
+    freeze_head: false
+  student:
+    freeze_backbone: false
+
+evaluation:
+  eval_period_steps: 1000
