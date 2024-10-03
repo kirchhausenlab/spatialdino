@@ -28,7 +28,7 @@ train:
   max_files: 1000000
   num_workers: 150
   log_interval: 10
-  batch_size_per_gpu: 6
+  batch_size_per_gpu: 8
 
 test:
   dataset_path: ${base_path}/care_llsm_518
