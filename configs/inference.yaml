@@ -1,0 +1,8 @@
+defaults:
+  - model: vitg14_reg4
+
+inference:
+  img: /nfs/scratch2/shared_image_recog_ml/data/dinov2/images/100000000000.png
+  dim: 1024
+  upsampler_type: jbu_stack
+  save_path: /nfs/scratch2/shared_image_recog_ml/data/dinov2/images/100000000000.png
