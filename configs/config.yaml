@@ -2,9 +2,9 @@ defaults:
   - model: vitg14_reg4
   - ddp: fsdp
   - optim: adamw
-  # - train: vitg14_reg4
+  - train: vitg14_reg4
   - logging: wandb
-  - inference: vitg14_reg4
+  # - inference: vitg14_reg4
   - _self_
 
 seed: 0
