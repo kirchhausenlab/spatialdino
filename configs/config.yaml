@@ -2,11 +2,13 @@ defaults:
   - model: vitg14_reg4
   - ddp: fsdp
   - optim: adamw
-  - train: vitg14_reg4
+  # - train: vitg14_reg4
   - logging: wandb
+  - inference: vitg14_reg4
   - _self_
 
 seed: 0
+device: cuda
 base_path: /nfs/scratch2/shared_image_recog_ml
 weights_path: ${base_path}/weights/dinov2
 TARGET_FILE_EXTENSION: ".pth"
@@ -37,6 +39,10 @@ test:
   search_suffix: ${search_suffix}
   max_files: 25000
 
+inference:
+  img_path: ""
+  save_dir: ${base_path}/preds/dinov2
+
 model:
   weights: ${train.output_dir}/ckpt_step_5999.pth
   dino:
@@ -45,6 +51,12 @@ model:
     freeze_head: false
   student:
     freeze_backbone: false
+
+featup:
+  upsampler:
+    type: jbu_stack
+    use_norm: true
+    weights: ${weights_path}/featup/jbu_stack_norm.ckpt
 
 evaluation:
   eval_period_steps: 1000
