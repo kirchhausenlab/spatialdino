@@ -4,24 +4,30 @@ defaults:
   - optim: adamw
   - train: vitg14_reg4
   - logging: wandb
+  # - inference: vitg14_reg4
   - _self_
 
 seed: 0
+device: cuda
 base_path: /nfs/scratch2/shared_image_recog_ml
 weights_path: ${base_path}/weights/dinov2
 TARGET_FILE_EXTENSION: ".pth"
 search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
 
+student:
+  arch: vit_large
+  patch_size: 8
+
 logging:
   use_wandb: true
   wandb_config:
-    name: pretrain_noise_no_noise
-    resume: true
+    name: pretrain_scratch_featup
   log_preds: true
   log_pred_steps: 200
   num_images: 5
 
 train:
+  resume: true
   dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
   output_dir: ${weights_path}/${logging.wandb_config.name}
@@ -29,7 +35,7 @@ train:
   max_files: 1000000
   num_workers: 175
   log_interval: 10
-  batch_size_per_gpu: 6
+  load_optim: true
 
 test:
   dataset_path: ${train.dataset_path}
@@ -37,14 +43,26 @@ test:
   search_suffix: ${search_suffix}
   max_files: 25000
 
+inference:
+  img_path: ""
+  save_dir: ${base_path}/preds/dinov2
+
 model:
-  weights: ${train.output_dir}/ckpt_step_5999.pth
+  # weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
+  weights: ""
   dino:
     freeze_head: false
   ibot:
     freeze_head: false
+    separate_head: false
   student:
     freeze_backbone: false
+
+featup:
+  upsampler:
+    type: jbu_stack
+    use_norm: true
+    weights: ${weights_path}/featup/jbu_stack_norm.ckpt
 
 evaluation:
   eval_period_steps: 1000
