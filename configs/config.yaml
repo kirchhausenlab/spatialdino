@@ -21,7 +21,7 @@ student:
 logging:
   use_wandb: true
   wandb_config:
-    name: pretrain_scratch_featup
+    name: pretrain_aug_scratch
   log_preds: true
   log_pred_steps: 200
   num_images: 5
