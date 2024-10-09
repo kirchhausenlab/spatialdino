@@ -34,11 +34,15 @@ setup(
         "hydra-core>=1.3.2",
         "scipy>=1.14.1",
         "scikit-learn>=1.5.2",
-        "featup @ file://" + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp")),
     ],
     extras_require={
         "xformers": ["xformers>=0.0.27.post2", "triton>=3.0.0"],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
+        "featup": [
+            "featup @ file://"
+            + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp"))
+            + "#egg=featup"
+        ],
     },
     dependency_links=[
         "https://download.pytorch.org/whl/cu121",
