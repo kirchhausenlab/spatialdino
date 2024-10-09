@@ -49,7 +49,7 @@ inference:
 
 model:
   # weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
-  weights: ""
+  weights: ${weights_path}/pretrain_scratch_featup/ckpt_step_136999.pth
   dino:
     freeze_head: false
   ibot:
