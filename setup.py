@@ -37,6 +37,7 @@ setup(
     ],
     extras_require={
         "xformers": ["xformers>=0.0.27.post2", "triton>=3.0.0"],
+        "viz3d": ["pyvista>=0.44.1", "vtk_osmesa<=9.2.1000"],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
         "featup": [
             "featup @ file://"
@@ -44,10 +45,6 @@ setup(
             + "#egg=featup"
         ],
     },
-    dependency_links=[
-        "https://download.pytorch.org/whl/cu121",
-        "https://pypi.nvidia.com",
-    ],
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
