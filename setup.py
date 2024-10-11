@@ -41,11 +41,6 @@ setup(
         "viz3d": ["pyvista>=0.44.1", "vtk_osmesa<=9.2.1000"],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
     },
-    dependency_links=[
-        "https://download.pytorch.org/whl/cu121",
-        "https://pypi.nvidia.com",
-        "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/simple",
-    ],
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
