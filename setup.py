@@ -16,8 +16,8 @@ setup(
     package_dir={"": "src"},
     python_requires=">=3.10",
     install_requires=[
-        "torch>=2.4.0",
-        "torchvision>=0.19.0",
+        "torch<=2.4.1",
+        "torchvision<=0.19.0",
         "loguru>=0.7.2",
         "numpy>=1.26.3",
         "pandas>=2.2.2",
@@ -34,16 +34,14 @@ setup(
         "hydra-core>=1.3.2",
         "scipy>=1.14.1",
         "scikit-learn>=1.5.2",
+        "featup @ file://"
+        + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp"))
+        + "#egg=featup",
     ],
     extras_require={
-        "xformers": ["xformers>=0.0.27.post2", "triton>=3.0.0"],
-        "viz3d": ["pyvista>=0.44.1", "vtk_osmesa<=9.2.1000"],
+        "xformers": ["xformers", "triton"],
+        "viz3d": ["pyvista>=0.44.1", "vtk_osmesa", "ninja"],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
-        "featup": [
-            "featup @ file://"
-            + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp"))
-            + "#egg=featup"
-        ],
     },
     classifiers=[
         "Programming Language :: Python :: 3",

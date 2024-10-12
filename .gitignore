@@ -94,3 +94,5 @@ target/
 
 # Mypy cache
 .mypy_cache/
+
+src/third_party/VTK
