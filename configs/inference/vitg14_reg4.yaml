@@ -1,6 +1,6 @@
 # @package model._name_
 student:
-  arch: vit_giant2
+  arch: vit_small
   patch_size: 14
   layerscale: 1.0e-05
   block_chunks: 0

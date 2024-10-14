@@ -24,7 +24,7 @@ ibot:
 
 student:
   freeze_backbone: true
-  arch: vit_giant2
+  arch: vit_small
   patch_size: 14
   drop_path_rate: 0.4
   layerscale: 1.0e-05

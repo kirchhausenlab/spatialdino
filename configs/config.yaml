@@ -21,14 +21,14 @@ search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
 logging:
   use_wandb: true
   wandb_config:
-    name: pretrain_non_care
+    name: pretrain_care_vits
   log_preds: true
   log_pred_steps: 200
   num_images: 5
 
 train:
   resume: true
-  dataset_path: ${base_path}/llsm_518
+  dataset_path: ${base_path}/care_llsm_518
   path_to_txt: ${train.dataset_path}/train.txt
   output_dir: ${weights_path}/${logging.wandb_config.name}
   search_suffix: ${search_suffix}
@@ -49,7 +49,8 @@ inference:
 
 model:
   # weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
-  weights: ${weights_path}/pretrain_scratch_featup/ckpt_step_136999.pth
+  # weights: ${weights_path}/pretrain_scratch_featup/ckpt_step_136999.pth
+  weights: ""
   dino:
     freeze_head: false
   ibot:
