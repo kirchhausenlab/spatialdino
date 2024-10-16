@@ -1,0 +1,17 @@
+config:
+  base_lr: 2.0e-04 # learning rate for a batch size of 1024
+  lr: 0.0 # will be set after applying scaling rule
+  min_lr: 1.0e-06
+  clip_grad: 3.0
+  scaling_rule: sqrt_wrt_1024
+  patch_embed_lr_mult: 0.2
+  layerwise_decay: 1.0
+  weight_decay: 0.04
+  weight_decay_end: 0.2
+  betas: [0.9, 0.999]
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: ${training.optim.config.base_lr}
+  betas: ${training.optim.config.betas}
+  weight_decay: ${training.optim.config.weight_decay}

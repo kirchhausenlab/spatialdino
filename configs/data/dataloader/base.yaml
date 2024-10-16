@@ -1,0 +1,13 @@
+train_dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 8
+  num_workers: 175
+  pin_memory: true
+  drop_last: true
+  persistent_workers: true
+  shuffle: true
+
+sampler:
+  type: SHARDED_INFINITE
+  size: -1
+  advance: 0
