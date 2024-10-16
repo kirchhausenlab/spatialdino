@@ -34,13 +34,22 @@ setup(
         "hydra-core>=1.3.2",
         "scipy>=1.14.1",
         "scikit-learn>=1.5.2",
+        "ninja",
+        "jupyter",
+        "ipywidgets",
         "featup @ file://"
         + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp"))
         + "#egg=featup",
     ],
     extras_require={
         "xformers": ["xformers", "triton"],
-        "viz3d": ["pyvista>=0.44.1", "vtk_osmesa", "ninja"],
+        "viz3d-cpu": [
+            "pyvista>=0.44.1",
+            "vtk_osmesa",
+            "trame",
+            "trame-vuetify",
+            "trame-vtk",
+        ],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
     },
     classifiers=[

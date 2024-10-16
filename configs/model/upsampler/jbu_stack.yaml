@@ -1,0 +1,3 @@
+type: jbu_stack
+use_norm: true
+weights: ${base_path}/weights/dinov2/featup/jbu_stack_norm.ckpt
