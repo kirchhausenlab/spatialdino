@@ -8,18 +8,18 @@ defaults:
   - logging: wandb
   - data/collate_fn: collate_data_and_cast
   - data/dataloader: base
-  - data/dataset: cell_dataset_2d
-  - data/transforms: dino_2d
+  - data/dataset: cell_dataset_3d
+  - data/transforms: dino_3d
   - _self_
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dinov2_from_scratch
+experiment_name: dinov2p5d_from_scratch
 
 data:
   dataset:
     train_dataset:
-      base_data_dir: ${base_path}/care_llsm_518
+      base_data_dir: ${base_path}/llsm_224_3d_ds
 
 model:
   train:
