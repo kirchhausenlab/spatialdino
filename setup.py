@@ -17,7 +17,6 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "torch<=2.4.1",
-        "torchio",
         "torchvision<=0.19.0",
         "loguru>=0.7.2",
         "numpy>=1.26.3",
@@ -28,7 +27,7 @@ setup(
         "tqdm>=4.64.1",
         "ipython>=8.26.0",
         "loky>=3.4.1",
-        "scikit-image",
+        "tifffile>=2024.8.28",
         "imagecodecs>=2024.6.1",
         "lightning>=2.4.0",
         "wandb>=0.18.1",
@@ -38,10 +37,19 @@ setup(
         "ninja",
         "jupyter",
         "ipywidgets",
+        # "featup @ file://"
+        # + str(WORKING_DIR.joinpath("src", "third_party", "FeatUp"))
+        # + "#egg=featup",
     ],
     extras_require={
         "xformers": ["xformers", "triton"],
-        "pyvista-cpu": ["pyvista[all]", "imageio-ffmpeg"],
+        "viz3d-cpu": [
+            "pyvista>=0.44.1",
+            "vtk_osmesa",
+            "trame",
+            "trame-vuetify",
+            "trame-vtk",
+        ],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
     },
     classifiers=[
