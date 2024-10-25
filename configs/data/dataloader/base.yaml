@@ -1,13 +1,18 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 64
-  num_workers: 175
+  batch_size: 16
+  num_workers: 64
   pin_memory: true
   drop_last: true
   persistent_workers: true
-  shuffle: true
+  shuffle: false
 
 sampler:
-  type: SHARDED_INFINITE
+  sampler_type:
+    _target_: cell_interactome.data.dinov2.dataloaders.SamplerType
+    _args_:
+      - 3
   size: -1
   advance: 0
+  shuffle: true
+  seed: ${seed}
