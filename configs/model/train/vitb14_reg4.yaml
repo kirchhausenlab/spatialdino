@@ -21,13 +21,13 @@ ibot:
     - 0.5
   separate_head: false
   head_n_prototypes: 131072
-  head_bottleneck_dim: 384
+  head_bottleneck_dim: 768
   head_nlayers: 3
   head_hidden_dim: 2048
 
 student:
   freeze_backbone: false
-  arch: vit_small
+  arch: vit_base
   patch_size: 16
   drop_path_rate: 0.4
   layerscale: 1.0e-05
