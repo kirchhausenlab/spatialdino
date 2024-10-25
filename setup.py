@@ -36,6 +36,7 @@ setup(
         "ninja",
         "jupyter",
         "ipywidgets",
+        "",
     ],
     extras_require={
         "xformers": ["xformers", "triton"],
