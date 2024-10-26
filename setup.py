@@ -36,7 +36,7 @@ setup(
         "ninja",
         "jupyter",
         "ipywidgets",
-        "featup @ git+https://github.com/kirchhausenlab/FeatUp.git#egg=featup",
+        "featup @ git+https://github.com/kirchhausenlab/FeatUp.git",
     ],
     extras_require={
         "xformers": ["xformers", "triton"],

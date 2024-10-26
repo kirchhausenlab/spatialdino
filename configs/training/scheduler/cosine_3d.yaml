@@ -4,7 +4,7 @@ config:
 
 schedulers:
   lr:
-    _target_: cell_interactome.utils.dinov2.schedulers.CosineScheduler
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${training.optim.config.lr}
     final_value: ${training.optim.config.min_lr}
     total_iters: ${model.train.max_steps}
@@ -12,19 +12,19 @@ schedulers:
     start_warmup_value: 0
 
   wd:
-    _target_: cell_interactome.utils.dinov2.schedulers.CosineScheduler
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${training.optim.config.weight_decay}
     final_value: ${training.optim.config.weight_decay_end}
     total_iters: ${model.train.max_steps}
 
   momentum:
-    _target_: cell_interactome.utils.dinov2.schedulers.CosineScheduler
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${model.train.teacher.momentum_teacher}
     final_value: ${model.train.teacher.final_momentum_teacher}
     total_iters: ${model.train.max_steps}
 
   teacher_temp:
-    _target_: cell_interactome.utils.dinov2.schedulers.CosineScheduler
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${model.train.teacher.teacher_temp}
     final_value: ${model.train.teacher.teacher_temp}
     total_iters: ${model.train.teacher.warmup_teacher_temp_steps}
@@ -32,7 +32,7 @@ schedulers:
     start_warmup_value: ${model.train.teacher.warmup_teacher_temp}
 
   last_layer_lr:
-    _target_: cell_interactome.utils.dinov2.schedulers.CosineScheduler
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${training.optim.config.lr}
     final_value: ${training.optim.config.lr}
     total_iters: ${training.scheduler.config.freeze_last_layer_steps}

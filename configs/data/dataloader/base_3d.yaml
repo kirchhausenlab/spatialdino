@@ -1,6 +1,6 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 50
+  batch_size: 8
   num_workers: 64
   pin_memory: true
   drop_last: true
@@ -9,7 +9,7 @@ train_dataloader:
 
 sampler:
   sampler_type:
-    _target_: cell_interactome.data.dinov2.dataloaders.SamplerType
+    _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
     _args_:
       - 3
   size: -1
