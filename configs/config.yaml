@@ -24,6 +24,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/${experiment_name}/weights
+    ckpt_dir: ${base_path}/${experiment_name}/weights/step=29.ckpt
+    resume: true
 
 inference:
   save_dir: ${base_path}/${experiment_name}/preds

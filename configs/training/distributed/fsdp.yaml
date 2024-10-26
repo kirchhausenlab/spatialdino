@@ -1,4 +1,9 @@
 use_fp16: true
+sharding_strategy: SHARD_GRAD_OP
+mixed_precision:
+  param_dtype: fp16
+  reduce_dtype: fp16
+  buffer_dtype: fp32
 teacher:
   backbone:
     sharding_strategy: SHARD_GRAD_OP

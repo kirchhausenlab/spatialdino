@@ -1,4 +1,4 @@
-weights: ""
+ckpt_dir: ""
 
 student:
   freeze_backbone: true
