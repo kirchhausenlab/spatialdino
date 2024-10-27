@@ -9,7 +9,7 @@ train_dataloader:
 
 sampler:
   sampler_type:
-    _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
+    _target_: cell_interactome.data.dinov2.dataloaders.SamplerType
     _args_:
       - 3
   size: -1
