@@ -35,6 +35,7 @@ setup(
         "scikit-learn",
         "ninja",
         "jupyter",
+        "ipython",
         "ipywidgets",
         "featup @ git+https://github.com/kirchhausenlab/FeatUp.git",
     ],
