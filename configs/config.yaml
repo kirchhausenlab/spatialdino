@@ -1,15 +1,15 @@
 defaults:
-  - model/upsampler: jbu_stack
+  - model/upsampler: jbu_stack_2d
   - model/train: vits16_reg4
   - model/inference: vits16_reg4
   - training/distributed: fsdp
   - training/optim: adamw
-  - training/scheduler: cosine_2d
+  - training/scheduler: cosine_3d
   - logging: wandb
-  - data/collate_fn: collate_data_and_cast_2d
-  - data/dataloader: base_2d
-  - data/dataset: cell_dataset_2d
-  - data/transforms: dino_2d
+  - data/collate_fn: collate_data_and_cast_3d
+  - data/dataloader: base_3d
+  - data/dataset: cell_dataset_3d
+  - data/transforms: dino_3d
   - _self_
 
 seed: 0
@@ -24,6 +24,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/${experiment_name}/weights
+    ckpt_dir: ""
+    resume: false
 
 inference:
   save_dir: ${base_path}/${experiment_name}/preds
