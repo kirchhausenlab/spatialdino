@@ -1,0 +1,54 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Save files",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "args": [
+        "--save_2d",
+        "--z_flatten_mode",
+        "NONE",
+        "--downsample",
+        "--y_downsample_size",
+        "224",
+        "--x_downsample_size",
+        "224",
+        "--z_chunk_size",
+        "32",
+        "--y_chunk_size",
+        "224",
+        "--x_chunk_size",
+        "224",
+        "--parent_directory",
+        "/nfs/datasync4/tklab-llsm",
+        "--save_path",
+        "/nfs/scratch2/shared_image_recog_ml/llsm_224",
+        "--found_experiments_limit",
+        "20",
+        "--min_tif_files",
+        "20",
+        "--max_workers",
+        "1"
+      ]
+    },
+    {
+      "name": "Train DINO3D",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train/train_dino3d.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "LOCAL_RANK": "0",
+        "RANK": "0",
+        "WORLD_SIZE": "1"
+      }
+    }
+  ]
+}
