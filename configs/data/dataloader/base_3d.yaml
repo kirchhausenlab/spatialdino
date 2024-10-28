@@ -1,8 +1,8 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 32
+  batch_size: 8
   num_workers: 64
-  pin_memory: false
+  pin_memory: true
   drop_last: true
   persistent_workers: true
   shuffle: false

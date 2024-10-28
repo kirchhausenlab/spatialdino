@@ -18,6 +18,7 @@ setup(
     install_requires=[
         "torch<=2.5.0",
         "torchvision<=0.20.0",
+        "zarr",
         "loguru>=0.7.2",
         "numpy>=1.26.3",
         "pandas>=2.2.2",
