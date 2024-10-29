@@ -2,7 +2,7 @@ train_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
   base_data_dir: ""
   path_to_txt: ${data.dataset.train_dataset.base_data_dir}/train.txt
-  search_suffix: "3D/**/*.zarr"
+  search_suffix: "3D/**/*.pth"
   max_files: 1000000
 
 test_dataset:
