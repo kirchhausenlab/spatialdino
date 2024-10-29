@@ -6,7 +6,7 @@ output_dir: "output"
 dino:
   freeze_head: false
   head_n_prototypes: 131072
-  head_bottleneck_dim: 384
+  head_bottleneck_dim: 768
   loss_weight: 1.0
   head_nlayers: 3
   head_hidden_dim: 2048

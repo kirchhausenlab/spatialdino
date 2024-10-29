@@ -1,3 +1,4 @@
 type: jbu_stack
 use_norm: true
-weights: ${base_path}/weights/dinov2/featup/jbu_stack_norm.ckpt
+weights: /nfs/scratch2/shared_image_recog_ml/weights/dinov2/featup_dinov2_good_experiments/checkpoints/jbu_0/ci_dinov2_jbu_stack__attention_crf_0.001_tv_0.0_ent_0.0/nfs/scratch2/shared_image_recog_ml/weights/dinov2/featup_dinov2_good_experiments/checkpoints/jbu_0/ci_dinov2_jbu_stack__attention_crf_0.001_tv_0.0_ent_0.0_43000.ckpt
+# ${base_path}/weights/dinov2/featup/jbu_stack_norm.ckpt

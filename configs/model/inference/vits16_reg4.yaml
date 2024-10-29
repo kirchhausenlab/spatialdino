@@ -1,4 +1,6 @@
 ckpt_dir: ""
+weights: /nfs/scratch2/shared_image_recog_ml/dinov2_good_exp_vitb/weights/step=624999_torch_save.pth
+# /nfs/scratch2/shared_image_recog_ml/weights/dinov2/featup_dinov2_good_experiments/checkpoints/jbu_0/ci_dinov2_jbu_stack__attention_crf_0.001_tv_0.0_ent_0.0/nfs/scratch2/shared_image_recog_ml/weights/dinov2/featup_dinov2_good_experiments/checkpoints/jbu_0/ci_dinov2_jbu_stack__attention_crf_0.001_tv_0.0_ent_0.0_43000.ckpt
 
 student:
   freeze_backbone: true
