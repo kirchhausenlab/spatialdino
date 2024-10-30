@@ -1,13 +1,11 @@
 train_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
   base_data_dir: ""
-  path_to_txt: ${data.dataset.train_dataset.base_data_dir}/train.txt
-  search_suffix: "3D/**/*.pth"
+  path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
   max_files: 1000000
 
 test_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
   base_data_dir: ${data.dataset.train_dataset.base_data_dir}
-  path_to_txt: ${data.dataset.train_dataset.base_data_dir}/test.txt
-  search_suffix: ${data.dataset.train_dataset.search_suffix}
+  path_to_txt: ${data.dataset.train_dataset.path_to_txt}
   max_files: 25000
