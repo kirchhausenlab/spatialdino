@@ -46,6 +46,8 @@ setup(
             "trame",
             "trame-vuetify",
             "trame-vtk",
+            "imageio",
+            "imageio-ffmpeg",
         ],
         "dev": ["pytest>=8.3.2", "ruff>=0.6.2"],
     },

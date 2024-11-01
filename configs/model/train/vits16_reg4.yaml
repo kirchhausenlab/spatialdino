@@ -28,7 +28,7 @@ ibot:
 student:
   freeze_backbone: false
   arch: vit_small
-  in_chans: 1
+  in_chans: 3
   patch_size: 16
   drop_path_rate: 0.4
   layerscale: 1.0e-05
@@ -38,7 +38,7 @@ student:
   ffn_bias: true
   ffn_layer: swiglufused
   num_register_tokens: 4
-  block_chunks: 4
+  block_chunks: 0
   interpolate_antialias: false
   interpolate_offset: 0.1
 
