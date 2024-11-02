@@ -1,10 +1,10 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
   batch_size: 16
-  num_workers: 32 # num cpus / num gpus
-  pin_memory: true
+  num_workers: 8 # workers per GPU
+  pin_memory: false
   drop_last: true
-  persistent_workers: true
+  persistent_workers: false
   shuffle: false
 
 sampler:
