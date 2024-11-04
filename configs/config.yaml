@@ -14,7 +14,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dinov2p5d_from_scratch
+experiment_name: dinov2p5d_from_scratch_pretrained_featup_longer
 
 data:
   dataset:
