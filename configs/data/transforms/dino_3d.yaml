@@ -8,3 +8,4 @@ data_transform:
   local_crops_number: ${model.train.crops.local_crops_number}
   global_crops_size: ${model.train.crops.global_crops_size}
   local_crops_size: ${model.train.crops.local_crops_size}
+  in_chans: ${model.train.student.in_chans}
