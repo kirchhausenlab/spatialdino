@@ -28,7 +28,8 @@ model:
     resume: false
 
 inference:
-  save_dir: /nfs/scratch1/ajain/cell_interactome/scripts/inference 
+  save_dir: /nfs/scratch1/ajain/cell_interactome/scripts/inference
   img_path: /nfs/scratch1/ajain/cell_interactome/scripts/inference/sample.png
+  # /nfs/scratch1/ajain/cell_interactome/scripts/inference/sample.png
 
 device: "cuda:2"

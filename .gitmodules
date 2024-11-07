@@ -1,0 +1,3 @@
+[submodule "src/third_party/lift"]
+	path = src/third_party/lift
+	url = git@github.com:saksham-s/lift.git

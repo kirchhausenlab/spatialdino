@@ -49,6 +49,20 @@
         "RANK": "0",
         "WORLD_SIZE": "1"
       }
+    },
+    {
+      "name": "Run Lift",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/third_party/lift/lift_extractor.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/src/third_party/lift",
+      "args": [
+        "--image_path", "assets/sample.png",
+        "--output_path", "sample.pth",
+        "--model_type", "dino_vits16",
+        "--lift_path", "pretrained/lift_dino_vits16.pth",
+      ],
     }
   ]
 }
