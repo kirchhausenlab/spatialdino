@@ -47,7 +47,8 @@
       "env": {
         "LOCAL_RANK": "0",
         "RANK": "0",
-        "WORLD_SIZE": "1"
+        "WORLD_SIZE": "1",
+        "CUDA_VISIBLE_DEVICES": "1"
       }
     }
   ]
