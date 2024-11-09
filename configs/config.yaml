@@ -14,7 +14,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d
+experiment_name: dino3d_crop
 
 data:
   dataset:
