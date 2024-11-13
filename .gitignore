@@ -1,3 +1,5 @@
+*.pth
+
 .DS_Store
 visuals
 test_images
@@ -73,9 +75,6 @@ target/
 # Pycharm
 .idea
 
-# VS Code
-.vscode/
-
 # Spyder
 .spyproject/
 
@@ -94,3 +93,5 @@ target/
 
 # Mypy cache
 .mypy_cache/
+
+src/third_party/VTK
