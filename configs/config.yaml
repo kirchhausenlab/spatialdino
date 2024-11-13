@@ -1,69 +1,33 @@
 defaults:
-  - model: vitg14_reg4
-  - ddp: fsdp
-  - optim: adamw
-  - train: vitg14_reg4
+  - model/upsampler: jbu_stack_2d
+  - model/train: vits16_reg4
+  - model/inference: vits16_reg4
+  - training/distributed: fsdp
+  - training/optim: adamw
+  - training/scheduler: cosine_3d
   - logging: wandb
-  # - inference: vitg14_reg4
+  - data/collate_fn: collate_data_and_cast_3d
+  - data/dataloader: base_3d
+  - data/dataset: cell_dataset_3d
+  - data/transforms: dino_3d
   - _self_
 
 seed: 0
-device: cuda
 base_path: /nfs/scratch2/shared_image_recog_ml
-weights_path: ${base_path}/weights/dinov2
-TARGET_FILE_EXTENSION: ".pth"
-search_suffix: "2D/**/*${TARGET_FILE_EXTENSION}"
+experiment_name: dino3d_auto_crop_sep_ibot_head
 
-# student:
-#   arch: vit_large
-#   patch_size: 8
-
-logging:
-  use_wandb: true
-  wandb_config:
-    name: pretrain_care_vits
-  log_preds: true
-  log_pred_steps: 200
-  num_images: 5
-
-train:
-  resume: true
-  dataset_path: ${base_path}/care_llsm_518
-  path_to_txt: ${train.dataset_path}/train.txt
-  output_dir: ${weights_path}/${logging.wandb_config.name}
-  search_suffix: ${search_suffix}
-  max_files: 1000000
-  num_workers: 175
-  log_interval: 10
-  load_optim: true
-
-test:
-  dataset_path: ${train.dataset_path}
-  path_to_txt: ${test.dataset_path}/test.txt
-  search_suffix: ${search_suffix}
-  max_files: 25000
-
-inference:
-  img_path: ""
-  save_dir: ${base_path}/preds/dinov2
+data:
+  dataset:
+    train_dataset:
+      base_data_dir: ${base_path}/llsm_3d_ds_auto_crop
+    test_dataset:
+      base_data_dir: ${base_path}/llsm_3d_ds
 
 model:
-  # weights: ${weights_path}/pretrained/dinov2_vitg14_reg4_pretrain_ckpt.pth
-  # weights: ${weights_path}/pretrain_scratch_featup/ckpt_step_136999.pth
-  weights: ""
-  dino:
-    freeze_head: false
-  ibot:
-    freeze_head: false
-    separate_head: false
-  student:
-    freeze_backbone: false
+  train:
+    output_dir: ${base_path}/${experiment_name}/weights
+    ckpt_dir: ""
+    resume: false
 
-featup:
-  upsampler:
-    type: jbu_stack
-    use_norm: true
-    weights: ${weights_path}/featup/jbu_stack_norm.ckpt
-
-evaluation:
-  eval_period_steps: 1000
+inference:
+  save_dir: ${base_path}/${experiment_name}/preds

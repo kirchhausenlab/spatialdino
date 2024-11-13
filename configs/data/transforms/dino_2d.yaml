@@ -1,0 +1,10 @@
+mask_generator:
+  _target_: cell_interactome.data.dinov2.masking.MaskingGenerator
+
+data_transform:
+  _target_: cell_interactome.data.dinov2.augmentations.DataAugmentationDINO
+  global_crops_scale: ${model.train.crops.global_crops_scale}
+  local_crops_scale: ${model.train.crops.local_crops_scale}
+  local_crops_number: ${model.train.crops.local_crops_number}
+  global_crops_size: ${model.train.crops.global_crops_size}
+  local_crops_size: ${model.train.crops.local_crops_size}

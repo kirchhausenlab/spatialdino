@@ -1,6 +1,11 @@
-use_wandb: true
-wandb_config:
+experiment_logger:
+  _target_: cell_interactome.logging.experiment_loggers.WandbExperimentLogger
   project: cell-interactome
-  entity: artificial-intelligence-research 
-  name: null
+  entity: artificial-intelligence-research
+  name: ${experiment_name}
   resume: false
+
+log_interval: 10
+save_interval: 1000
+pred_interval: 200
+num_pred_images: 1 # 5

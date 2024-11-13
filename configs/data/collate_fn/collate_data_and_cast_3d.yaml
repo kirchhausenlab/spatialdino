@@ -1,0 +1,5 @@
+_partial_: true
+_target_: cell_interactome.data.dino3d.collate.collate_data_and_cast
+mask_ratio_tuple: ${model.train.ibot.mask_ratio_min_max}
+mask_probability: ${model.train.ibot.mask_sample_probability}
+dtype: "torch.float16"
