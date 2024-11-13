@@ -24,5 +24,10 @@ teacher:
   warmup_teacher_temp_steps: 37500
 
 crops:
+<<<<<<< HEAD
   global_crops_size: [48, 224, 224]
   local_crops_size: [16, 96, 96]
+=======
+  global_crops_size: 224
+  local_crops_size: 96
+>>>>>>> arkashj/feature/dino2d_good_exp
