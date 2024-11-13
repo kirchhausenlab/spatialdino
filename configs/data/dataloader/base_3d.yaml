@@ -1,10 +1,6 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
-<<<<<<< HEAD:configs/data/dataloader/base_2d.yaml
-  batch_size: 32
-=======
   batch_size: 8
->>>>>>> lavaman131/feature/dino3d:configs/data/dataloader/base_3d.yaml
   num_workers: 64
   pin_memory: true
   drop_last: true
