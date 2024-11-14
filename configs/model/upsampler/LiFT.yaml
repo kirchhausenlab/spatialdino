@@ -14,10 +14,10 @@ model:
   augment: true
   loss_type: cosine
   dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_auto_crop_sep_ibot_head/weights/step=3999.ckpt
-  channel: None
+  in_chans: 1
 
-device: cuda
-num_workers: 32
+device: cuda:1
+num_workers: 8
 dataset:
   transforms:
     brightness: 0.2
