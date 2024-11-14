@@ -35,6 +35,7 @@ setup(
         "hydra-core>=1.3.2",
         "scipy",
         "scikit-learn",
+        "loguru",
         "ninja",
         "jupyter",
         "ipython",
