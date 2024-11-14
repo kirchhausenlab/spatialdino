@@ -9,8 +9,8 @@ model:
   batch_size: 64
   save_every: 1000
   stride: 4
-  patch_size: 16
-  imsize: 448
+  patch_size: 8
+  imsize: [48, 224, 224]
   augment: true
   loss_type: cosine
   dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_auto_crop_sep_ibot_head/weights/step=3999.ckpt
@@ -24,10 +24,26 @@ dataset:
     contrast: 0.2
     saturation: 0.2
     hue: 0.2
-  base_data_dir: ""
-  path_to_txt: ""
-  max_files: 1000
+  base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
+  path_to_txt: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop/data_paths_3D.txt
+  max_files: 1000000
 
 train:
   start_epoch: 0
   epochs: 10000
+
+student:
+  freeze_backbone: false
+  arch: vit_base
+  patch_size: 16
+  drop_path_rate: 0.4
+  layerscale: 1.0e-05
+  drop_path_uniform: true
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  ffn_layer: swiglufused
+  num_register_tokens: 4
+  block_chunks: 0
+  interpolate_antialias: false
+  interpolate_offset: 0.1
