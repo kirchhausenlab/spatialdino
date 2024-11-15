@@ -6,7 +6,7 @@ is_dino3d: true
 
 model:
   lr: 0.0001
-  batch_size: 64
+  batch_size: 16
   save_every: 1000
   stride: 4
   patch_size: 16
@@ -17,7 +17,7 @@ model:
   in_chans: 1
 
 device: cuda:1
-num_workers: 8
+num_workers: 0
 dataset:
   transforms:
     brightness: 0.2
@@ -26,7 +26,7 @@ dataset:
     hue: 0.2
   base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
   path_to_txt: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop/data_paths_3D.txt
-  max_files: 1000000
+  max_files: 100000
 
 train:
   start_epoch: 0

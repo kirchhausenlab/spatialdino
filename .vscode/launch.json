@@ -5,6 +5,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Lift",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train/train_lift.py",
+      "console": "integratedTerminal",
+      "preLaunchTask": "torchrun",
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "Save files",
       "type": "debugpy",
       "request": "launch",
