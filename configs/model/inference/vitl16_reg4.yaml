@@ -24,5 +24,5 @@ teacher:
   warmup_teacher_temp_steps: 37500
 
 crops:
-  global_crops_size: [64, 224, 224]
-  local_crops_size: [32, 96, 96]
+  global_crops_size: [48, 224, 224]
+  local_crops_size: [16, 96, 96]
