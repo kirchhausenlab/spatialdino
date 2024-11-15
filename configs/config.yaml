@@ -1,7 +1,7 @@
 defaults:
   - model/upsampler: jbu_stack_2d
-  - model/train: vitl16_reg4
-  - model/inference: vitl16_reg4
+  - model/train: vits8_reg4
+  - model/inference: vits8_reg4
   - training/distributed: fsdp
   - training/optim: adamw
   - training/scheduler: cosine_3d
