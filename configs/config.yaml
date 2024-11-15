@@ -1,7 +1,7 @@
 defaults:
   - model/upsampler: jbu_stack_2d
-  - model/train: vits16_reg4
-  - model/inference: vits16_reg4
+  - model/train: vitb8_reg4
+  - model/inference: vitb8_reg4
   - training/distributed: fsdp
   - training/optim: adamw
   - training/scheduler: cosine_3d
@@ -14,7 +14,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_auto_crop_sep_ibot_head
+experiment_name: dino3d_vitb8_reg4
 
 data:
   dataset:
