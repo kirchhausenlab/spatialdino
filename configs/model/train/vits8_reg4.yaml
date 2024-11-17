@@ -19,7 +19,7 @@ ibot:
   mask_ratio_min_max:
     - 0.1
     - 0.5
-  separate_head: true
+  separate_head: false
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
