@@ -53,6 +53,7 @@ student:
   interpolate_antialias: false
   interpolate_offset: 0.1
 
+experiment_name: LiFT
 experiment_logger:
   _target_: cell_interactome.logging.experiment_loggers.WandbExperimentLogger
   project: cell-interactome
