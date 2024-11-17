@@ -20,7 +20,7 @@ model:
     ckpt_path: ""
     resume: false
 
-num_workers: 8
+num_workers: 32
 dataset:
   transforms:
     brightness: 0.2
