@@ -6,8 +6,7 @@ is_dino3d: true
 
 model:
   lr: 0.0001
-  batch_size: 16
-  save_every: 1000
+  batch_size: 64
   stride: 4
   embed_dim: 1024
   patch_size: 16
@@ -16,9 +15,13 @@ model:
   loss_type: cosine
   dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_auto_crop_sep_ibot_head/weights/step=3999.pth
   in_chans: 1
+  train:
+    output_dir: ${output_dir}/weights
+    ckpt_path: ""
+    resume: false
 
 device: cuda:1
-num_workers: 0
+num_workers: 8
 dataset:
   transforms:
     brightness: 0.2
@@ -32,6 +35,7 @@ dataset:
 train:
   start_epoch: 0
   epochs: 10000
+  max_steps: 625000
 
 student:
   freeze_backbone: false
@@ -49,3 +53,17 @@ student:
   block_chunks: 0
   interpolate_antialias: false
   interpolate_offset: 0.1
+
+experiment_logger:
+  _target_: cell_interactome.logging.experiment_loggers.WandbExperimentLogger
+  project: cell-interactome
+  entity: artificial-intelligence-research
+  name: ${experiment_name}
+  resume: false
+
+logging:
+  log_interval: 10
+  save_interval: 1000
+  pred_interval: 10
+  num_pca_images: 8
+  num_pred_images: 1
