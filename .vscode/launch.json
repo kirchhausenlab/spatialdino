@@ -5,15 +5,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Lift",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/scripts/train/train_lift.py",
-      "console": "integratedTerminal",
-      "preLaunchTask": "torchrun",
-      "cwd": "${workspaceFolder}"
-    },
-    {
       "name": "Save files",
       "type": "debugpy",
       "request": "launch",
@@ -47,6 +38,20 @@
         "--max_workers",
         "1"
       ]
+    },
+    {
+      "name": "Lift",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train/train_lift.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "LOCAL_RANK": "0",
+        "RANK": "0",
+        "WORLD_SIZE": "1",
+        "CUDA_VISIBLE_DEVICES": "2"
+      }
     },
     {
       "name": "Train DINO3D",

@@ -20,7 +20,6 @@ model:
     ckpt_path: ""
     resume: false
 
-device: cuda:1
 num_workers: 8
 dataset:
   transforms:
@@ -67,3 +66,13 @@ logging:
   pred_interval: 10
   num_pca_images: 8
   num_pred_images: 1
+
+sampler:
+  sampler_type:
+    _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
+    _args_:
+      - 3
+  size: -1
+  advance: 0
+  shuffle: true
+  seed: ${seed}
