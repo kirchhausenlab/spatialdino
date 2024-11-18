@@ -93,5 +93,6 @@ target/
 
 # Mypy cache
 .mypy_cache/
+.pytest_cache/
 
 src/third_party/VTK
