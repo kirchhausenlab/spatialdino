@@ -10,7 +10,7 @@ dino:
   loss_weight: 1.0
   head_nlayers: 3
   head_hidden_dim: 2048
-  koleo_loss_weight: 0.0 # 0.1
+  koleo_loss_weight: 0.1
 
 ibot:
   freeze_head: false

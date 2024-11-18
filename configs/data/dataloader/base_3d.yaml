@@ -1,6 +1,6 @@
 train_dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 9
+  batch_size: 8
   num_workers: 8 # workers per GPU
   pin_memory: false
   drop_last: true
