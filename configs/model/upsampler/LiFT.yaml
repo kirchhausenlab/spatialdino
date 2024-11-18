@@ -74,11 +74,11 @@ data:
       _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
       base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
       path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
-      max_files: 1000000
+      max_files: 500000
   dataloader:
     train_dataloader:
       _target_: torch.utils.data.DataLoader
-      batch_size: 16
+      batch_size: 8
       num_workers: 8 # workers per GPU
       pin_memory: false
       drop_last: true
