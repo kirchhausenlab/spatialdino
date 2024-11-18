@@ -19,33 +19,17 @@ ibot:
   mask_ratio_min_max:
     - 0.1
     - 0.5
-<<<<<<< HEAD
   separate_head: true
-=======
-  separate_head: false
->>>>>>> arkashj/feature/dino2d_good_exp
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
   head_hidden_dim: 2048
 
 student:
-<<<<<<< HEAD
   freeze_backbone: false
   arch: vit_small
   in_chans: 1
-  patch_size: 16
-=======
-<<<<<<<< HEAD:configs/model/train/vits16_reg4.yaml
-  freeze_backbone: false
-  arch: vit_small
-  patch_size: 16
-========
-  freeze_backbone: true
-  arch: vit_small
-  patch_size: 14
->>>>>>>> arkashj/feature/dino2d_good_exp:configs/model/vitg14_reg4.yaml
->>>>>>> arkashj/feature/dino2d_good_exp
+  patch_size: 8
   drop_path_rate: 0.4
   layerscale: 1.0e-05
   drop_path_uniform: true
@@ -54,14 +38,7 @@ student:
   ffn_bias: true
   ffn_layer: swiglufused
   num_register_tokens: 4
-<<<<<<< HEAD
   block_chunks: 0
-=======
-  block_chunks: 4
->>>>>>> arkashj/feature/dino2d_good_exp
-  interpolate_antialias: false
-  interpolate_offset: 0.1
-
 teacher:
   momentum_teacher: 0.994
   final_momentum_teacher: 1
@@ -77,13 +54,8 @@ crops:
   local_crops_scale:
     - 0.05
     - 0.32
-<<<<<<< HEAD
   global_crops_size: [48, 224, 224]
   local_crops_size: [16, 96, 96]
-=======
-  global_crops_size: [224, 224]
-  local_crops_size: [96, 96]
->>>>>>> arkashj/feature/dino2d_good_exp
 
 centering: sinkhorn_knopp
 

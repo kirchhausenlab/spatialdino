@@ -40,6 +40,23 @@
       ]
     },
     {
+      "name": "Lift",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train/train_lift.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "LOCAL_RANK": "0",
+        "RANK": "0",
+        "WORLD_SIZE": "1",
+        "CUDA_VISIBLE_DEVICES": "2",
+        "MASTER_PORT": "5001",
+        "MASTER_ADDR": "10.1.0.11"
+      }
+    },
+    {
       "name": "Train DINO3D",
       "type": "debugpy",
       "request": "launch",
@@ -50,7 +67,9 @@
         "LOCAL_RANK": "0",
         "RANK": "0",
         "WORLD_SIZE": "1",
-        "CUDA_VISIBLE_DEVICES": "1"
+        "CUDA_VISIBLE_DEVICES": "2",
+        "MASTER_PORT": "1234",
+        "MASTER_ADDR": "10.1.0.11"
       }
     }
   ]

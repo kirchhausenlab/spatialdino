@@ -1,0 +1,95 @@
+seed: 42
+output_base: /nfs/scratch2/shared_image_recog_ml/
+output_dir: ${output_base}/LiFT
+model_type: dino3d
+is_dino3d: true
+
+training:
+  optim:
+    config:
+      lr: 0.0
+      base_lr: 1.0e-03
+  start_epoch: 0
+  max_steps: 200000
+
+model:
+  stride: 2
+  embed_dim: 384
+  patch_size: 8
+  imsize: [64, 256, 256]
+  loss_type: cosine
+  dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_vits8_reg4/weights/'step=24999.ckpt'
+  in_chans: 1
+  train:
+    output_dir: ${output_dir}/weights
+    ckpt_path: ""
+    resume: false
+
+train:
+
+student:
+  arch: vit_small
+  in_chans: 1
+  patch_size: 8
+  drop_path_rate: 0.4
+  layerscale: 1.0e-05
+  drop_path_uniform: true
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  ffn_layer: swiglufused
+  num_register_tokens: 4
+  block_chunks: 0
+  interpolate_antialias: false
+  interpolate_offset: 0.1
+
+experiment_name: LiFT
+experiment_logger:
+  _target_: cell_interactome.logging.experiment_loggers.WandbExperimentLogger
+  project: cell-interactome
+  entity: artificial-intelligence-research
+  name: ${experiment_name}
+  resume: false
+
+logging:
+  log_interval: 10
+  save_interval: 1000
+  pred_interval: 10
+  num_pca_images: 8
+  num_pred_images: 1
+
+sampler:
+  sampler_type:
+    _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
+    _args_:
+      - 2
+  size: -1
+  advance: 0
+  shuffle: true
+  seed: ${seed}
+
+data:
+  dataset:
+    train_dataset:
+      _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
+      base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
+      path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
+      max_files: 1000000
+  dataloader:
+    train_dataloader:
+      _target_: torch.utils.data.DataLoader
+      batch_size: 16
+      num_workers: 8 # workers per GPU
+      pin_memory: false
+      drop_last: true
+      persistent_workers: false
+      shuffle: false
+    sampler:
+      sampler_type:
+        _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
+        _args_:
+          - 2
+      size: -1
+      advance: 0
+      shuffle: true
+      seed: ${seed}
