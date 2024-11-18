@@ -9,15 +9,16 @@ training:
     config:
       lr: 0.0
       base_lr: 1.0e-03
+  start_epoch: 0
+  max_steps: 200000
 
 model:
-  batch_size: 128
-  stride: 4
+  stride: 2
   embed_dim: 384
   patch_size: 8
   imsize: [64, 256, 256]
   loss_type: cosine
-  dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_auto_crop_sep_ibot_head/weights/step=3999.pth
+  dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_vits8_reg4/weights/'step=24999.ckpt'
   in_chans: 1
   train:
     output_dir: ${output_dir}/weights
@@ -25,9 +26,6 @@ model:
     resume: false
 
 train:
-  start_epoch: 0
-  epochs: 10000
-  max_steps: 625000
 
 student:
   arch: vit_small
@@ -70,25 +68,17 @@ sampler:
   shuffle: true
   seed: ${seed}
 
-train_dataloader:
-  _target_: torch.utils.data.DataLoader
-  batch_size: 8
-  num_workers: 8 # workers per GPU
-  pin_memory: false
-  drop_last: true
-  persistent_workers: false
-  shuffle: false
-
 data:
-  train_dataset:
-    _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
-    base_data_dir: ""
-    path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
-    max_files: 1000000
+  dataset:
+    train_dataset:
+      _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
+      base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
+      path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
+      max_files: 1000000
   dataloader:
     train_dataloader:
       _target_: torch.utils.data.DataLoader
-      batch_size: 8
+      batch_size: 64
       num_workers: 16 # workers per GPU
       pin_memory: false
       drop_last: true
