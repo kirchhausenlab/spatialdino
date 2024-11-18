@@ -1,11 +1,10 @@
-experiment_logger:
-  _target_: cell_interactome.logging.experiment_loggers.WandbExperimentLogger
-  project: cell-interactome
-  entity: artificial-intelligence-research
-  name: ${experiment_name}
-  resume: false
+project: cell-interactome
+entity: artificial-intelligence-research
+name: ${experiment_name}
+resume: false
 
 log_interval: 10
+log_grad_interval: 100
 save_interval: 1000
 pred_interval: 200
 num_pca_images: 8
