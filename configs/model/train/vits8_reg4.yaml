@@ -1,6 +1,5 @@
 ckpt_dir: ""
 resume: false
-load_optim: true
 output_dir: "output"
 
 dino:
