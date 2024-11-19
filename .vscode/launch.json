@@ -60,14 +60,18 @@
       "name": "Train DINO3D",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/train/train_dino3d.py",
+      "module": "torch.distributed.launch",
       "console": "integratedTerminal",
       "justMyCode": false,
+      "args": [
+        "--use_env",
+        "--nproc_per_node=2",
+        "${workspaceFolder}/scripts/train/train_dino3d.py"
+      ],
       "env": {
-        "LOCAL_RANK": "0",
-        "RANK": "0",
-        "WORLD_SIZE": "1",
-        "CUDA_VISIBLE_DEVICES": "2",
+        "NODE_RANK": "0",
+        "WORLD_SIZE": "2",
+        "CUDA_VISIBLE_DEVICES": "4,5",
         "MASTER_PORT": "1234",
         "MASTER_ADDR": "10.1.0.11"
       }
