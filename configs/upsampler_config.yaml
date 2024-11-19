@@ -47,7 +47,7 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 10
+  pred_interval: 100
   num_pca_images: 8
   num_pred_images: 1
   project: cell-interactome
@@ -72,6 +72,11 @@ data:
       base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
       path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
       max_files: 500000
+    test_dataset:
+      _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
+      base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds
+      path_to_txt: ${data.dataset.test_dataset.base_data_dir}/data_paths_3D.txt
+      max_files: 25000
   dataloader:
     train_dataloader:
       _target_: torch.utils.data.DataLoader

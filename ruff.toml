@@ -58,7 +58,6 @@ docstring-code-line-length = "dynamic"
 # Set the line length limit used when formatting code snippets indocstring-code-format = false
 # docstrings.
 # extend pyproject.toml for requires-python (workaround astral-sh/ruff#10299)
-extend = "pyproject.toml"
 
 [lint.isort]
 combine-as-imports = true
