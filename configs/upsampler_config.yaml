@@ -47,7 +47,7 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 100
+  pred_interval: 5
   num_pca_images: 8
   num_pred_images: 1
   project: cell-interactome
