@@ -1,3 +1,8 @@
+defaults:
+  - data/dataloader: base_web_3d # base_3d
+  - data/dataset: cell_web_dataset_3d # cell_dataset_3d
+  - _self_
+
 seed: 42
 output_base: /nfs/scratch2/shared_image_recog_ml/
 output_dir: ${output_base}/LiFT
@@ -47,7 +52,7 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 5
+  pred_interval: 200
   num_pca_images: 8
   num_pred_images: 1
   project: cell-interactome
@@ -68,30 +73,6 @@ sampler:
 data:
   dataset:
     train_dataset:
-      _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
-      base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop
-      path_to_txt: ${data.dataset.train_dataset.base_data_dir}/data_paths_3D.txt
-      max_files: 500000
+      base_data_dir: "${output_base}/llsm_3d_ds_auto_crop_sharded_tmp/dataset-000000.tar"
     test_dataset:
-      _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
       base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds
-      path_to_txt: ${data.dataset.test_dataset.base_data_dir}/data_paths_3D.txt
-      max_files: 25000
-  dataloader:
-    train_dataloader:
-      _target_: torch.utils.data.DataLoader
-      batch_size: 8
-      num_workers: 8 # workers per GPU
-      pin_memory: false
-      drop_last: true
-      persistent_workers: false
-      shuffle: false
-    sampler:
-      sampler_type:
-        _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
-        _args_:
-          - 2
-      size: -1
-      advance: 0
-      shuffle: true
-      seed: ${seed}
