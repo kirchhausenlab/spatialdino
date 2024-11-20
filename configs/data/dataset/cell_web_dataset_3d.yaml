@@ -4,9 +4,9 @@ train_dataset:
   resampled: true
   shardshuffle: true
   cache_dir: null
-  nodesplitter:
-    _partial_: true
-    _target_: webdataset.split_by_node
+  # nodesplitter:
+  #   _partial_: true
+  #   _target_: webdataset.split_by_node
 
 test_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D

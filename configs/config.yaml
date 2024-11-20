@@ -18,7 +18,7 @@ experiment_name: dino3d_vits8_reg4
 data:
   dataset:
     train_dataset:
-      base_data_dir: "${base_path}/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000005}.tar" # "${base_path}/llsm_3d_ds_auto_crop"
+      base_data_dir: "${base_path}/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000534}.tar" # "${base_path}/llsm_3d_ds_auto_crop"
     test_dataset:
       base_data_dir: ${base_path}/llsm_3d_ds
 
