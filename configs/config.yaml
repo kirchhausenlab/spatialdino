@@ -24,9 +24,9 @@ data:
 
 model:
   train:
-    output_dir: ${base_path}/${experiment_name}/weights
+    output_dir: ${base_path}/weights/${experiment_name}
     ckpt_dir: ""
     resume: false
 
 inference:
-  save_dir: ${base_path}/${experiment_name}/preds
+  save_dir: ${base_path}/preds/${experiment_name}
