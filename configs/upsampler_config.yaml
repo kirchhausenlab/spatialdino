@@ -10,6 +10,8 @@ model_type: dino3d
 is_dino3d: true
 
 training:
+  use_additional_params: True
+  add_scheduler: True
   optim:
     config:
       lr: 0.0
@@ -18,10 +20,10 @@ training:
       weight_decay: 1e-06
       scheduler:
         mode: min
-        patience: 1000
+        patience: 500
         factor: 0.3
         threshold_mode: "rel"
-        cooldown: 100
+        cooldown: 20
         min_lr: 1.0e-06
   start_epoch: 0
   max_steps: 200000
