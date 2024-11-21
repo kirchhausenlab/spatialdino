@@ -52,7 +52,7 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 200
+  pred_interval: 100 # 250
   num_pca_images: 8
   num_pred_images: 1
   project: cell-interactome
@@ -73,6 +73,6 @@ sampler:
 data:
   dataset:
     train_dataset:
-      base_data_dir: "${output_base}/llsm_3d_ds_auto_crop_sharded_tmp/dataset-000000.tar"
+      base_data_dir: "${output_base}/llsm_3d_ds_auto_crop_sharded_tmp/dataset-{000000..000000}.tar"
     test_dataset:
       base_data_dir: /nfs/scratch2/shared_image_recog_ml/llsm_3d_ds
