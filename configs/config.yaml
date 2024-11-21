@@ -16,13 +16,12 @@ base_path: /nfs/scratch2/shared_image_recog_ml
 experiment_name: dino3d_vits8_reg4
 
 data:
+  chunk_1: "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000119}.tar"
+  chunk_2: "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000120..000239}.tar"
+  chunk_3: "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000240..000360}.tar"
   dataset:
     train_dataset:
-      base_data_dir:
-        [
-          "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000180}.tar",
-          "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000181..000360}.tar",
-        ]
+      base_data_dir: ${data.chunk_1}::${data.chunk_2}::${data.chunk_3}
     test_dataset:
       base_data_dir: ${base_path}/llsm_3d_ds
 
