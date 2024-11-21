@@ -51,9 +51,9 @@ student:
 
 experiment_name: LiFT
 logging:
-  log_interval: 25
+  log_interval: 10
   save_interval: 1000
-  pred_interval: 250 # 250
+  pred_interval: 200 # 250
   num_pca_images: 8
   num_pred_images: 1
   project: cell-interactome
@@ -62,9 +62,9 @@ logging:
   resume: false
 
 data:
-  chunk_1: "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000120}.tar"
-  chunk_2: "/nfs/scratch1/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000121..000240}.tar"
-  chunk_3: "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000241..000360}.tar"
+  chunk_1: "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000119}.tar"
+  chunk_2: "/nfs/scratch1/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000120..000239}.tar"
+  chunk_3: "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000240..000359}.tar"
   dataset:
     train_dataset:
       base_data_dir: ${data.chunk_1}::${data.chunk_2}::${data.chunk_3}
