@@ -1,10 +1,9 @@
 train_dataloader:
   _target_: webdataset.WebLoader
-  batch_size: 8
-  num_workers: 8 # workers per GPU
+  batch_size: null
+  num_workers: 32 # workers per GPU
   pin_memory: true
-  drop_last: true
-  persistent_workers: false
+  persistent_workers: true
   shuffle: false
 
 sampler:
