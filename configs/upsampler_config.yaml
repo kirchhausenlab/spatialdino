@@ -23,6 +23,7 @@ training:
         patience: 500
         factor: 0.3
         threshold_mode: "rel"
+        threshold: 0.3
         cooldown: 20
         min_lr: 1.0e-06
   start_epoch: 0
