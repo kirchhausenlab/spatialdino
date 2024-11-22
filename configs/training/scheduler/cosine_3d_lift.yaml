@@ -1,0 +1,26 @@
+config:
+  freeze_last_layer_steps: 1250
+  warmup_steps: 8000
+
+schedulers:
+  lr:
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
+    base_value: ${training.optim.config.lr}
+    final_value: ${training.optim.config.min_lr}
+    total_iters: ${model.train.max_steps}
+    warmup_iters: ${training.scheduler.config.warmup_steps}
+    start_warmup_value: 0
+
+  wd:
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
+    base_value: ${training.optim.config.weight_decay}
+    final_value: ${training.optim.config.weight_decay_end}
+    total_iters: ${model.train.max_steps}
+
+  last_layer_lr:
+    _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
+    base_value: ${training.optim.config.lr}
+    final_value: ${training.optim.config.lr}
+    total_iters: ${training.scheduler.config.freeze_last_layer_steps}
+    warmup_iters: ${training.scheduler.config.freeze_last_layer_steps}
+    start_warmup_value: 0

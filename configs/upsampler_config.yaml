@@ -1,6 +1,8 @@
 defaults:
   - data/dataloader: base_web_3d # base_3d
   - data/dataset: cell_web_dataset_3d # cell_dataset_3d
+  - training/optim: adopt
+  - training/scheduler: cosine_3d
   - _self_
 
 seed: 42
@@ -27,7 +29,7 @@ training:
         cooldown: 20
         min_lr: 1.0e-06
   start_epoch: 0
-  max_steps: 200000
+  max_steps: 100000
 
 model:
   display_lr_feats: True
