@@ -36,7 +36,7 @@ model:
   patch_size: 8
   imsize: [64, 256, 256]
   loss_type: cosine
-  dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_vits8_reg4/weights/'step=24999.ckpt'
+  dataroot: /nfs/scratch2/shared_image_recog_ml/dino3d_vits8_reg4/weights/44999_ckpt
   in_chans: 1
   train:
     output_dir: ${output_dir}/weights
