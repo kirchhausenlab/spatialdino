@@ -8,7 +8,7 @@ train_dataset:
   cache_dir: null
   nodesplitter:
     _partial_: true
-    _target_: webdataset.split_by_node
+    _target_: webdataset.split_by_worker
 
 test_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
