@@ -17,7 +17,9 @@ experiment_name: dino3d_vits8_reg4
 
 data:
   shards:
-    - "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded_v2/dataset-{000000..001951}.tar"
+    - "/nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000119}.tar"
+    - "/nfs/scratch1/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000120..000239}.tar"
+    - "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000240..000360}.tar"
   dataset:
     train_dataset:
       base_data_dir: ${data.shards}
