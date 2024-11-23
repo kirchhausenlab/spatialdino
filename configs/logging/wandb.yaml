@@ -4,8 +4,8 @@ name: ${experiment_name}
 resume: false
 
 log_interval: 10
-log_grad_interval: 100
-save_interval: 10
+log_grad_interval: 200
+save_interval: 2000
 pred_interval: 200
 num_pca_images: 8
 num_pred_images: 1

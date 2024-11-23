@@ -5,7 +5,6 @@ train_dataset:
   resampled: true
   shardshuffle: true
   repeat: true
-  local_dir: true
   cache_dir: null
   nodesplitter:
     _partial_: true
