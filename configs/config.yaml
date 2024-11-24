@@ -6,8 +6,8 @@ defaults:
   - training/scheduler: cosine_3d
   - logging: wandb
   - data/collate_fn: collate_data_and_cast_3d
-  - data/dataloader: base_web_3d # base_3d
-  - data/dataset: cell_web_dataset_3d # cell_dataset_3d
+  - data/dataloader: base_3d
+  - data/dataset: cell_zarr_dataset_3d
   - data/transforms: dino_3d
   - _self_
 
@@ -18,9 +18,9 @@ experiment_name: dino3d_vits8_reg4
 data:
   dataset:
     train_dataset:
-      base_data_dir: "./data/config.yaml"
+      base_data_dir: ${base_path}/llsm_3d_ds_auto_crop
     test_dataset:
-      base_data_dir: ${base_path}/llsm_3d_ds
+      base_data_dir: ${base_path}/llsm_3d_ds_auto_crop
 
 model:
   train:
