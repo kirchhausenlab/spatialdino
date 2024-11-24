@@ -1,4 +1,2 @@
 datasets:
-  - shards: http://tkl1:8001//nfs/scratch/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000000..000119}.tar
-  - shards: http://tkl1:8001//nfs/scratch1/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000120..000239}.tar
-  - shards: http://tkl1:8001//nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded/dataset-{000240..000360}.tar
+  - shards: /nfs/scratch1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..002273}.tar
