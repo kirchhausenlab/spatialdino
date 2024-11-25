@@ -4,6 +4,7 @@ train_dataset:
   max_files: 1000000
 
 test_dataset:
-  _target_: cell_interactome.data.dino3d.dataset.CellZarrDataset3D
+  _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
   base_data_dir: ""
-  max_files: 10000
+  path_to_txt: ${data.dataset.test_dataset.base_data_dir}/data_paths_3D.txt
+  max_files: 25000
