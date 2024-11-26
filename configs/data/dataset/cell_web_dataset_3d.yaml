@@ -2,13 +2,10 @@ train_dataset:
   _target_: cell_interactome.data.dino3d.dataset.make_webdataset
   base_data_dir: ""
   batch_size: 8
-  resampled: true
-  shardshuffle: true
-  repeat: true
-  cache_dir: null
   nodesplitter:
     _partial_: true
-    _target_: webdataset.split_by_node
+    _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
+    node_file_counts: []
 
 test_dataset:
   _target_: cell_interactome.data.dino3d.dataset.CellDataset3D

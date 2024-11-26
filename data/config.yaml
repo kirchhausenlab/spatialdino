@@ -1,4 +1,0 @@
-datasets:
-  - shards: /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{}.tar
-  - shards: /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{}.tar
-  - shards: /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{}.tar

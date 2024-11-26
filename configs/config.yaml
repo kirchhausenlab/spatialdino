@@ -12,13 +12,19 @@ defaults:
   - _self_
 
 seed: 0
-base_path: /nfs/scratch1/shared_image_recog_ml
+base_path: /nfs/scratch2/shared_image_recog_ml
 experiment_name: dino3d_vits8_reg4
 
 data:
   dataset:
+    shards:
+      - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+      - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+      - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
     train_dataset:
-      base_data_dir: "./data/config.yaml"
+      base_data_dir: "${data.dataset.shards[0]}::${data.dataset.shards[1]}::${data.dataset.shards[2]}"
+      nodesplitter:
+        node_file_counts: [869, 779, 769]
     test_dataset:
       base_data_dir: ${base_path}/llsm_3d_ds
 
