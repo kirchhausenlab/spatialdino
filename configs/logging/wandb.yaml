@@ -7,5 +7,5 @@ log_interval: 10
 log_grad_interval: 500
 save_interval: 8000
 pred_interval: 500
-num_pca_images: 8
+num_pca_images: 4
 num_pred_images: 1
