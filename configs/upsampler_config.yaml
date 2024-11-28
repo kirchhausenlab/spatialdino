@@ -2,7 +2,7 @@ defaults:
   - data/dataloader: base_web_3d # base_3d
   - data/dataset: cell_web_dataset_3d # cell_dataset_3d
   - training/optim: adopt
-  - training/scheduler: cosine_3d
+  - training/scheduler: cosine_3d_lift
   - _self_
 
 seed: 42
@@ -14,20 +14,6 @@ is_dino3d: true
 training:
   use_additional_params: False
   add_scheduler: False
-  optim:
-    config:
-      lr: 0.0
-      base_lr: 1.0e-04
-      amsgrad: True
-      weight_decay: 1e-06
-      scheduler:
-        mode: min
-        patience: 500
-        factor: 0.3
-        threshold_mode: "rel"
-        threshold: 0.3
-        cooldown: 20
-        min_lr: 1.0e-06
   start_epoch: 0
   max_steps: 100000
 
@@ -45,8 +31,7 @@ model:
     output_dir: ${output_dir}/weights
     ckpt_path: ""
     resume: false
-
-train:
+    max_steps: ${training.max_steps}
 
 student:
   arch: vit_small
