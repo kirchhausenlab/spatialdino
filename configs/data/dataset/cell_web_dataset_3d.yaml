@@ -5,8 +5,7 @@ train_dataset:
   shuffle_buffer_size: 750
   nodesplitter:
     _partial_: true
-    _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
-    node_file_counts: []
+    _target_: webdataset.split_by_node
 
 test_dataset:
   _target_: cell_interactome.data.dino3d.dataset.make_webdataset
