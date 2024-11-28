@@ -1,5 +1,5 @@
 config:
-  base_lr: 2.0e-04
+  base_lr: 1.0e-04
   lr: 0.0 # will be set after applying scaling rule from base_lr
   min_lr: 1.0e-06
   clip_grad: 3.0

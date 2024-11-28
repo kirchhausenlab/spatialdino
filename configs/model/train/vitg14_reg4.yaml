@@ -1,7 +1,5 @@
 ckpt_dir: ""
 resume: false
-load_optim: true
-max_ckpt_to_keep: 3
 output_dir: "output"
 
 dino:
@@ -20,7 +18,7 @@ ibot:
   mask_ratio_min_max:
     - 0.1
     - 0.5
-  separate_head: true
+  separate_head: true # false
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
@@ -28,9 +26,9 @@ ibot:
 
 student:
   freeze_backbone: false
-  arch: vit_large
+  arch: vit_giant2
   in_chans: 1
-  patch_size: 16
+  patch_size: 14
   drop_path_rate: 0.4
   layerscale: 1.0e-05
   drop_path_uniform: true
@@ -58,8 +56,8 @@ crops:
   local_crops_scale:
     - 0.05
     - 0.32
-  global_crops_size: [48, 224, 224]
-  local_crops_size: [16, 96, 96]
+  global_crops_size: [42, 224, 224]
+  local_crops_size: [14, 98, 98]
 
 centering: sinkhorn_knopp
 
