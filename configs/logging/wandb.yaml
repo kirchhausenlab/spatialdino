@@ -4,7 +4,6 @@ name: ${experiment_name}
 resume: false
 
 log_interval: 10
-save_interval: 8000
-pred_interval: 1000
+eval_interval: 5000
 num_pca_images: 4
 num_pred_images: 1

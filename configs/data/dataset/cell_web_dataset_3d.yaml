@@ -2,13 +2,17 @@ train_dataset:
   _target_: cell_interactome.data.dino3d.dataset.make_webdataset
   base_data_dir: ""
   batch_size: 8
+  shuffle_buffer_size: 750
   nodesplitter:
     _partial_: true
     _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
     node_file_counts: []
 
 test_dataset:
-  _target_: cell_interactome.data.dino3d.dataset.CellDataset3D
+  _target_: cell_interactome.data.dino3d.dataset.make_webdataset
   base_data_dir: ""
-  path_to_txt: ${data.dataset.test_dataset.base_data_dir}/data_paths_3D.txt
-  max_files: 25000
+  batch_size: ${logging.num_pca_images}
+  shuffle_buffer_size: 0
+  nodesplitter:
+    _partial_: true
+    _target_: webdataset.split_by_worker

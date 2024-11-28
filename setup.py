@@ -35,7 +35,8 @@ setup(
         "jupyter==1.1.1",
         "ipython==8.28.0",
         "ipywidgets==8.1.5",
-        "zarr",
+        "fvcore",
+        "webdataset",
     ],
     extras_require={
         "xformers": ["xformers", "triton"],

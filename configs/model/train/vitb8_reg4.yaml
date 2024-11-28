@@ -1,5 +1,6 @@
 ckpt_dir: ""
 resume: false
+max_ckpt_to_keep: 3
 output_dir: "output"
 
 dino:

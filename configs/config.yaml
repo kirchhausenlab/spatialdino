@@ -5,34 +5,38 @@ defaults:
   - training/optim: adopt
   - training/scheduler: cosine_3d
   - logging: wandb
-  - data/collate_fn: collate_data_and_cast_3d
+  - data/collate_fn: collate_3d
   - data/dataloader: base_web_3d
   - data/dataset: cell_web_dataset_3d
   - data/transforms: dino_3d
   - _self_
 
 seed: 0
-base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg4_higher_lr
+base_path: /raid1/shared_image_recog_ml
+experiment_name: dino3d_vits8_reg4
+
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+  test:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
 
 data:
   dataset:
-    shards:
-      - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
-      - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
-      - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
     train_dataset:
-      base_data_dir: "${data.dataset.shards[0]}::${data.dataset.shards[1]}::${data.dataset.shards[2]}"
+      base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
       nodesplitter:
         node_file_counts: [869, 779, 769]
     test_dataset:
-      base_data_dir: ${base_path}/llsm_3d_ds
+      base_data_dir: ${shards.test[0]}
 
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: ""
-    resume: false
+    ckpt_dir: ${model.train.output_dir}
+    resume: true
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}

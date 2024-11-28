@@ -6,6 +6,14 @@ train_dataloader:
   persistent_workers: true
   shuffle: false
 
+test_dataloader:
+  _target_: webdataset.WebLoader
+  batch_size: null
+  num_workers: 8 # workers per GPU
+  pin_memory: true
+  persistent_workers: true
+  shuffle: false
+
 sampler:
   sampler_type:
     _target_: cell_interactome.data.dino3d.dataloaders.SamplerType
