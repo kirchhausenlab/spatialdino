@@ -12,8 +12,8 @@ defaults:
   - _self_
 
 seed: 0
-base_path: /raid1/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg4
+base_path: /nfs/scratch2/shared_image_recog_ml
+experiment_name: dino3d_vits8_reg4_v2
 
 shards:
   train:
@@ -35,8 +35,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: ${model.train.output_dir}
-    resume: true
+    ckpt_dir: "" # ${model.train.output_dir}
+    resume: false # true
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}
