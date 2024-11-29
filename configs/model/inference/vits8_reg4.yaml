@@ -17,6 +17,7 @@ student:
   interpolate_offset: 0.1
 
 teacher:
+  weights_path: ""
   momentum_teacher: 0.994
   final_momentum_teacher: 1
   warmup_teacher_temp: 0.04

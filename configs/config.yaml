@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vitg14_reg4
+experiment_name: dino3d_vitg14_reg4_shared_ibot_head
 
 shards:
   train:
@@ -39,6 +39,8 @@ model:
     output_dir: ${base_path}/weights/${experiment_name}
     ckpt_dir: "" # ${model.train.output_dir}
     resume: false # true
+    teacher:
+      weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}

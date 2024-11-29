@@ -2,9 +2,9 @@ ckpt_dir: ""
 
 student:
   freeze_backbone: false
-  arch: vit_small
+  arch: vit_giant2
   in_chans: 1
-  patch_size: 8
+  patch_size: 14
   drop_path_rate: 0.4
   layerscale: 1.0e-05
   drop_path_uniform: true
@@ -18,6 +18,7 @@ student:
   interpolate_offset: 0.1
 
 teacher:
+  weights_path: ""
   momentum_teacher: 0.994
   final_momentum_teacher: 1
   warmup_teacher_temp: 0.04

@@ -18,7 +18,7 @@ ibot:
   mask_ratio_min_max:
     - 0.1
     - 0.5
-  separate_head: true # false
+  separate_head: false # true
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
@@ -42,6 +42,7 @@ student:
   interpolate_offset: 0.1
 
 teacher:
+  weights_path: ""
   momentum_teacher: 0.994
   final_momentum_teacher: 1
   warmup_teacher_temp: 0.04
