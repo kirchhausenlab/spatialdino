@@ -21,7 +21,7 @@ ibot:
     - 0.1
     - 0.5
   separate_head: false # true
-  head_n_prototypes: 8192 # 131072
+  head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
   head_hidden_dim: 2048

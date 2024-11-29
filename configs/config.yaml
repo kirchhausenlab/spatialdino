@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg4_koleo_proto
+experiment_name: dino3d_vits8_reg4_koleo_proto_v2
 
 shards:
   train:
