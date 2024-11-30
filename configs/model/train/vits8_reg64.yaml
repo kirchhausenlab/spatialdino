@@ -10,8 +10,8 @@ dino:
   head_nlayers: 3
   head_hidden_dim: 2048
   koleo:
-    loss_weight: 0.0 # 0.1
-    proto_loss_weight: 0.1 # 0.1
+    loss_weight: 0.1 # 0.1
+    proto_loss_weight: 0.0 # 0.1
 
 ibot:
   freeze_head: false
@@ -38,7 +38,7 @@ student:
   proj_bias: true
   ffn_bias: true
   ffn_layer: swiglufused
-  num_register_tokens: 4
+  num_register_tokens: 64
   block_chunks: 4
   interpolate_antialias: false
   interpolate_offset: 0.1
