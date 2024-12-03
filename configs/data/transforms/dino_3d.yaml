@@ -13,3 +13,7 @@ train:
 test:
   _target_: cell_interactome.data.dino3d.transforms.make_inference_transform
   in_chans: ${model.train.student.in_chans}
+
+lift_test:
+  _target_: cell_interactome.data.dino3d.transforms.make_inference_transform
+  in_chans: ${model.in_chans}
