@@ -1,4 +1,4 @@
-ckpt_dir: ""
+ckpt_dir: ${model.dataroot}
 resume: false
 output_dir: "output"
 
@@ -26,9 +26,9 @@ ibot:
 
 student:
   freeze_backbone: false
-  arch: vit_base
+  arch: vit_giant2
   in_chans: 1
-  patch_size: 8
+  patch_size: 14
   drop_path_rate: 0.4
   layerscale: 1.0e-05
   drop_path_uniform: true
