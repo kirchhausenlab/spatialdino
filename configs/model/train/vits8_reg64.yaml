@@ -10,18 +10,25 @@ dino:
   head_nlayers: 3
   head_hidden_dim: 2048
   koleo:
-    loss_weight: 0.1 # 0.1
-    proto_loss_weight: 0.0 # 0.1
+    loss_weight: 0.1
 
 ibot:
   freeze_head: false
-  loss_weight: 1.0
+  loss_weight: 0.0
   mask_sample_probability: 0.5
   mask_ratio_min_max:
     - 0.1
     - 0.5
   separate_head: false # true
   head_n_prototypes: 131072
+  head_bottleneck_dim: 384
+  head_nlayers: 3
+  head_hidden_dim: 2048
+
+desd:
+  freeze_head: false
+  loss_weight: 1.0
+  head_n_prototypes: 65536
   head_bottleneck_dim: 384
   head_nlayers: 3
   head_hidden_dim: 2048

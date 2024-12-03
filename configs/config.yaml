@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg64_aug
+experiment_name: dino3d_vits8_reg64_aug_high_mask_ratio
 
 shards:
   train:
@@ -27,10 +27,10 @@ data:
   dataset:
     train_dataset:
       base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
-      nodesplitter:
-        _partial_: true
-        _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
-        node_file_counts: [869, 779, 769]
+      # nodesplitter:
+      #   _partial_: true
+      #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
+      #   node_file_counts: [869, 779, 769]
     test_dataset:
       base_data_dir: ${shards.test[0]}
 
