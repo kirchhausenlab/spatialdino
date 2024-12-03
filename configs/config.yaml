@@ -1,6 +1,6 @@
 defaults:
-  - model/train: vits8_reg64
-  - model/inference: vits8_reg64
+  - model/train: vitg14_reg64
+  - model/inference: vitg14_reg4
   - training/distributed: fsdp
   - training/optim: adopt
   - training/scheduler: cosine_3d
@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg64_desd_loss
+experiment_name: dino3d_vitg14_reg64_desd_loss
 
 shards:
   train:
