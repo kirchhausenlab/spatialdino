@@ -9,3 +9,8 @@ test:
   _partial_: true
   _target_: cell_interactome.data.dino3d.collate.collate_fn_test
   dtype: "torch.bfloat16"
+
+lift_test:
+  _partial_: true
+  _target_: cell_interactome.data.dino3d.collate.collate_fn_test
+  dtype: "torch.float32"
