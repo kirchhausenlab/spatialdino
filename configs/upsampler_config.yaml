@@ -81,5 +81,5 @@ data:
       #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
       #   node_file_counts: [869, 779, 769]
     test_dataset:
-      # base_data_dir: ${shards.test[0]}
-      base_data_dir: ${output_base}/llsm_3d_ds
+      base_data_dir: ${shards.test[0]}
+      # base_data_dir: ${output_base}/llsm_3d_ds
