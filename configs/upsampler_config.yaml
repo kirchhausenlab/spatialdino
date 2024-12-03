@@ -19,10 +19,10 @@ training:
 
 model:
   display_lr_feats: True
-  stride: 14
+  stride: 16
   embed_dim: 1536
-  patch_size: 14
-  imsize: [48, 224, 224]
+  patch_size: 16
+  imsize: [64, 256, 256]
   global_crops: [48, 224, 224]
   loss_type: cosine
   dataroot: /nfs/scratch2/shared_image_recog_ml/weights/dino3d_vitg16_reg4_desd_loss/step=28999.ckpt/teacher_weights.pth
@@ -61,12 +61,21 @@ logging:
   name: ${experiment_name}
   resume: false
 
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+  test:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+
 data:
-  chunk1: /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
-  chunk2: /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
-  chunk3: /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
   dataset:
     train_dataset:
-      base_data_dir: ${data.chunk_1}::${data.chunk_2}::${data.chunk_3}
+      base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
+      # nodesplitter:
+      #   _partial_: true
+      #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
+      #   node_file_counts: [869, 779, 769]
     test_dataset:
-      base_data_dir: /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+      base_data_dir: ${shards.test[0]}
