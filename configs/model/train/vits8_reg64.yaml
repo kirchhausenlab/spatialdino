@@ -28,7 +28,7 @@ ibot:
 desd:
   freeze_head: false
   loss_weight: 1.0
-  head_n_prototypes: 65536
+  head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
   head_hidden_dim: 2048

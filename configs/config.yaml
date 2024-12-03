@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vits8_reg64_aug_high_mask_ratio
+experiment_name: dino3d_vits8_reg64_desd_loss
 
 shards:
   train:
