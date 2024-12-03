@@ -1,13 +1,14 @@
 defaults:
   - data/dataloader: base_web_3d # base_3d
   - data/dataset: cell_web_dataset_3d # cell_dataset_3d
+  - data/collate_fn: collate_3d
   - training/optim: adopt
   - training/scheduler: cosine_3d_lift
   - _self_
 
 seed: 42
 output_base: /nfs/scratch2/shared_image_recog_ml
-output_dir: ${output_base}/LiFT/backbone_vits_stride_8_adam_no_scheduler
+output_dir: ${output_base}/LiFT/backbone_vitg_16_reg4_desd_loss
 model_type: dino3d
 is_dino3d: true
 
@@ -67,15 +68,18 @@ shards:
     - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
     - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
   test:
-    - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+    # - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+    - /raid3/llsm_lift/dataset-{000000..000034}.tar
 
 data:
   dataset:
     train_dataset:
-      base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
+      # base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
+      base_data_dir: "${shards.train[2]}"
       # nodesplitter:
       #   _partial_: true
       #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
       #   node_file_counts: [869, 779, 769]
     test_dataset:
-      base_data_dir: ${shards.test[0]}
+      # base_data_dir: ${shards.test[0]}
+      base_data_dir: ${output_base}/llsm_3d_ds
