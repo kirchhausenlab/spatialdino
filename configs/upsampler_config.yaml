@@ -2,6 +2,7 @@ defaults:
   - data/dataloader: base_web_3d # base_3d
   - data/dataset: cell_web_dataset_3d # cell_dataset_3d
   - data/collate_fn: collate_3d
+  - data/transforms: dino_3d
   - training/optim: adopt
   - training/scheduler: cosine_3d_lift
   - _self_
