@@ -1,4 +1,4 @@
-ckpt_dir: ""
+ckpt_dir: "/nfs/scratch2/shared_image_recog_ml/weights/dino3d_vits8_reg4_higher_lr/step=24999.ckpt/teacher_weights.pth"
 
 student:
   freeze_backbone: false
@@ -26,5 +26,5 @@ teacher:
   warmup_teacher_temp_steps: 37500
 
 crops:
-  global_crops_size: ${model.training.crops.global_crops_size}
+  global_crops_size: ${model.train.crops.global_crops_size}
   local_crops_size: ${model.training.crops.local_crops_size}
