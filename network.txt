@@ -1,0 +1,98 @@
+Ran Ping from dgx1
+- can access DGX2 and DGX3
+Ran Ping from dgx2
+- can access DGX1 and DGX3 
+Ran Ping from dgx3
+- can access DGX1 and DGX2
+
+
+Verify subnet and configs:
+DGX1: ib0 and ib1 (infiniband) 10.1.0.10 and 10.2.0.10 for high speed communication
+eth0 for general network access 10.117.38.22
+
+0.0.0.0 direct traffic to 10.117.38.1?
+
+Potential Issue: ran ibstat and found mlx5_5 is down
+CA 'mlx5_5'
+        CA type: MT4123
+        Number of ports: 1
+        Firmware version: 20.39.3004
+        Hardware version: 0
+        Node GUID: 0x0c42a103005f3f44
+        System image GUID: 0x0c42a103005f3f44
+        Port 1:
+                State: Down
+                Physical state: Disabled
+                Rate: 10
+                Base lid: 65535
+                LMC: 0
+                SM lid: 0
+                Capability mask: 0xa651e848
+                Port GUID: 0x0c42a103005f3f44
+                Link layer: InfiniBand
+ibportstate mlx5_5 1 enable did not work
+
+ibdiagnet failed
+
+Adaptive Routing is enabled on 0 switches.
+Hashed Based Forwarding is enabled on 0 switches.
+
+Paths to inspect: /var/tmp/ibdiagnet2/ibdiagnet2.log, /var/tmp/ibdiagnet2/ibdiagnet2.db_csv
+Something could be wrong with the mellanox switch
+
+
+ALL DGXs have:
+eth0 (10.117.38.x network)
+ib0 (10.1.0.0 network)
+ib1 (10.2.0.0 network)
+Docker network interfaces
+Virtual bridge interfaces
+
+Cannot run iptables -L to verify firewall rules
+
+-----------------------------------------------------------------------
+
+No issue when I ran ibstat on dgx2 but ibdiagnet failed
+
+
+When i run ibstat on dgx3, I see that mlx5_8 and mlx5_9 are down as well
+
+
+CA 'mlx5_8'
+        CA type: MT4123
+        Number of ports: 1
+        Firmware version: 20.39.3004
+        Hardware version: 0
+        Node GUID: 0x08c0eb0300c12c2e
+        System image GUID: 0x08c0eb0300c12c2e
+        Port 1:
+                State: Down
+                Physical state: Disabled
+                Rate: 40
+                Base lid: 0
+                LMC: 0
+                SM lid: 0
+                Capability mask: 0x00010000
+                Port GUID: 0x0ac0ebfffec12c2e
+                Link layer: Ethernet
+CA 'mlx5_9'
+        CA type: MT4123
+        Number of ports: 1
+        Firmware version: 20.39.3004
+        Hardware version: 0
+        Node GUID: 0x08c0eb0300c12c2f
+        System image GUID: 0x08c0eb0300c12c2e
+        Port 1:
+                State: Down
+                Physical state: Disabled
+                Rate: 40
+                Base lid: 0
+                LMC: 0
+                SM lid: 0
+                Capability mask: 0x00010000
+                Port GUID: 0x0ac0ebfffec12c2f
+                Link layer: Ethernet
+
+--------------------------------------------------------------
+DGX1 has a bridge interface br-e81e2a4c6b58
+DGX3 has a different bridge interface br-6332f9e3d28a

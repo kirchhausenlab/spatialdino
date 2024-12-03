@@ -1,4 +1,4 @@
-ckpt_dir: ""
+ckpt_dir: ${model.dataroot}
 resume: false
 output_dir: "output"
 
