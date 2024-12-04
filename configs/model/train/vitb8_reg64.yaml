@@ -27,6 +27,7 @@ ibot:
 
 desd:
   freeze_head: false
+  separate_head: true
   loss_weight: 1.0
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
@@ -35,7 +36,7 @@ desd:
 
 student:
   freeze_backbone: false
-  arch: vit_small
+  arch: vit_base
   in_chans: 1
   patch_size: 8
   drop_path_rate: 0.4
