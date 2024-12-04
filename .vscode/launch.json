@@ -70,7 +70,7 @@
         "RANK": "0",
         "WORLD_SIZE": "1",
         "CUDA_VISIBLE_DEVICES": "0",
-        "MASTER_ADDR": "10.1.0.10",
+        "MASTER_ADDR": "10.1.0.11",
         "MASTER_PORT": "9999",
         "NCCL_SOCKET_IFNAME": "ib0"
       }

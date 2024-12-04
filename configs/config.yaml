@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /nfs/scratch2/shared_image_recog_ml
-experiment_name: dino3d_vitg14_reg4_desd_loss
+experiment_name: dino3d_vitg14_reg4_desd_loss_v2
 
 shards:
   train:
