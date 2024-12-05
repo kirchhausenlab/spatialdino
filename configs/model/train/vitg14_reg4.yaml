@@ -35,12 +35,11 @@ desd:
 
 rotation:
   freeze_head: false
-  head_nlayers: 1
-  out_dim: 4
-  head_hidden_dim: 2048
-  head_bottleneck_dim: 384
   loss_weight: 1.0
-  separate_head: false
+  head_n_prototypes: 4
+  head_bottleneck_dim: 384
+  head_nlayers: 3
+  head_hidden_dim: 2048
 
 student:
   freeze_backbone: false
