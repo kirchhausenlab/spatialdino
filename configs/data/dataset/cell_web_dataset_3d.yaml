@@ -1,7 +1,7 @@
 train_dataset:
   _target_: cell_interactome.data.dino3d.dataset.make_webdataset
   base_data_dir: ""
-  batch_size: 16
+  batch_size: 8
   shuffle_buffer_size: 750
   nodesplitter:
     _partial_: true
