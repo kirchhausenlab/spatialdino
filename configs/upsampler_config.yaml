@@ -20,7 +20,8 @@ training:
   max_steps: 100000
 
 model:
-  display_lr_feats: True
+  norm: true
+  display_lr_feats: true
   stride: 16
   embed_dim: 1536
   patch_size: 16
@@ -55,8 +56,8 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 40 # test
-  num_pca_images: 8
+  pred_interval: 20 # test
+  num_pca_images: 4
   num_pred_images: 1
   project: cell-interactome
   entity: artificial-intelligence-research
