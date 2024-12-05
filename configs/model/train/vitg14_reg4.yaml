@@ -37,9 +37,8 @@ desd:
 rotation:
   freeze_head: false
   head_nlayers: 1
-  output_layers: 4
+  out_dim: 4
   head_hidden_dim: 2048
-  head_n_prototypes: 131072
   head_bottleneck_dim: 384
   loss_weight: 1.0
   separate_head: false
