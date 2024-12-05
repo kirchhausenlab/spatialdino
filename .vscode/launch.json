@@ -51,7 +51,7 @@
       "justMyCode": false,
       "env": {
         "LOCAL_RANK": "0",
-        "CUDA_VISIBLE_DEVICES": "6",
+        "CUDA_VISIBLE_DEVICES": "7",
         "RANK": "0",
         "WORLD_SIZE": "1",
         "MASTER_PORT": "8001",

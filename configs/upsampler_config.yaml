@@ -9,6 +9,7 @@ defaults:
 
 seed: 42
 output_base: /nfs/scratch2/shared_image_recog_ml
+weights_dir: ${output_base}/weights
 output_dir: ${output_base}/LiFT/backbone_vitg_16_reg4_desd_loss
 model_type: dino3d
 is_dino3d: true
@@ -22,13 +23,13 @@ training:
 model:
   norm: true
   display_lr_feats: true
-  stride: 16
-  embed_dim: 1536
-  patch_size: 16
+  stride: 8
+  embed_dim: 768
+  patch_size: 8
   imsize: [64, 256, 256]
   global_crops: [48, 224, 224]
   loss_type: cosine
-  dataroot: /nfs/scratch2/shared_image_recog_ml/weights/dino3d_vitg16_reg4_desd_loss/step=28999.ckpt/teacher_weights.pth
+  dataroot: ${weights_dir}/dino3d_vitb8_reg64_desd_sep_head_rotv2/step=11999.ckpt/teacher_weights.pth
   in_chans: 1
   train:
     output_dir: ${output_dir}/weights
@@ -37,9 +38,9 @@ model:
     max_steps: ${training.max_steps}
 
 student:
-  arch: vit_giant2
+  arch: vit_base
   in_chans: 1
-  patch_size: 16
+  patch_size: 8
   drop_path_rate: 0.4
   layerscale: 1.0e-05
   drop_path_uniform: true
@@ -47,7 +48,7 @@ student:
   proj_bias: true
   ffn_bias: true
   ffn_layer: swiglufused
-  num_register_tokens: 4
+  num_register_tokens: 64
   block_chunks: 0
   interpolate_antialias: false
   interpolate_offset: 0.1
@@ -56,7 +57,7 @@ experiment_name: LiFT
 logging:
   log_interval: 10
   save_interval: 1000
-  pred_interval: 20 # test
+  pred_interval: 500 # test
   num_pca_images: 4
   num_pred_images: 1
   project: cell-interactome
