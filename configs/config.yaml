@@ -37,8 +37,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: ${model.train.output_dir}/step=19999.ckpt
-    resume: true
+    ckpt_dir: "" # ${model.train.output_dir}
+    resume: false
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}
