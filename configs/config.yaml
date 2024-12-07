@@ -1,6 +1,6 @@
 defaults:
-  - model/train: vitb8_reg64
-  - model/inference: vitb8_reg64
+  - model/train: vitg14_reg4
+  - model/inference: vitg14_reg4
   - training/distributed: fsdp
   - training/optim: adopt
   - training/scheduler: cosine_3d
@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /raid3/shared_image_recog_ml
-experiment_name: dino3d_vitb8_reg64_desd_no_random_crop
+experiment_name: dino3d_vitg14_reg4_desd
 
 shards:
   train:
@@ -39,6 +39,8 @@ model:
     output_dir: ${base_path}/weights/${experiment_name}
     ckpt_dir: "" # ${model.train.output_dir}
     resume: false
+    # teacher:
+    #   weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}
