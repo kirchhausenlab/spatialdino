@@ -1,6 +1,6 @@
 defaults:
-  - model/train: vitg14_reg4
-  - model/inference: vitg14_reg4
+  - model/train: vitb8_reg64
+  - model/inference: vitb8_reg64
   - training/distributed: fsdp
   - training/optim: adopt
   - training/scheduler: cosine_3d
@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /raid3/shared_image_recog_ml
-experiment_name: dino3d_vitg14_reg4_desd
+experiment_name: dino3d_vitb8_reg64_desd_rot
 
 shards:
   train:
