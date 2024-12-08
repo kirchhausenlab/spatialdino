@@ -1,7 +1,7 @@
-ckpt_dir: "/nfs/scratch2/shared_image_recog_ml/weights/dino3d_vits8_reg4_higher_lr/step=24999.ckpt/teacher_weights.pth"
+ckpt_dir: ""
 
 student:
-  freeze_backbone: false
+  freeze_backbone: true
   arch: vit_giant2
   in_chans: 1
   patch_size: 14
@@ -13,7 +13,7 @@ student:
   ffn_bias: true
   ffn_layer: swiglufused
   num_register_tokens: 4
-  block_chunks: 4
+  block_chunks: 0
   interpolate_antialias: false
   interpolate_offset: 0.1
 

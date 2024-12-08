@@ -36,7 +36,7 @@ desd:
 student:
   freeze_backbone: false
   arch: vit_giant2
-  in_chans: 3
+  in_chans: 1
   patch_size: 14
   drop_path_rate: 0.4
   layerscale: 1.0e-05
