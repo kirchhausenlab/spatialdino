@@ -9,8 +9,8 @@ train:
   global_crops_size: ${model.train.crops.global_crops_size}
   local_crops_size: ${model.train.crops.local_crops_size}
   in_chans: ${model.train.student.in_chans}
-  mean: [0.485]
-  std: [0.229]
+  mean: [0.163]
+  std: [0.0988]
 
 test:
   _target_: cell_interactome.data.dino3d.transforms.make_inference_transform

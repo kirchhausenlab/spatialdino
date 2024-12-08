@@ -46,7 +46,7 @@ student:
   proj_bias: true
   ffn_bias: true
   ffn_layer: swiglufused
-  num_register_tokens: 64
+  num_register_tokens: 4
   block_chunks: 4
   interpolate_antialias: false
   interpolate_offset: 0.1
