@@ -13,7 +13,7 @@ student:
   ffn_layer: swiglufused
   num_register_tokens: 64
   block_chunks: 0
-  interpolate_antialias: false
+  interpolate_antialias: true
   interpolate_offset: 0.1
 
 teacher:
