@@ -37,8 +37,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: "" # ${model.train.output_dir}
-    resume: false
+    ckpt_dir: ${model.train.output_dir}/step=14999.ckpt
+    resume: true
     # teacher:
     #   weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
 
