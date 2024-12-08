@@ -33,14 +33,6 @@ desd:
   head_nlayers: 3
   head_hidden_dim: 2048
 
-rotation:
-  freeze_head: false
-  loss_weight: 1.0
-  head_n_prototypes: 4
-  head_bottleneck_dim: 384
-  head_nlayers: 3
-  head_hidden_dim: 2048
-
 student:
   freeze_backbone: false
   arch: vit_giant2
