@@ -19,11 +19,6 @@ student:
 
 teacher:
   weights_path: ""
-  momentum_teacher: 0.994
-  final_momentum_teacher: 1
-  warmup_teacher_temp: 0.04
-  teacher_temp: 0.07
-  warmup_teacher_temp_steps: 37500
 
 crops:
   global_crops_size: ${model.train.crops.global_crops_size}
