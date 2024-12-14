@@ -67,8 +67,8 @@ crops:
   local_crops_scale:
     - 0.05
     - 0.32
-  global_crops_size: [48, 224, 224]
-  local_crops_size: [16, 96, 96]
+  global_crops_size: [16, 96, 96]
+  local_crops_size: [16, 48, 48]
 
 centering: sinkhorn_knopp
 
