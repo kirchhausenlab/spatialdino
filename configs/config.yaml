@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /raid3/shared_image_recog_ml
-experiment_name: dino3d_vitb8_reg4_desd_new_sched
+experiment_name: dino3d_vitb8_reg4_desd_new_eval_set
 
 shards:
   train:
@@ -21,7 +21,10 @@ shards:
     - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
     - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
   test:
-    - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+    # - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
 
 data:
   dataset:
@@ -32,13 +35,13 @@ data:
       #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
       #   node_file_counts: [869, 779, 769]
     test_dataset:
-      base_data_dir: ${shards.test[0]}
+      base_data_dir: "${shards.test[0]}::${shards.test[1]}::${shards.test[2]}"
 
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: ${model.train.output_dir}/step=14999.ckpt
-    resume: true
+    ckpt_dir: "" # ${model.train.output_dir}/step=14999.ckpt
+    resume: false
     # teacher:
     #   weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
 
