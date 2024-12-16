@@ -27,10 +27,6 @@ data:
   dataset:
     train_dataset:
       base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
-      # nodesplitter:
-      #   _partial_: true
-      #   _target_: cell_interactome.data.dino3d.dataset.custom_split_by_node
-      #   node_file_counts: [869, 779, 769]
     test_dataset:
       base_data_dir: "${shards.test[0]}"
 
