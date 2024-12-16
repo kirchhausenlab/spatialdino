@@ -1,7 +1,7 @@
 train_dataloader:
   _target_: webdataset.WebLoader
   batch_size: null
-  num_workers: 16 # workers per GPU
+  num_workers: 24 # workers per GPU
   pin_memory: true
   persistent_workers: true
   shuffle: false
@@ -9,7 +9,7 @@ train_dataloader:
 test_dataloader:
   _target_: webdataset.WebLoader
   batch_size: null
-  num_workers: 16 # workers per GPU
+  num_workers: 8 # workers per GPU
   pin_memory: true
   persistent_workers: true
   shuffle: false
