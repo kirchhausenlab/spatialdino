@@ -36,12 +36,12 @@ desd:
 
 reconstruction:
   freeze_head: false
-  loss_weight: 1.0
+  loss_weight: 10.0
 
 student:
   freeze_backbone: false
   arch: vit_base
-  in_chans: 1
+  in_chans: 3
   patch_size: 8
   drop_path_rate: 0.4
   layerscale: 1.0e-05

@@ -1,5 +1,6 @@
 use_fp16: true
 sharding_strategy: SHARD_GRAD_OP
+dtype: bf16
 mixed_precision:
   param_dtype: bf16
   reduce_dtype: bf16
