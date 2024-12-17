@@ -5,5 +5,5 @@ resume: false
 
 log_interval: 10
 eval_interval: 1000
-num_pca_images: 4
+num_pca_images: 1
 num_pred_images: 1
