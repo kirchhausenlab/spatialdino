@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /raid3/shared_image_recog_ml
-experiment_name: dino3d_vitb8_reg4_desd_smaller_crops_recon_0p1
+experiment_name: dino3d_vitb8_reg4_desd_smaller_crops_new_decoder_recon_1
 
 shards:
   train:
@@ -33,8 +33,8 @@ data:
 model:
   train:
     output_dir: ${base_path}/weights/${experiment_name}
-    ckpt_dir: "" # ${model.train.output_dir}/step=39999.ckpt
-    resume: false
+    ckpt_dir: ${model.train.output_dir}/step=14999.ckpt
+    resume: true
     # teacher:
     #   weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
 

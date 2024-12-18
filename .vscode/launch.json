@@ -38,7 +38,8 @@
         "--min_tif_files",
         "20",
         "--max_workers",
-        "1"
+        "1",
+        "--auto_crop"
       ]
     },
     {
@@ -62,18 +63,38 @@
       "name": "Train DINO3D",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/train/train_dino3d.py",
       "console": "integratedTerminal",
+      "module": "torch.distributed.run",
       "justMyCode": false,
       "env": {
-        "LOCAL_RANK": "0",
-        "RANK": "0",
-        "WORLD_SIZE": "1",
+        "NNODES": "1",
+        "NODE_RANK": "0",
+        "NPROC_PER_NODE": "1",
         "CUDA_VISIBLE_DEVICES": "0",
         "MASTER_ADDR": "10.1.0.11",
         "MASTER_PORT": "9999",
-        "NCCL_SOCKET_IFNAME": "ib"
-      }
+        "NCCL_SOCKET_IFNAME": "ib",
+        "RDVZ_BACKEND": "c10d",
+        "OMPT_NUM_THREADS": "16",
+        "RDVZ_ID": "2000"
+      },
+      "args": [
+        "--nnodes",
+        "${env:NNODES}",
+        "--node_rank",
+        "${env:NODE_RANK}",
+        "--nproc_per_node",
+        "${env:NPROC_PER_NODE}",
+        "--master_addr",
+        "${env:MASTER_ADDR}",
+        "--master_port",
+        "${env:MASTER_PORT}",
+        "--rdzv_backend",
+        "${env:RDVZ_BACKEND}",
+        "--rdzv_id",
+        "${env:RDVZ_ID}",
+        "${workspaceFolder}/scripts/train/train_dino3d.py"
+      ]
     }
   ]
 }
