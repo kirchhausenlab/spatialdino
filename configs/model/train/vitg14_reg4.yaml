@@ -35,7 +35,7 @@ desd:
 
 reconstruction:
   freeze_head: false
-  loss_weight: 10.0
+  loss_weight: 0.1
 
 student:
   freeze_backbone: false
