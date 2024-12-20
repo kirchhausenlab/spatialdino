@@ -3,7 +3,7 @@ ckpt_dir: ""
 student:
   freeze_backbone: true
   arch: vit_base
-  in_chans: ${model.training.student.in_chans}
+  in_chans: ${model.train.student.in_chans}
   patch_size: 8
   drop_path_rate: 0.4
   layerscale: 1.0e-05
@@ -21,5 +21,5 @@ teacher:
   weights_path: ""
 
 crops:
-  global_crops_size: ${model.training.crops.global_crops_size}
-  local_crops_size: ${model.training.crops.local_crops_size}
+  global_crops_size: ${model.train.crops.global_crops_size}
+  local_crops_size: ${model.train.crops.local_crops_size}

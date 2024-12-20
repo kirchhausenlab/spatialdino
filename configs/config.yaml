@@ -35,8 +35,8 @@ model:
     output_dir: ${base_path}/weights/${experiment_name}
     ckpt_dir: "" # ${model.train.output_dir}
     resume: false
-    # teacher:
-    #   weights_path: ${base_path}/weights/pretrained/dinov2_vitg14_reg4_pretrain_3d.pth
+  inference:
+    weights_path: ${base_path}/weights/${experiment_name}/step=3999.ckpt/teacher_weights.pth
 
 inference:
   save_dir: ${base_path}/preds/${experiment_name}
