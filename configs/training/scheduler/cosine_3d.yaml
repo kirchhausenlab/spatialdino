@@ -1,6 +1,6 @@
 config:
-  freeze_last_layer_steps: 300
-  warmup_steps: 24000
+  freeze_last_layer_steps: 10
+  warmup_steps: 800
 
 schedulers:
   lr:
