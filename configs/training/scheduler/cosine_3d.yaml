@@ -1,6 +1,6 @@
 config:
-  freeze_last_layer_steps: 10
-  warmup_steps: 800
+  freeze_last_layer_steps: 16
+  warmup_steps: 10
 
 schedulers:
   lr:
@@ -34,7 +34,7 @@ schedulers:
   last_layer_lr:
     _target_: cell_interactome.utils.dino3d.schedulers.CosineScheduler
     base_value: ${training.optim.config.lr}
-    final_value: ${training.optim.config.lr}
-    total_iters: ${training.scheduler.config.freeze_last_layer_steps}
-    warmup_iters: ${training.scheduler.config.freeze_last_layer_steps}
+    final_value: ${training.optim.config.min_lr}
+    total_iters: ${model.train.max_steps}
+    warmup_iters: ${training.scheduler.config.warmup_steps}
     start_warmup_value: 0
