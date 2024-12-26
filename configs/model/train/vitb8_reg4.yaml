@@ -76,4 +76,4 @@ crops:
 
 centering: sinkhorn_knopp
 
-max_steps: 100
+max_steps: 8000
