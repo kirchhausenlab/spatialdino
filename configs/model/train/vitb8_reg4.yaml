@@ -14,11 +14,11 @@ dino:
 
 ibot:
   freeze_head: false
-  loss_weight: 0.0
+  loss_weight: 1.0
   mask_sample_probability: 0.5
   mask_ratio_min_max:
-    - 0.8
-    - 0.95
+    - 0.1
+    - 0.5
   separate_head: true
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
@@ -28,7 +28,7 @@ ibot:
 desd:
   freeze_head: false
   separate_head: true
-  loss_weight: 1.0
+  loss_weight: 0.0
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
   head_nlayers: 3
@@ -61,7 +61,7 @@ teacher:
   final_momentum_teacher: 1
   warmup_teacher_temp: 0.04
   teacher_temp: 0.07
-  warmup_teacher_temp_steps: 480
+  warmup_teacher_temp_steps: 9000
 
 crops:
   global_crops_scale:
@@ -71,9 +71,9 @@ crops:
   local_crops_scale:
     - 0.05
     - 0.32
-  global_crops_size: [16, 96, 96]
+  global_crops_size: [32, 96, 96]
   local_crops_size: [16, 48, 48]
 
-centering: sinkhorn_knopp
+centering: centering
 
-max_steps: 8000
+max_steps: 150000
