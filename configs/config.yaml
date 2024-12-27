@@ -13,7 +13,7 @@ defaults:
 
 seed: 0
 base_path: /raid3/shared_image_recog_ml
-experiment_name: dino3d_vitb8_reg4_desd_smaller_crops_recon_loss_centering_ibot
+experiment_name: dino3d_vitb8_reg4_desd_smaller_crops_recon_loss_centering_ibot_last_layer_lr_mult_0.1
 
 shards:
   train:
@@ -36,8 +36,8 @@ model:
     ckpt_dir: "" # ${model.train.output_dir}
     resume: false
   inference:
-    weights_path: ${base_path}/weights/${experiment_name}/step=999.ckpt/teacher_weights.pth
+    weights_path: ${base_path}/weights/dino3d_vitb8_reg4_desd_smaller_crops_recon_loss_centering_ibot/step=3999.ckpt/teacher_weights.pth
     chunk_size: [32, 96, 96]
-    upsample_factor: 4
+    upsample_factor: 2
     batch_size: 32 # 1024
     num_workers: 32

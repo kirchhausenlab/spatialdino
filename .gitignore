@@ -93,3 +93,4 @@ target/
 .pytest_cache/
 
 src/third_party/VTK
+*.tif
