@@ -18,7 +18,7 @@ ibot:
   mask_sample_probability: 0.5
   mask_ratio_min_max:
     - 0.1
-    - 0.5
+    - 0.15
   separate_head: true
   head_n_prototypes: 131072
   head_bottleneck_dim: 384
@@ -74,6 +74,6 @@ crops:
   global_crops_size: [32, 96, 96]
   local_crops_size: [16, 48, 48]
 
-centering: centering
+centering: sinkhorn_knopp
 
 max_steps: 150000
