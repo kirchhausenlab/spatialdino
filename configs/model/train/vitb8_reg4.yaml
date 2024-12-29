@@ -14,8 +14,8 @@ dino:
 
 ibot:
   freeze_head: false
-  loss_weight: 1.0
-  mask_sample_probability: 0.8
+  loss_weight: 0.0
+  mask_sample_probability: 1.0
   mask_ratio_min_max:
     - 0.75
     - 0.8
