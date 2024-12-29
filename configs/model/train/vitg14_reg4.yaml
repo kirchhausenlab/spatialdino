@@ -36,6 +36,7 @@ desd:
 reconstruction:
   freeze_head: false
   loss_weight: 1.0
+  normalize_pixel_loss: true
 
 student:
   freeze_backbone: false
