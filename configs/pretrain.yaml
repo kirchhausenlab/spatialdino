@@ -19,7 +19,7 @@ inverse_lr: false # Use inverse lr scheduler
 no_lr_scale: false # Do not scale lr by mask_ratio
 norm_pix_loss: true # Use (per-patch) normalized pixels as targets
 find_unused_parameters: false # Distributed DDP find unused parameters
-save_interval: 50 # Steps to save checkpoint
+save_interval: 1000 # Steps to save checkpoint
 log_interval: 10 # Steps to log
 
 # Model parameters
