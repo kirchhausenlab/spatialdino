@@ -1,0 +1,30 @@
+base_path: /raid3/shared_image_recog_ml
+experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12
+
+backbone_path: "${base_path}/output/${experiment_name}/checkpoints/step=99/backbone.pth" # Resume from checkpoint
+
+seed: 0
+device: "cuda:0"
+
+# Data parameters
+img_size: [32, 224, 224]
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
+
+# Model parameters
+in_chans: 3
+patch_size: [8, 8, 8]
+embed_dim: 768
+depth: 12
+num_heads: 12
+mlp_ratio: 4
+
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+
+chunk_size: 1
+batch_size: 1
+num_workers: 1
+upsample_factor: 1
+remove_background: true
