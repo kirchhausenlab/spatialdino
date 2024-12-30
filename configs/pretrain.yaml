@@ -59,7 +59,6 @@ mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]
 
 # MAE specific parameters
-cross_mae: true # Use cross-MAE
 weight_fm: true # Weight the feature maps for decoder
 use_fm: [-1] # Feature maps to use for decoder
 use_input: true # Use input as a feature map
