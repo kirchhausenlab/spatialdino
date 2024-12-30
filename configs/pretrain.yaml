@@ -1,0 +1,67 @@
+experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12
+logging:
+  project: cell-interactome
+  entity: artificial-intelligence-research
+
+# Training parameters
+batch_size: 32 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
+total_steps: 250000
+accum_iter: 1 # Accumulate gradient iterations for increasing effective batch size
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+
+# Model parameters
+model: "mae_vit_base_patch8" # Name of model to train
+input_size: [32, 224, 224] # Images input size
+decoder_depth: 12 # Depth of decoder
+mask_ratio: 0.75 # Masking ratio (1 - percentage of remained patches)
+kept_mask_ratio: 0.25 # Percentage of mask tokens that are kept
+inverse_lr: false # Use inverse lr scheduler
+no_lr_scale: false # Do not scale lr by mask_ratio
+norm_pix_loss: true # Use (per-patch) normalized pixels as targets
+find_unused_parameters: false # Distributed DDP find unused parameters
+save_interval: 1000 # Steps to save checkpoint
+log_interval: 10 # Steps to log
+
+# Optimizer parameters
+weight_decay: 0.05
+lr: null # Learning rate (absolute lr)
+betas: [0.9, 0.95]
+blr: 1.5e-4 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
+min_lr: 0.0 # Lower lr bound for cyclic schedulers
+warmup_steps: 10000 # Steps to warmup LR
+
+# Dataset parameters
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+
+base_path: /raid3/shared_image_recog_ml
+base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
+output_dir: "${base_path}/output/${experiment_name}"
+device: "cuda"
+seed: 0
+ckpt_path: "" # Resume from checkpoint
+resume: false
+num_workers: 16
+pin_mem: true # Pin CPU memory in DataLoader
+persistent_workers: true
+shuffle_buffer_size: 250
+scale: [0.08, 1]
+ratio: [0.75, 1.3333]
+in_chans: 3
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
+
+# MAE specific parameters
+cross_mae: true # Use cross-MAE
+weight_fm: true # Weight the feature maps for decoder
+use_fm: [-1] # Feature maps to use for decoder
+use_input: true # Use input as a feature map
+self_attn: false # Use self attention in decoder
+enable_flash_attention2: true # Use flash attention 2

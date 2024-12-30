@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Save files",
+      "name": "save_files",
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
@@ -43,24 +43,7 @@
       ]
     },
     {
-      "name": "Lift",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/scripts/train/train_lift.py",
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "justMyCode": false,
-      "env": {
-        "LOCAL_RANK": "0",
-        "CUDA_VISIBLE_DEVICES": "7",
-        "RANK": "0",
-        "WORLD_SIZE": "1",
-        "MASTER_PORT": "8001",
-        "MASTER_ADDR": "10.1.0.12"
-      }
-    },
-    {
-      "name": "Train DINO3D",
+      "name": "pretrain",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
@@ -85,7 +68,9 @@
         "c10d",
         "--rdzv-endpoint",
         "10.1.0.12:9999",
-        "${workspaceFolder}/scripts/train/train_dino3d.py"
+        "${workspaceFolder}/scripts/train/pretrain.py",
+        "--config",
+        "${workspaceFolder}/configs/pretrain.yaml"
       ]
     }
   ]
