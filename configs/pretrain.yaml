@@ -1,10 +1,10 @@
-experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12
+experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12_smaller_batch_size
 logging:
   project: cell-interactome
   entity: artificial-intelligence-research
 
 # Training parameters
-batch_size: 32 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
+batch_size: 24 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
 total_steps: 250000
 accum_iter: 1 # Accumulate gradient iterations for increasing effective batch size
 device_type: "cuda"
@@ -54,8 +54,7 @@ base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}"
 output_dir: "${base_path}/output/${experiment_name}"
 device: "cuda"
 seed: 0
-ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=99/ckpt.pth" # Resume from checkpoint
-
+ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=8999/ckpt.pth" # Resume from checkpoint
 resume: false
 num_workers: 16
 pin_mem: true # Pin CPU memory in DataLoader
