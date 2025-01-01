@@ -1,10 +1,10 @@
-experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12_smaller_batch_size
+experiment_name: crossmae-vitb-pretrain-wfm-mr0.75-kmr0.25-dd12_smaller_input_original_crop_scale_no_contrast_transform
 logging:
   project: cell-interactome
   entity: artificial-intelligence-research
 
 # Training parameters
-batch_size: 24 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
+batch_size: 32 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
 total_steps: 250000
 accum_iter: 1 # Accumulate gradient iterations for increasing effective batch size
 device_type: "cuda"
@@ -24,7 +24,7 @@ log_interval: 10 # Steps to log
 
 # Model parameters
 in_chans: 3
-input_size: [32, 224, 224] # Images input size
+input_size: [24, 224, 224] # Images input size
 patch_size: [8, 8, 8]
 embed_dim: 768
 depth: 12
@@ -56,11 +56,11 @@ device: "cuda"
 seed: 0
 ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=8999/ckpt.pth" # Resume from checkpoint
 resume: false
-num_workers: 16
+num_workers: 20
 pin_mem: true # Pin CPU memory in DataLoader
 persistent_workers: true
 shuffle_buffer_size: 250
-scale: [0.08, 1]
+scale: [0.2, 1.0]
 ratio: [0.75, 1.3333]
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]

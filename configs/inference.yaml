@@ -24,16 +24,17 @@ dtype: "bf16"
 use_amp: true
 
 # high resolution
-chunk_size: 0.0625
-batch_size: 1
-num_workers: 2
-upsample_factor: 4
-remove_background: true
-foreground_threshold: 0.3
-# low resolution
-# chunk_size: 1
+# chunk_size: 0.0625
 # batch_size: 1
-# num_workers: 1
-# upsample_factor: 1
+# num_workers: 2
+# upsample_factor: 4
 # remove_background: true
-# foreground_threshold: 0.5
+# foreground_threshold: 0.3
+
+# low resolution
+chunk_size: 1
+batch_size: 1
+num_workers: 1
+upsample_factor: 1
+remove_background: true
+foreground_threshold: 0.4
