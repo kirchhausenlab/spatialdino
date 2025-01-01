@@ -1,7 +1,4 @@
 from setuptools import setup, find_packages
-from pathlib import Path
-
-WORKING_DIR = Path(__file__).parent
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -28,30 +25,22 @@ setup(
         "scikit-image==0.24.0",
         "imagecodecs==2024.9.22",
         "wandb==0.18.5",
-        "hydra-core==1.3.2",
         "scipy==1.14.1",
         "scikit-learn==1.5.2",
         "ninja==1.11.1.1",
         "jupyter==1.1.1",
         "ipython==8.28.0",
         "ipywidgets==8.1.5",
-        "git+https://github.com/tmbdev/webdataset.git",
+        "timm>=0.9.10",
+        "webdataset @ git+https://github.com/tmbdev/webdataset.git",
     ],
     extras_require={
-        "xformers": ["xformers", "triton"],
-        "viz3d-cpu": [
-            "pyvista==0.44.1",
-            "vtk_osmesa==9.3.1",
-            "trame==3.7.0",
-            "trame-vuetify==2.7.1",
-            "trame-vtk==2.8.11",
-            "imageio[ffmpeg]==2.36.0",
-            "pygifsicle==1.1.0",
-        ],
+        "flash-attn": ["flash-attention"],
         "dev": ["pytest", "ruff"],
     },
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
     ],
+    include_package_data=True,
 )
