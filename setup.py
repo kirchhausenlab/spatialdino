@@ -33,6 +33,7 @@ setup(
         "ipywidgets==8.1.5",
         "timm>=0.9.10",
         "webdataset @ git+https://github.com/tmbdev/webdataset.git",
+        "napari[all]",
     ],
     extras_require={
         "flash-attn": ["flash-attention"],
