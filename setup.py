@@ -34,6 +34,7 @@ setup(
         "timm>=0.9.10",
         "webdataset @ git+https://github.com/tmbdev/webdataset.git",
         "napari[all]",
+        "torch-pca",
     ],
     extras_require={
         "flash-attn": ["flash-attention"],
