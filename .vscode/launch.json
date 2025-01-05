@@ -67,10 +67,8 @@
         "--rdzv-backend",
         "c10d",
         "--rdzv-endpoint",
-        "10.1.0.12:9999",
-        "${workspaceFolder}/scripts/train/pretrain.py",
-        "--config",
-        "${workspaceFolder}/configs/pretrain.yaml"
+        "10.1.0.10:9999",
+        "${workspaceFolder}/scripts/train/pretrain.py"
       ]
     },
     {
