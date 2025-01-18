@@ -1,4 +1,5 @@
 *.pth
+*.pt
 
 .DS_Store
 visuals
