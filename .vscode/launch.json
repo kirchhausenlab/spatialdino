@@ -70,15 +70,6 @@
         "10.1.0.10:9999",
         "${workspaceFolder}/scripts/train/pretrain.py"
       ]
-    },
-    {
-      "name": "inference_3d",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "args": ["--config", "${workspaceFolder}/configs/inference.yaml"]
     }
   ]
 }
