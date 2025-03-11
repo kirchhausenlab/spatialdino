@@ -119,7 +119,13 @@
         "--node_rank",
         "0",
         "--nproc_per_node",
-        "8", 
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "10.1.0.10:9999",
         "${workspaceFolder}/scripts/inference/inference_3d_multigpu.py"
       ]
     }
