@@ -1,6 +1,6 @@
 *.pth
 *.pt
-
+*.ruff_cache
 .DS_Store
 visuals
 test_images
