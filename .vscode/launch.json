@@ -100,28 +100,39 @@
         "${workspaceFolder}/scripts/train/sinder.py"
       ]
     },
+    // {
+    //   "name": "inference",
+    //   "type": "debugpy",
+    //   "request": "launch",
+    //   "console": "integratedTerminal",
+    //   "module": "torch.distributed.run",
+    //   "justMyCode": false,
+    //   "env": {
+    //     "NCCL_SOCKET_IFNAME": "ib",
+    //     "NCCL_SOCKET_NTHREADS": "4",
+    //     "NCCL_NSOCKS_PERTHREAD": "4",
+    //     "OMP_NUM_THREADS": "16"
+    //   },
+    //   "args": [
+    //     "--nnodes",
+    //     "1",
+    //     "--node_rank",
+    //     "0",
+    //     "--nproc_per_node",
+    //     "8",
+    //     "${workspaceFolder}/scripts/inference/inference_3d_multigpu.py"
+    //   ]
+    // },
     {
-      "name": "inference",
+      "name": "inference_pt2",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
-      "module": "torch.distributed.run",
       "justMyCode": false,
+      "program": "${workspaceFolder}/src/cell_interactome/utils/inference.py",
       "env": {
-        "NCCL_SOCKET_IFNAME": "ib",
-        "NCCL_SOCKET_NTHREADS": "4",
-        "NCCL_NSOCKS_PERTHREAD": "4",
-        "OMP_NUM_THREADS": "16"
-      },
-      "args": [
-        "--nnodes",
-        "1",
-        "--node_rank",
-        "0",
-        "--nproc_per_node",
-        "8",
-        "${workspaceFolder}/scripts/inference/inference_3d_multigpu.py"
-      ]
+        "CUDA_VISIBLE_DEVICES": "0"
+      }
     }
   ]
 }
