@@ -135,7 +135,7 @@
       },
       "args": [
         "--exp_name",
-        "Ex03_camB_ch0_CAM1_stack0031_642nm_0000114msec",
+        "000",
         "--save_path",
         "/raid1/cme_tests/results",
       ]
