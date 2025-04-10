@@ -129,8 +129,8 @@
       "request": "launch",
       "console": "integratedTerminal",
       "justMyCode": false,
-      "module": "torch.distributed.run",
-      // "program": "${workspaceFolder}/src/cell_interactome/utils/inference.py",
+      // "module": "torch.distributed.run",
+      "program": "${workspaceFolder}/src/cell_interactome/utils/inference.py",
       "env": {
         "CUDA_VISIBLE_DEVICES": "0, 1, 2,3",
         "NCCL_SOCKET_IFNAME": "ib",
@@ -139,28 +139,11 @@
         "OMP_NUM_THREADS": "16"
       },
       "args": [
-        "--nnodes",
-        "1",
-        "--node_rank",
-        "0",
-        "--nproc_per_node",
-        "4",
-        "${workspaceFolder}/src/cell_interactome/utils/inference.py",
         "--exp_name",
-        "013",
+        "000",
         "--save_path",
         "/raid1/cme_tests/results",
       ]
-    },
-    //   "env": {
-    //     "CUDA_VISIBLE_DEVICES": "0, 1, 2"
-    //   },
-    //   "args": [
-    //     "--exp_name",
-    //     "000",
-    //     "--save_path",
-    //     "/raid1/cme_tests/results",
-    //   ]
-    // }
+    }
   ]
 }
