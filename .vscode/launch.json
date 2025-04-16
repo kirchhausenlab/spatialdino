@@ -119,8 +119,14 @@
         "--node_rank",
         "0",
         "--nproc_per_node",
-        "8",
-        "${workspaceFolder}/scripts/inference/inference_3d_multigpu.py"
+        "4",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "${workspaceFolder}/scripts/inference/post_training.py",
+        "--file_path",
+        "/nfs/scratch2/inacio/data/llsm_simulation/second_try/volumes_noise",
       ]
     },
     {
