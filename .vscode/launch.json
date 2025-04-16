@@ -132,7 +132,7 @@
       "module": "torch.distributed.run",
       // "program": "${workspaceFolder}/src/cell_interactome/utils/inference.py",
       "env": {
-        "CUDA_VISIBLE_DEVICES": "0, 1, 2,3",
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3,4",
         "NCCL_SOCKET_IFNAME": "ib",
         "NCCL_SOCKET_NTHREADS": "4",
         "NCCL_NSOCKS_PERTHREAD": "4",
@@ -149,11 +149,9 @@
         "2000",
         "--rdzv-backend",
         "c10d",
-        "--rdzv-endpoint",
-        "10.1.0.10:9999",
         "${workspaceFolder}/src/cell_interactome/utils/inference_3d.py",
         "--exp_name",
-        "000",
+        "ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t.tif",
         "--save_path",
         "/raid1/cme_tests/results",
       ]
