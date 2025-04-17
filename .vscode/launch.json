@@ -119,7 +119,7 @@
         "--node_rank",
         "0",
         "--nproc_per_node",
-        "2",
+        "4",
         "--rdzv-id",
         "2000",
         "--rdzv-backend",
