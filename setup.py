@@ -21,6 +21,7 @@ setup(
         "pillow==11.0.0",
         "tqdm==4.66.5",
         "loky==3.4.1",
+        "wheel",
         "tifffile==2024.9.20",
         "scikit-image==0.24.0",
         "imagecodecs==2024.9.22",
