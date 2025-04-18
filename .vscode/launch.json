@@ -124,9 +124,9 @@
         "2000",
         "--rdzv-backend",
         "c10d",
-        "${workspaceFolder}/scripts/inference/post_training.py",
+        "${workspaceFolder}/scripts/inference/inference.py",
         "--file_path",
-        "/nfs/scratch2/inacio/data/llsm_simulation/second_try/volumes_noise",
+        "/nfs/scratch2/inacio/data/llsm_simulation/second_try/volumes_noise"
       ]
     },
     {
@@ -142,7 +142,8 @@
         "NCCL_SOCKET_IFNAME": "ib",
         "NCCL_SOCKET_NTHREADS": "4",
         "NCCL_NSOCKS_PERTHREAD": "4",
-        "OMP_NUM_THREADS": "16"
+        "OMP_NUM_THREADS": "16",
+        "CUDA_LAUNCH_BLOCKING": "1"
       },
       "args": [
         "--nnodes",
@@ -151,15 +152,11 @@
         "0",
         "--nproc_per_node",
         "4",
-        "--rdzv-id",
-        "2000",
-        "--rdzv-backend",
-        "c10d",
         "${workspaceFolder}/src/cell_interactome/utils/inference_3d.py",
         "--exp_name",
-        "ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t.tif",
+        "000",
         "--save_path",
-        "/raid1/cme_tests/results",
+        "/raid1/cme_tests/results/simulated"
       ]
     }
   ]
