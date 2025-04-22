@@ -95,3 +95,5 @@ target/
 
 src/third_party/VTK
 *.tif
+
+copilot.md
