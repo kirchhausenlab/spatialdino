@@ -126,7 +126,7 @@
         "c10d",
         "${workspaceFolder}/scripts/inference/inference.py",
         "--file_path",
-        "/nfs/scratch2/inacio/data/llsm_simulation/second_try/volumes_noise"
+        "/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
       ]
     },
     {
