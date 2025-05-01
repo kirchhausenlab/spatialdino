@@ -126,7 +126,7 @@
         "c10d",
         "${workspaceFolder}/scripts/inference/inference.py",
         "--file_path",
-        "/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
+        "/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS"
       ]
     },
     {
@@ -136,7 +136,6 @@
       "console": "integratedTerminal",
       "justMyCode": false,
       "module": "torch.distributed.run",
-      // "program": "${workspaceFolder}/src/cell_interactome/utils/inference.py",
       "env": {
         "CUDA_VISIBLE_DEVICES": "0,1,2,3,4",
         "NCCL_SOCKET_IFNAME": "ib",
@@ -152,11 +151,9 @@
         "0",
         "--nproc_per_node",
         "4",
-        "${workspaceFolder}/src/cell_interactome/utils/inference_3d.py",
-        "--exp_name",
-        "000",
+        "${workspaceFolder}/scripts/inference/postprocessing.py",
         "--save_path",
-        "/raid1/cme_tests/results/simulated"
+        "/raid1/cme_tests/results/virus_pca_fix"
       ]
     }
   ]
