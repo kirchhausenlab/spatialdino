@@ -126,7 +126,7 @@
         "c10d",
         "${workspaceFolder}/scripts/inference/inference.py",
         "--file_path",
-        "/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS"
+        "/nfs/scratch/Nchow/quantification/DataForCalculation/Figure_for_hypo_and_apili_enlargement/20250226_Zeiss_apili_svga_Ebola_vsvG/deskew/crop_x02/Ex01_560nm_100mW_642nm_100mW_z0p5/ch560nmCamA/DS"
       ]
     },
     {
