@@ -150,10 +150,10 @@
         "--node_rank",
         "0",
         "--nproc_per_node",
-        "4",
+        "1",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
         "--save_path",
-        "/raid1/cme_tests/results/virus_pca_fix"
+        "/raid1/cme_tests/results/virus_stride4"
       ]
     }
   ]
