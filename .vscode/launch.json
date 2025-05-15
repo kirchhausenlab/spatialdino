@@ -149,7 +149,7 @@
         "1",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
         "file_path=/nfs/scratch/Nchow/quantification/DataForCalculation/Figure_for_hypo_and_apili_enlargement/20250226_Zeiss_apili_svga_Ebola_vsvG/deskew/crop_x04/Ex06_560nm_100mW_642nm_100mW_z0p5/ch560nmCamA/DS",
-        "save_path=/raid1/cme_tests/results/virus_no_apili_cropx04_560_new_inference"
+        "save_path=/raid1/cme_tests/results/virus_no_apili_cropx04_560_new_inference_fixes"
       ]
     }
   ]
