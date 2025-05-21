@@ -148,8 +148,8 @@
         "--nproc_per_node",
         "1",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
-        "file_path=/raid1/cme_tests/results/virus_no_apili_pad_fix",
-        "save_path=/raid1/cme_tests/results/virus_no_apili_pad_fix"
+        "file_path=/raid1/cme_tests/results/virus_dextran",
+        "save_path=/raid1/cme_tests/results/virus_dextran"
       ]
     }
   ]
