@@ -67,7 +67,7 @@
         "--rdzv-backend",
         "c10d",
         "--rdzv-endpoint",
-        "10.1.0.10:9999",
+        "localhost:9999",
         "${workspaceFolder}/scripts/train/pretrain.py"
       ]
     },
@@ -96,7 +96,7 @@
         "--rdzv-backend",
         "c10d",
         "--rdzv-endpoint",
-        "10.1.0.10:9999",
+        "localhost:9999",
         "${workspaceFolder}/scripts/train/sinder.py"
       ]
     },
@@ -120,6 +120,12 @@
         "0",
         "--nproc_per_node",
         "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
         "${workspaceFolder}/scripts/inference/inference.py",
         "file_path=/nfs/scratch/Nchow/quantification/DataForCalculation/Figure_for_hypo_and_apili_enlargement/20250226_Zeiss_apili_svga_Ebola_vsvG/deskew/crop_x04/Ex06_560nm_100mW_642nm_100mW_z0p5/ch560nmCamA/DS",
         "save_path=/raid1/cme_tests/results/virus_no_apili_pad_fix"
@@ -147,6 +153,12 @@
         "0",
         "--nproc_per_node",
         "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
         "file_path=/raid1/cme_tests/results/virus_dextran",
         "save_path=/raid1/cme_tests/results/virus_dextran"
