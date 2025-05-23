@@ -111,8 +111,7 @@
         "NCCL_SOCKET_IFNAME": "ib",
         "NCCL_SOCKET_NTHREADS": "4",
         "NCCL_NSOCKS_PERTHREAD": "4",
-        "OMP_NUM_THREADS": "16",
-        "CUDA_VISIBLE_DEVICES": "7"
+        "OMP_NUM_THREADS": "16"
       },
       "args": [
         "--nnodes",
