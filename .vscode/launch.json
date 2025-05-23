@@ -101,6 +101,35 @@
       ]
     },
     {
+      "name": "segmentation",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "env": {
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "16"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/train/segmentation.py"
+      ]
+    },
+    {
       "name": "inference",
       "type": "debugpy",
       "request": "launch",
@@ -132,7 +161,7 @@
       ]
     },
     {
-      "name": "inference_pt2",
+      "name": "postprocessing",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
