@@ -149,7 +149,9 @@
         "c10d",
         "--rdzv-endpoint",
         "localhost:9999",
-        "${workspaceFolder}/scripts/inference/segmentation.py"
+        "${workspaceFolder}/scripts/inference/segmentation.py",
+        "file_path=/nfs/scratch/ajain/ebola_llsm/crop_raw/care_virus_arkash/DS",
+        "save_path=/raid1/cme_tests/results/care_virus"
       ]
     },
     {
