@@ -130,6 +130,29 @@
       ]
     },
     {
+      "name": "segmentation_inference",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/inference/segmentation.py"
+      ]
+    },
+    {
       "name": "inference",
       "type": "debugpy",
       "request": "launch",
