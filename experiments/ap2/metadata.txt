@@ -1,0 +1,29 @@
+INFERENCE:
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A   1739724      C   ...niforge3/envs/cell3d/bin/python3.12       4352MiB |
++-----------------------------------------------------------------------------------------+
+
+POST-PROCESSING:
+
+(cell3d) ajain@tkdgx1:/nfs/scratch1/ajain/cell_interactome$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:           2.0Ti       155Gi       1.3Ti       9.1Gi       526Gi       1.8Ti
+Swap:             0B          0B          0B
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A   2292290      C   ...niforge3/envs/cell3d/bin/python3.12      18300MiB |
++-----------------------------------------------------------------------------------------+
+
+chunk_size: 1 #[448, 448, 448]
+overlap: 0 # 0.1 # 0.5
+mode: "constant" #"gaussian"
+sigma_scale: 0.125
+upsample_factor: 1 #1.5 #1.5 # 2
