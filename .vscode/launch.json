@@ -215,8 +215,8 @@
         "--rdzv-endpoint",
         "localhost:9999",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
-        "file_path=/raid1/cme_tests/results/virus_dextran",
-        "save_path=/raid1/cme_tests/results/virus_dextran"
+        "file_path=/raid2/cme_tests/results/zeiss_642",
+        "save_path=/raid2/cme_tests/results/zeiss_642"
       ]
     }
   ]
