@@ -215,8 +215,8 @@
         "--rdzv-endpoint",
         "localhost:9999",
         "${workspaceFolder}/scripts/inference/postprocessing.py",
-        "file_path=/raid2/cme_tests/results/zeiss_642_ex4",
-        "save_path=/raid2/cme_tests/results/zeiss_642_ex4"
+        "file_path=/raid3/cme_tests/results/zeiss_642_ex4",
+        "save_path=/raid3/cme_tests/results/zeiss_642_ex4"
       ]
     }
   ]
