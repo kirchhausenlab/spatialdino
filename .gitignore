@@ -9,7 +9,7 @@ test_images
 logs
 outputs
 wandb
-*.csv
+# *.csv
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
