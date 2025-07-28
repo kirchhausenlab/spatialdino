@@ -1,10 +1,8 @@
-Cell Interactome
-==============================
+# Cell Interactome
 
-Automated detection of events of interest in cell interactions.
+Automated detection of events of interest in cell interactions. Please refer to the wiki for more details.
 
-Project Organization
-------------
+## Project Organization
 
     ├── LICENSE
     ├── Makefile           <- Makefile with commands like `make data` or `make train`
@@ -41,5 +39,4 @@ Project Organization
     │   └── visualization  <- Scripts to create exploratory and results oriented visualizations
     │       └── visualize.py
 
-
---------
+---
