@@ -2,6 +2,12 @@
 
 Automated detection of events of interest in cell interactions. Please refer to the wiki for more details.
 
+- In the wiki you have an experiments folder which includes tiff files and results of segmentations of different biological objects. The experiments.md file explains the experiments used.
+- Spatial_dino.pdf has a more technical view of our model, preprocessing pipeline, inference, segmentation and tracking.
+- The run_spatial_dino folder has 4 videos showing how to run inference, segmentation and tracking.
+- Supplementary folder has interesting code and ideas that were never used but can be incorporated in the future. They have ideas like feaure pyramids, DesD heads, 3D transformations in pytorch etc.
+- The technical summary fodler has a more technical view of the model, preprocessing pipeline, inference, segmentation and tracking.
+
 ## Project Organization
 
     ├── LICENSE

@@ -1,5 +1,3 @@
-*.pth
-*.pt
 *.ruff_cache
 .DS_Store
 visuals
@@ -96,6 +94,5 @@ target/
 
 src/third_party/VTK
 *.tif
-*.png
 *.npz
 copilot.md
