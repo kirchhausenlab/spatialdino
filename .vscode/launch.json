@@ -130,31 +130,6 @@
       ]
     },
     {
-      "name": "segmentation_inference",
-      "type": "debugpy",
-      "request": "launch",
-      "console": "integratedTerminal",
-      "module": "torch.distributed.run",
-      "justMyCode": false,
-      "args": [
-        "--nnodes",
-        "1",
-        "--node_rank",
-        "0",
-        "--nproc_per_node",
-        "1",
-        "--rdzv-id",
-        "2000",
-        "--rdzv-backend",
-        "c10d",
-        "--rdzv-endpoint",
-        "localhost:9999",
-        "${workspaceFolder}/scripts/inference/segmentation.py",
-        "file_path=/nfs/scratch/ajain/ebola_llsm/crop_raw/care_virus_arkash/DS",
-        "save_path=/raid1/cme_tests/results/care_virus"
-      ]
-    },
-    {
       "name": "inference",
       "type": "debugpy",
       "request": "launch",
@@ -187,18 +162,18 @@
       ]
     },
     {
-      "name": "postprocessing",
+      "name": "segmentation_inf",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
       "justMyCode": false,
       "module": "torch.distributed.run",
       "env": {
-        "CUDA_VISIBLE_DEVICES": "0,1,2,3,4",
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3",
         "NCCL_SOCKET_IFNAME": "ib",
         "NCCL_SOCKET_NTHREADS": "4",
         "NCCL_NSOCKS_PERTHREAD": "4",
-        "OMP_NUM_THREADS": "16",
+        "OMP_NUM_THREADS": "32",
         "CUDA_LAUNCH_BLOCKING": "1"
       },
       "args": [
@@ -214,9 +189,16 @@
         "c10d",
         "--rdzv-endpoint",
         "localhost:9999",
-        "${workspaceFolder}/scripts/inference/postprocessing.py",
-        "file_path=/raid3/cme_tests/results/zeiss_642_ex4",
-        "save_path=/raid3/cme_tests/results/zeiss_642_ex4"
+        "${workspaceFolder}/scripts/inference/segmentation.py",
+        "file_path=/nfs/scratch2/shared_image_recog_ml/spatial_dino_exp/zeiss_experiments/zeiss_560_left",
+        "save_path=/nfs/scratch2/shared_image_recog_ml/spatial_dino_exp/zeiss_experiments/zeiss_560_left",
+        "blur_factor=3.0",
+        "spot_sigma=2",
+        "outline_sigma=2",
+        "background_removal_radius=10",
+        "use_raw_mask=False",
+        "skip_existing=False",
+        "attention_weight=0.5"
       ]
     }
   ]
