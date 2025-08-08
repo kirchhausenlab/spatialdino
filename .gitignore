@@ -1,5 +1,6 @@
 *.pth
 *.pt
+*.pdf
 *.ruff_cache
 .DS_Store
 visuals
