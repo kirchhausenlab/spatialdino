@@ -157,7 +157,7 @@
         "localhost:9999",
         "${workspaceFolder}/scripts/inference/inference.py",
         "file_path=/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS",
-        "save_path=/raid2/cme_tests/results/dextran2",
+        "save_path=/raid2/cme_tests/results/dextran",
         "number_of_files=1"
       ]
     },

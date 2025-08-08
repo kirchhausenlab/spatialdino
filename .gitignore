@@ -96,6 +96,6 @@ target/
 
 src/third_party/VTK
 *.tif
-# *.png
+*.png
 *.npz
 copilot.md
