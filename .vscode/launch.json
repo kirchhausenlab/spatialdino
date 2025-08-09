@@ -1,0 +1,205 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "save_files",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "args": [
+        "--save_3d",
+        "--use_deskewed_data",
+        "--dz",
+        "0.25",
+        "--dy",
+        "0.104",
+        "--dx",
+        "0.104",
+        "--z_flatten_mode",
+        "NONE",
+        "--z_chunk_size",
+        "-1",
+        "--y_chunk_size",
+        "-1",
+        "--x_chunk_size",
+        "-1",
+        "--data_paths_txt",
+        "/nfs/scratch2/shared_image_recog_ml/annotations/experiment_paths.txt",
+        "--save_path",
+        "/nfs/scratch2/shared_image_recog_ml/llsm_3d_ds_auto_crop_sharded_v2",
+        "--experiment_filter_pattern",
+        "(?i)(dextran|lamp1|npc1|eea1|transferrin)",
+        "--found_experiments_limit",
+        "1000",
+        "--min_tif_files",
+        "20",
+        "--max_workers",
+        "1",
+        "--auto_crop"
+      ]
+    },
+    {
+      "name": "pretrain",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "env": {
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "16"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/train/pretrain.py"
+      ]
+    },
+    {
+      "name": "sinder",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "env": {
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "16"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/train/sinder.py"
+      ]
+    },
+    {
+      "name": "segmentation",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "env": {
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "16"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/train/segmentation.py"
+      ]
+    },
+    {
+      "name": "inference",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "module": "torch.distributed.run",
+      "justMyCode": false,
+      "env": {
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "16"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/inference/inference.py",
+        "file_path=/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS",
+        "save_path=/raid2/cme_tests/results/dextran",
+        "number_of_files=1"
+      ]
+    },
+    {
+      "name": "segmentation_inf",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "module": "torch.distributed.run",
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+        "NCCL_SOCKET_IFNAME": "ib",
+        "NCCL_SOCKET_NTHREADS": "4",
+        "NCCL_NSOCKS_PERTHREAD": "4",
+        "OMP_NUM_THREADS": "32",
+        "CUDA_LAUNCH_BLOCKING": "1"
+      },
+      "args": [
+        "--nnodes",
+        "1",
+        "--node_rank",
+        "0",
+        "--nproc_per_node",
+        "1",
+        "--rdzv-id",
+        "2000",
+        "--rdzv-backend",
+        "c10d",
+        "--rdzv-endpoint",
+        "localhost:9999",
+        "${workspaceFolder}/scripts/inference/segmentation.py",
+        "file_path=/nfs/scratch2/shared_image_recog_ml/spatial_dino_exp/zeiss_experiments/zeiss_560_left",
+        "save_path=/nfs/scratch2/shared_image_recog_ml/spatial_dino_exp/zeiss_experiments/zeiss_560_left",
+        "blur_factor=3.0",
+        "spot_sigma=2",
+        "outline_sigma=2",
+        "background_removal_radius=10",
+        "use_raw_mask=False",
+        "skip_existing=False",
+        "attention_weight=0.5"
+      ]
+    }
+  ]
+}

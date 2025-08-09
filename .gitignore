@@ -1,8 +1,16 @@
+
+*.pth
+*.pt
+*.pdf
+*.ruff_cache
 .DS_Store
 visuals
-*.mp4
+test_images
 .venv
 logs
+outputs
+wandb
+*.csv
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -71,17 +79,11 @@ target/
 # Pycharm
 .idea
 
-# VS Code
-.vscode/
-
 # Spyder
 .spyproject/
 
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
-
-# exclude data from source control by default
-/data/
 
 # Mac OS-specific storage files
 .DS_Store
@@ -92,3 +94,10 @@ target/
 
 # Mypy cache
 .mypy_cache/
+.pytest_cache/
+
+src/third_party/VTK
+*.tif
+*.png
+*.npz
+copilot.md
