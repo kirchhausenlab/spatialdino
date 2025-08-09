@@ -99,3 +99,4 @@ src/third_party/VTK
 *.png
 *.npz
 copilot.md
+*.mp4
