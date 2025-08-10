@@ -35,6 +35,291 @@ python scripts/interactive_inf.py  # Feature extraction & segmentation
 
 ---
 
+## 📋 Table of Contents
+
+1. [Machine Setup](#machine-setup-💻) 💻
+2. [CUDA Installation](#cuda-installation-🛠️) 🛠️
+3. [Installation](#installation-🛠️) 🛠️
+4. [Training](#training-🏃) 🏃
+5. [Inference](#inference-🔍) 🔍
+6. [Segmentation](#segmentation-✂️) ✂️
+
+---
+
+## Machine Setup 💻
+
+You can use the following machines to run the Cell Interactome pipeline:
+
+1. **Ubuntu** <img src="https://user-images.githubusercontent.com/25181517/186884153-99edc188-e4aa-4c84-91b0-e2df260ebc33.png" width="15">
+2. **MacOS** <img src="https://user-images.githubusercontent.com/25181517/186884152-ae609cca-8cf1-4175-8d60-1ce1fa078ca2.png" width="15"> [*Please Use Docker*] <img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="15">
+3. **Windows** <img src="https://user-images.githubusercontent.com/25181517/186884150-05e9ff6d-340e-4802-9533-2c3f02363ee3.png" width="18"> [*Please Use Docker*] <img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="18">
+
+---
+
+## CUDA Installation 🛠️
+
+This project requires CUDA version 12.x. Verify the correct version of CUDA installed by running:
+
+```bash
+nvcc --version
+```
+
+---
+
+## Installation 🛠️
+
+### 1. Clone the repository:
+
+```bash
+git clone --recursive git@github.com:kirchhausenlab/cell_interactome.git
+```
+
+### 2. Create a conda environment:
+
+```bash
+mamba env create -f env.yaml -n cell3d
+mamba activate cell3d
+pip install -e .
+pip install natsort rich tqdm click xformers
+```
+
+### 📦 Troubleshooting
+
+In case of errors, ensure you have the required dependencies for Python installed:
+
+**Delete the cache:**
+
+```bash
+rm -rf ~/.cache/
+rm -rf cell_interactome.egg-info
+```
+
+**Install system dependencies:**
+
+```bash
+sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
+libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python-openssl \
+ninja-build cmake libegl1-mesa-dev python3-dev
+```
+
+---
+
+## Training 🏃
+
+### Environment Setup
+
+If you do not have a `.bashrc` file, create one:
+
+```bash
+touch ~/.bashrc
+```
+
+Add the following to your `.bashrc` file:
+
+**XDG Configuration** (cross-platform directory layout):
+
+```bash
+export tname="tmux rename-window"
+export XDG_DATA_HOME="$HOME/.local/share"
+export XDG_DATA_DIRS="/usr/local/share:/usr/share"
+export XDG_CONFIG_HOME="$HOME/.config"
+export XDG_CONFIG_DIRS="/etc/xdg"
+export XDG_STATE_HOME="$HOME/.local/state"
+export XDG_CACHE_HOME="$HOME/.cache"
+export XDG_RUNTIME_DIR="$HOME/.local/run"
+export XDG_DESKTOP_DIR="$HOME/Desktop"
+export XDG_DOCUMENTS_DIR="$HOME/Documents"
+export XDG_DOWNLOAD_DIR="$HOME/Downloads"
+export XDG_MUSIC_DIR="$HOME/Music"
+export XDG_PICTURES_DIR="$HOME/Pictures"
+export XDG_PUBLICSHARE_DIR="$HOME/Public"
+export XDG_TEMPLATES_DIR="$HOME/Templates"
+export XDG_VIDEOS_DIR="$HOME/Videos"
+export HUGGINGFACE_HUB_CACHE="${XDG_CACHE_HOME}/huggingface/hub"
+export HF_HUB_ENABLE_HF_TRANSFER=1
+export JUPYTER_PLATFORM_DIRS=1
+```
+
+**NCCL Configuration** (NVIDIA's communication library):
+
+```bash
+export NCCL_SOCKET_NTHREADS=4     # number of threads per socket
+export NCCL_NSOCKS_PERTHREAD=4    # number of sockets per thread
+export NCCL_IB_DISABLE=0          # enable Infiniband
+export NCCL_IB_HCA="mlx5"         # use Mellanox Infiniband
+export CUDA_HOME="/usr/local/cuda-12"  # choose the correct CUDA version
+export PATH=$CUDA_HOME/bin:$PATH
+export CPATH="$CUDA_HOME/include:$CPATH"
+```
+
+**C++ Library:**
+
+```bash
+export CXX=g++
+```
+
+**Distributed Training:**
+
+```bash
+export NCCL_SOCKET_IFNAME=ib      # use all infiniband interfaces
+export RDZV_BACKEND="c10d"
+export OMP_NUM_THREADS=16
+export NUM_ALLOWED_FAILURES=3
+
+export RDZV_ID="2001"             # set the rdzv id to be the same for all nodes
+export MASTER_PORT="29500"        # set the master port to be the same for all nodes
+```
+
+### Multi-Node Setup
+
+To get the Master Address, get the IP address of your infiniband interface:
+
+```bash
+ibstat
+```
+
+Example output:
+
+```bash
+ib0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
+inet 10.1.0.11 netmask 255.255.0.0 broadcast 10.1.255.255
+...
+
+ib1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
+inet 10.2.0.11 netmask 255.255.0.0 broadcast 10.2.255.255
+inet6 fe80::63f:7203:d3:ae0e prefixlen 64 scopeid 0x20<link>
+unspec 00-00-10-29-FE-80-00-00-00-00-00-00-00-00-00-00 txqueuelen 256 (UNSPEC)
+RX packets 137081439 bytes 250938047445 (250.9 GB)
+RX errors 0 dropped 0 overruns 0 frame 0
+TX packets 786878109 bytes 1591832370392 (1.5 TB)
+TX errors 0 dropped 0 overruns 0 carrier 0 collisions 0
+```
+
+Set the master address (in this case `10.1.0.11`):
+
+```bash
+export MASTER_ADDR="10.1.0.11"
+export RDZV_ENDPOINT="$MASTER_ADDR:$MASTER_PORT"
+```
+
+### Training Command
+
+For multi-node training with 3 nodes and 8 GPUs per node:
+
+```bash
+# Arguments explanation:
+# --nnodes: number of nodes (e.g. 3)
+# --node_rank: rank of the node (e.g. 0, 1, 2, ... n) for n nodes
+# --nproc_per_node: number of processes/GPUs per node (e.g. 8)
+# --master_addr: address of the master node (e.g. 10.10.10.10)
+# --master_port: port of the master node (e.g. 29500)
+
+torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
+         --rdzv-id $RDZV_ID --rdzv-backend $RDZV_BACKEND \
+         --rdzv-endpoint $RDZV_ENDPOINT scripts/train/pretrain.py
+```
+
+---
+
+## Inference 🔍
+
+**Interactive CLI (Recommended):**
+
+```bash
+python3 scripts/interactive_inf.py
+```
+
+### Input Size Guidelines
+
+For efficient inference, we recommend maximum `[Z,Y,X]` input of `[150, 750, 750]` (total volume ~84M pixels³). Alternative configurations:
+
+- `[300, 300, 300]`
+- `[80, 1000, 500]`
+
+### Example Inference Script
+
+```bash
+#!/bin/bash
+
+folder_path="/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
+number_of_files=1                    # -1 for all timepoints, otherwise chose a number
+save_path="/raid1/cme_tests/results/ablations/ap2_test"
+export OMP_NUM_THREADS=32
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+
+torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
+         --rdzv_endpoint=localhost:9999 ./scripts/inference/inference.py \
+  file_path="$folder_path" \
+  save_path="$save_path" \
+  number_of_files=$number_of_files \
+  crop_params="[0,0,0,0,0,0]"
+```
+
+### Script Parameters
+
+- **`folder_path`**: Path to folder containing images
+- **`number_of_files`**: Number of files to process (-1 for all files)
+- **`save_path`**: Path to save results
+- **`OMP_NUM_THREADS`**: Number of threads to use
+- **`CUDA_VISIBLE_DEVICES`**: List of GPUs to use
+- **`NUM_PROC_PER_NODE`**: Number of processes/GPUs per node
+- **`crop_params`**: Parameters for cropping images
+
+---
+
+## Segmentation ✂️
+
+**Interactive CLI (Recommended):**
+
+```bash
+python3 scripts/interactive_seg.py
+```
+
+### Example Segmentation Script
+
+```bash
+#!/bin/bash
+save_path="/raid1/cme_tests/results/ap2_latest"
+blur_image=False                     # true for most datasets
+blur_factor=1.0                      # use 3.0 for very low SNR, 1.0 for SNR > 3
+export OMP_NUM_THREADS=32
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+use_raw_mask=False                   # set to False unless SNR < 3
+spot_sigma=2.0                       # for most endosomes, viruses
+outline_sigma=2.0
+attention_weight=0.5
+background_removal_radius=10
+skip_existing=False                  # set to True if continuing previous experiments
+
+torchrun --nnodes=1 --node_rank=0 --nproc_per_node=$NUM_PROC_PER_NODE \
+         --rdzv_endpoint=localhost:8999 ./scripts/inference/segmentation.py \
+  file_path="$save_path" \
+  save_path="$save_path" \
+  skip_existing=$skip_existing \
+  background_removal_radius=$background_removal_radius \
+  attention_weight=$attention_weight \
+  blur_factor=$blur_factor \
+  use_raw_mask=$use_raw_mask \
+  outline_sigma=$outline_sigma \
+  spot_sigma=$spot_sigma \
+  blur_image=$blur_image
+```
+
+### Parameter Tuning
+
+For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segmentation.ipynb`.
+
+**Key guidelines:**
+
+- **Low SNR datasets**: Increase `blur_factor` to 3.0 for Gaussian blur
+- **Standard datasets (SNR > 3)**: Use `blur_factor=1.0`
+- **Parameter visualization**: The sample experiment images above show optimal configurations for different data types
+
+---
+
 ## 🔄 Pipeline Workflow
 
 ### 1. Feature Extraction
