@@ -47,12 +47,64 @@ python scripts/interactive_inf.py  # Feature extraction & segmentation
 
 ## 📋 Table of Contents
 
-1. [Machine Setup](#machine-setup-💻) 💻
-2. [CUDA Installation](#cuda-installation-🛠️) 🛠️
-3. [Installation](#installation-🛠️) 🛠️
-4. [Training](#training-🏃) 🏃
-5. [Inference](#inference-🔍) 🔍
-6. [Segmentation](#segmentation-✂️) ✂️
+### 🚀 Getting Started
+
+1. [Resources](#-resources) - Video tutorials, technical docs, and guides
+2. [Quick Start](#-quick-start) - One-command installation and basic usage
+3. [Machine Setup](#machine-setup-💻) - Ubuntu/MacOS/Windows compatibility guide
+4. [CUDA Installation](#cuda-installation-🛠️) - GPU requirements and setup verification
+5. [Installation](#installation-🛠️) - Complete setup process
+   - [SSH Key Setup](#1-ssh-key-setup) - GitHub authentication
+   - [Miniforge & Mamba](#2-install-miniforge--mamba) - Environment management
+   - [Repository Clone](#3-clone-the-repository) - Source code download
+   - [Environment Creation](#4-create-a-conda-environment) - Dependencies installation
+   - [Troubleshooting](#-troubleshooting) - Common issues and fixes
+
+### 🔬 Core Pipeline
+
+6. [Training](#training-🏃) - Multi-node self-supervised model training
+   - [Environment Setup](#environment-setup) - Configuration variables
+   - [Multi-Node Setup](#multi-node-setup) - Distributed training configuration
+   - [Training Command](#training-command) - Execution examples
+7. [Inference](#inference-🔍) - Feature extraction from 3D volumes
+   - [Interactive CLI](#inference-🔍) - Recommended user interface
+   - [Input Size Guidelines](#input-size-guidelines) - Volume constraints
+   - [Example Scripts](#example-inference-script) - Batch processing setup
+   - [Script Parameters](#script-parameters) - Configuration options
+8. [Segmentation](#segmentation-✂️) - Instance mask generation
+   - [Interactive CLI](#segmentation-✂️) - User-friendly interface
+   - [Example Scripts](#example-segmentation-script) - Automation examples
+   - [Parameter Tuning](#parameter-tuning) - SNR-specific optimization
+
+### 📊 Workflow & Analysis
+
+9. [Pipeline Workflow](#-pipeline-workflow) - Complete processing pipeline
+   - [Feature Extraction](#1-feature-extraction) - DINO feature computation
+   - [Segmentation Process](#2-segmentation) - Attention-based clustering
+   - [Sample Results](#sample-results-by-data-type) - Data type examples
+   - [Tracking & Visualization](#3-tracking--visualization) - Temporal analysis
+10. [Results & Features](#-results--features) - Output files and capabilities
+    - [Output Files](#output-files) - Generated data formats
+    - [Feature Visualization](#feature-visualization) - Analysis examples
+
+### 🔧 Technical Details
+
+11. [Architecture](#-architecture) - Codebase structure overview
+12. [Configuration](#-configuration) - Key parameter settings
+13. [Support](#-support) - Help and contact information
+14. [Citation](#-citation) - Academic reference
+
+### 📖 Advanced Technical Documentation
+
+15. [Technical Supplement](#-technical-supplement) - Deep dive into algorithms
+    - [Inference Pipeline](#inference-pipeline-deep-dive) - Architecture details
+    - [Global Normalization](#global-normalization-strategy) - Preprocessing methods
+    - [Distributed Inference](#distributed-inference-strategy) - Multi-GPU processing
+    - [Feature Extraction](#feature-extraction-details) - DINO implementation
+    - [Enhanced Normalization](#enhanced-normalization-for-complex-volumes) - Advanced preprocessing
+    - [Segmentation Details](#postprocessing--segmentation) - Clustering algorithms
+    - [Tracking Algorithm](#tracking-algorithm) - Temporal linking methods
+    - [SINDER Post-training](#sinder-post-training) - Artifact correction technique
 
 ---
 
