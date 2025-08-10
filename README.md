@@ -15,6 +15,16 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ---
 
+## 📚 Resources
+
+**Play around with the interactive CLI to get a feel for the pipeline and then tune the actual scripts. If you get stuck, please watch the video tutorials before asking questions.**
+
+- **[Video Tutorials](wiki/run_spatial_dino/)**: Workflow demonstrations
+- **[Technical Details](wiki/spatial_dino.pdf)**: Research methodology
+- **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -417,14 +427,6 @@ cell_interactome/
 - `patch_size`: Transformer patch dimensions
 - `stride`: Inference overlap
 - `isotropic_scale_factor`: Spatial normalization
-
----
-
-## 📚 Resources
-
-- **[Technical Details](wiki/spatial_dino.pdf)**: Research methodology
-- **[Video Tutorials](wiki/run_spatial_dino/)**: Workflow demonstrations
-- **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
 
 ---
 
