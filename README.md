@@ -8,6 +8,9 @@ _Automated detection and tracking of cellular interactions using self-supervised
 [![Mamba](https://img.shields.io/badge/Mamba-conda--forge-green.svg)](https://mamba.readthedocs.io/)
 [![DINOv2](https://img.shields.io/badge/DINOv2-Facebook%20AI-blue.svg)](https://github.com/facebookresearch/dinov2)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Ruff](https://img.shields.io/badge/Ruff-linter-orange.svg)](https://docs.astral.sh/ruff/)
+[![Napari](https://img.shields.io/badge/Napari-image--viewer-purple.svg)](https://napari.org/stable/)
+[![TOML](https://img.shields.io/badge/TOML-configuration-lightgrey.svg)](https://toml.io/en/)
 
 ## 👥 Authors
 
