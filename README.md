@@ -25,6 +25,8 @@ _Automated detection and tracking of cellular interactions using self-supervised
 - **🔗 Temporal tracking** for cellular dynamics analysis
 - **📊 Multi-channel support** (488nm, 560nm, 642nm wavelengths)
 
+**Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see my GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
+
 ---
 
 ## 📚 Resources
