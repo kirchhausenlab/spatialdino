@@ -4,7 +4,16 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-312/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
+[![MONAI](https://img.shields.io/badge/MONAI-%234285F4.svg?style=flat&logo=medical&logoColor=white)](https://monai.io/)
+[![Mamba](https://img.shields.io/badge/Mamba-conda--forge-green.svg)](https://mamba.readthedocs.io/)
+[![DINOv2](https://img.shields.io/badge/DINOv2-Facebook%20AI-blue.svg)](https://github.com/facebookresearch/dinov2)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+## 👥 Authors
+
+[![Arkash Jain - LinkedIn](https://img.shields.io/badge/Arkash%20Jain-LinkedIn-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/arkashj/)
+[![Alex Lavaee - LinkedIn](https://img.shields.io/badge/Alex%20Lavaee-LinkedIn-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/alexlavaee/)
+[![Tom Kirchhausen - PI (Research)](https://img.shields.io/badge/Tom%20Kirchhausen-PI-0b6f9b?style=flat&logo=researchgate)](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
 
 **Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
 
