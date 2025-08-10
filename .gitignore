@@ -1,7 +1,7 @@
 
 *.pth
 *.pt
-# *.pdf
+*.pdf
 *.ruff_cache
 .DS_Store
 visuals
@@ -99,3 +99,4 @@ target/
 src/third_party/VTK
 *.tif
 *.npz
+*.png

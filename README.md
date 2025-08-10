@@ -32,7 +32,10 @@ _Automated detection and tracking of cellular interactions using self-supervised
 **Play around with the interactive CLI to get a feel for the pipeline and then tune the actual scripts. If you get stuck, please watch the video tutorials before asking questions.**
 
 - **[Video Tutorials](wiki/run_spatial_dino/)**: Workflow demonstrations
-- **[Technical Details](wiki/spatial_dino.pdf)**: Research methodology
+- **[Technical Details](wiki/spatial_dino.pdf)**: Overview of the pipeline
+- **[Technical Explanations](wiki/technical_summary/)**: Detailed explanations of the pipeline
+- **[Presentations](wiki/presentations/)**: Slides from presentations showing evolution of the project
+- **[Interesting Papers](wiki/interesting_papers/)**: Some key papers that inspired the project
 - **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
 
 **Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see my GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
