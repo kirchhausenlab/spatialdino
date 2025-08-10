@@ -6,522 +6,543 @@ _Automated detection and tracking of cellular interactions using self-supervised
 [![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 🔬 For Biologists: What This Tool Does
+**Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
 
-**Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in your microscopy data. Think of it as an intelligent assistant that can:
-
-- **🎯 Detect cellular structures** in 3D light-sheet microscopy images
-- **✂️ Segment individual objects** (vesicles, organelles, proteins) with high precision
-- **🔗 Track movements** over time to understand cellular dynamics
-- **📊 Quantify interactions** between different cellular components
-
-### Key Advantages for Biology Research
-
-- **No manual annotation needed** - learns patterns automatically
-- **Works with multi-channel data** (488nm, 560nm, 642nm wavelengths)
-- **Handles complex 3D volumes** with temporal sequences
-- **Provides quantitative tracking** for statistical analysis
+- **🎯 Automated detection** of cellular structures (vesicles, organelles, proteins)
+- **✂️ Precise segmentation** with no manual annotation required
+- **🔗 Temporal tracking** for cellular dynamics analysis
+- **📊 Multi-channel support** (488nm, 560nm, 642nm wavelengths)
 
 ---
 
-## 🚀 Quick Start for Biologists
+## 🚀 Quick Start
 
-### 1. **Prepare Your Data**
-
-- Light-sheet microscopy TIFF files
-- Multi-channel supported (up to 3 channels)
-- 3D volumes with time series
-
-### 2. **Run Analysis Pipeline**
+### Installation
 
 ```bash
-# Interactive mode for easy use
-python scripts/interactive_inf.py
-```
-
-### 3. **Get Results**
-
-- Segmented objects as TIFF files
-- Tracking data as CSV files
-- Visualization-ready outputs for Napari/Fiji
-
----
-
-## 🛠️ Technical Architecture
-
-This project implements a state-of-the-art **DINO (self-supervised vision transformer)** architecture adapted for 3D biological imaging:
-
-### Core Components
-
-- **SSL Model**: Self-supervised learning using DINO backbone
-- **Segmentation Model**: Encoder-decoder architecture for object detection
-- **Tracking System**: Temporal linking with feature-based matching
-- **Processing Pipeline**: End-to-end automation from raw data to results
-
-### Model Architecture Flow
-
-```
-Raw 3D Data → Preprocessing → DINO Features → Segmentation → Instance Detection → Tracking → Results
-```
-
----
-
-## 📁 Project Structure
-
-```
-cell_interactome/
-├── 📚 README.md                    # This file
-├── ⚙️  pyproject.toml              # Package configuration
-├── 📋 requirements files           # Dependencies (env.yaml, uv.lock)
-│
-├── 🧠 src/cell_interactome/        # Core ML modules
-│   ├── 🏗️  models/                 # Neural network architectures
-│   │   ├── ssl/                   # Self-supervised learning (DINO)
-│   │   ├── segmentation/          # Encoder-decoder models
-│   │   ├── layers/                # Custom network layers
-│   │   └── utils.py               # Model utilities
-│   ├── 📊 data/                    # Data handling and transforms
-│   │   ├── dataset.py             # Dataset classes
-│   │   ├── transforms.py          # Image preprocessing
-│   │   └── inference/             # Inference data loaders
-│   ├── 🔬 processing/              # Biological data processing
-│   │   ├── data_loading.py        # Light-sheet microscopy loading
-│   │   └── deconvolution.py       # Image enhancement
-│   ├── 🎯 inference/               # Model inference utilities
-│   ├── 🔗 tracking/                # Object tracking algorithms
-│   ├── 📈 visualization/           # Result visualization
-│   └── ⚙️  config/                 # Configuration management
-│
-├── 🏃 scripts/                     # Executable workflows
-│   ├── 🎓 train/                   # Model training scripts
-│   │   ├── pretrain.py            # Self-supervised pretraining
-│   │   ├── segmentation.py        # Segmentation training
-│   │   └── upsample.py            # Feature upsampling
-│   ├── 🔍 inference/               # Inference pipeline
-│   │   ├── inference.py           # Feature extraction
-│   │   ├── segmentation.py        # Object segmentation
-│   │   └── postprocessing.py      # Result refinement
-│   ├── 📊 data/                    # Data preparation utilities
-│   ├── 🎨 visualize/               # Visualization tools
-│   ├── 📓 notebooks/               # Jupyter analysis notebooks
-│   └── 🖥️  interactive_inf.py      # User-friendly interface
-│
-├── 🤖 models/                      # Pretrained model weights
-├── 📊 reports/                     # Generated results and figures
-├── 📖 wiki/                        # Detailed documentation
-└── 🎯 icons/                       # UI assets
-```
-
-### Key Directories Explained
-
-#### 🧠 `src/cell_interactome/` - Core ML Framework
-
-- **`models/`**: Neural network implementations
-  - `ssl/`: DINO self-supervised architecture
-  - `segmentation/`: Encoder-decoder for object detection
-  - `layers/`: Custom transformer and CNN components
-- **`data/`**: Biological data handling optimized for microscopy
-- **`processing/`**: Specialized tools for light-sheet microscopy
-- **`tracking/`**: Temporal object linking algorithms
-
-#### 🏃 `scripts/` - Research Workflows
-
-- **`train/`**: Model training for different tasks
-- **`inference/`**: Complete analysis pipeline
-- **`notebooks/`**: Interactive analysis and visualization
-- **Interactive tools**: User-friendly interfaces for biologists
-
----
-
-## 🔄 Biological Workflow Pipeline
-
-### 1. **Data Preprocessing**
-
-```bash
-# Prepare and deskew light-sheet data
-python scripts/data/prepare.py
-python scripts/data/deskew.py
-```
-
-### 2. **Feature Extraction**
-
-```bash
-# Extract DINO features from 3D volumes
-./scripts/inference.sh
-```
-
-### 3. **Object Segmentation**
-
-```bash
-# Segment individual biological objects
-./scripts/segmentation.sh
-```
-
-### 4. **Tracking Analysis**
-
-Run the notebook `scripts/notebooks/run_tracking/tracking_tests.ipynb` to get the tracking results.
-
-### 5. **Visualization & Analysis**
-
-Run the first part of the notebook `scripts/notebooks/visualize_features.ipynb` to visualize all features and get detailed pdfs.
-
----
-
-## 💻 Installation
-
-### Prerequisites
-
-- **Python 3.12+**
-- **CUDA 12.x** (for GPU acceleration)
-- **16GB+ RAM** (32GB recommended for large datasets)
-
-### Quick Installation
-
-```bash
-# Clone repository
 git clone --recursive https://github.com/kirchhausenlab/cell_interactome.git
 cd cell_interactome
-
-# Create environment
 mamba env create -f env.yaml -n cell3d
-
 mamba activate cell3d
-pip install -e .
-pip install natsort rich tqdm click
+pip install -e . && pip install natsort rich tqdm click
+```
+
+### Interactive Analysis
+
+```bash
+python scripts/interactive_inf.py  # Feature extraction & segmentation
 ```
 
 ---
 
-## 📊 Understanding Results
+## 🔄 Pipeline Workflow
+
+### 1. Feature Extraction
+
+![Inference Configuration](icons/inference_config.png)
+![Path Selection](icons/inference_select_paths.png)
+![Setup Interface](icons/inference_setup.png)
+
+**Configure and extract DINO features from 3D volumes:**
+
+- Multi-GPU distributed processing
+- Automatic volume preprocessing and normalization
+- Sliding window inference for large datasets
+
+### 2. Segmentation
+
+![Segmentation Interface](icons/segmentation.png)
+![File Operations](icons/file_operations.png)
+
+**Generate instance segmentations using attention-based clustering:**
+
+- K-means clustering on normalized features
+- Attention density-guided mask refinement
+- Instance segmentation via Voronoi-Otsu labeling
+
+#### Sample Results by Data Type
+
+|                                   **AP2 (Endocytic Proteins)**                                   |                                       **Dextran (Fluid Markers)**                                        |
+| :----------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------: |
+|       ![AP2 Config](scripts/notebooks/segmentation_misc/sample_experiments/ap2/config.png)       |       ![Dextran Config](scripts/notebooks/segmentation_misc/sample_experiments/dextran/config.png)       |
+| ![AP2 Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/ap2/segmentation.png) | ![Dextran Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/dextran/segmentation.png) |
+
+|                                                **Transferrin (Low SNR)**                                                |                                                **Simulated Low SNR**                                                |
+| :---------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: |
+|       ![Transferrin Config](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/config.png)       |       ![Simulated Config](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/config.png)       |
+| ![Transferrin Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/segmentation.png) | ![Simulated Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/segmentation.png) |
+
+### 3. Tracking & Visualization
+
+![Tracking](icons/tracking.png)
+![Feature Visualization](icons/visualize_features.png)
+![Track Visualization](icons/tracks.png)
+
+**Temporal object linking and analysis:**
+
+- Physics-based velocity prediction
+- Feature-enhanced trackpy integration
+- Multi-channel track visualization in Napari
+
+![CLI Summary](icons/summary_of_cli.png)
+![CLI Interface](icons/cli_image.png)
+
+---
+
+## 📊 Results & Features
 
 ### Output Files
 
-- **`lr_feats.tif`**: Extracted DINO features
-- **`segmentation.tif`**: Object masks
-- **`centroids.csv`**: Object positions
+- **`lr_feats.tif`**: DINO feature maps
+- **`segmentation.tif`**: Instance masks
+- **`centroids.csv`**: Object coordinates
 - **`tracks.csv`**: Temporal trajectories
-- **`visualization/`**: Images for biological interpretation
 
-### Biological Interpretation
+### Feature Visualization
 
-- **Centroids**: Precise 3D locations of detected objects
-- **Tracks**: Movement patterns over time
-- **Features**: High-dimensional representations for similarity analysis
-- **Segmentation**: Binary masks for quantitative analysis
+Get comprehensive upsampled features as demonstrated in: `/nfs/scratch1/ajain/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
+
+---
+
+## 📁 Architecture
+
+```
+cell_interactome/
+├── src/cell_interactome/        # Core ML framework
+│   ├── models/ssl/             # DINO self-supervised architecture
+│   ├── models/segmentation/    # Encoder-decoder models
+│   ├── data/transforms.py      # Preprocessing pipelines
+│   ├── tracking/              # Temporal linking algorithms
+│   └── config/                # Configuration files
+├── scripts/
+│   ├── train/pretrain.py      # Self-supervised training
+│   ├── inference/             # Feature extraction & segmentation
+│   ├── interactive_inf.py     # User interface
+│   └── notebooks/             # Analysis workflows
+└── models/                    # Pretrained weights
+```
 
 ---
 
 ## 🔧 Configuration
 
-Key configuration files:
+**Key parameters in `src/cell_interactome/config/inference.yaml`:**
 
-- **`src/cell_interactome/config/inference.yaml`**: Inference parameters
-- **`src/cell_interactome/config/pretrain.yaml`**: Pretraining parameters
-
----
-
-## 📚 Additional Resources
-
-### 📖 Documentation
-
-- **[Getting Started Guide](wiki/getting_started.md)**: Step-by-step tutorial
-- **[Pipeline Overview](wiki/pipeline.md)**: Detailed workflow explanation
-- **[Technical Details](wiki/spatial_dino.pdf)**: Research paper and methods
-
-### 🎥 Video Tutorials
-
-- **[Running Inference](wiki/run_spatial_dino/)**: Video demonstrations
+- `chunk_size`: Processing volume size
+- `patch_size`: Transformer patch dimensions
+- `stride`: Inference overlap
+- `isotropic_scale_factor`: Spatial normalization
 
 ---
 
-## 🤝 Contributing
+## 📚 Resources
 
-We welcome contributions from both biologists and developers!
+- **[Technical Details](wiki/spatial_dino.pdf)**: Research methodology
+- **[Video Tutorials](wiki/run_spatial_dino/)**: Workflow demonstrations
+- **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
 
-### For Biologists
+---
 
-- Report issues with specific datasets
-- Request new features for your research
-- Share example data for testing
+## 📞 Support
 
-### For Developers
-
-- Implement new model architectures with notes found in `wiki/supplementary` folder.
-- Pretrain the model with `scripts/train/pretrain.py`
+- **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
+- **Contact**: Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com)), Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu))
 
 ---
 
 ## 📄 Citation
 
-If you use Cell Interactome in your research, please cite:
-
 ```bibtex
 @article{cell_interactome2024,
   title={Cell Interactome: Automated Detection of Cellular Interactions using Self-Supervised Deep Learning},
-  author={[Your Names]},
-  journal={[Journal Name]},
+  author={[Authors]},
+  journal={[Journal]},
   year={2024}
 }
 ```
 
 ---
 
-## 📞 Support
+# 📖 Technical Supplement
 
-- **🐛 Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
-- **📧 Email**: Araksh Jain [arkashjain17@gmail.com](mailto:arkashjain17@gmail.com), Alex Lavaee [alavaee@bu.edu](mailto:alavaee@bu.edu)
+## Inference Pipeline Deep Dive
 
----
+### Architecture Overview
 
-## 🏆 Acknowledgments
-
-This project builds upon:
-
-- **DINO**: Self-supervised vision transformers ([Caron et al., 2021](https://arxiv.org/abs/2104.14294))
-
-# Cell Interactome
-
-## Table of Contents
-
-1. [Machine Setup](#Machine-Setup) 💻
-2. [Cuda Installation](#Cuda-Installation) 🛠️
-3. [Introductions](#Introduction) 📘
-4. [Installation](#Installation) 🛠️
-5. [Convert Pretrained Weights](#Convert-pretrained-weights) 🔄
-6. [Training](#Training) 🏃
-
-### Machine Setup 💻
-
-You can use the following machines to run the Cell Interactome pipeline:
-
-1. Ubuntu <img src="https://user-images.githubusercontent.com/25181517/186884153-99edc188-e4aa-4c84-91b0-e2df260ebc33.png" width="15">
-2. MacOS <img src="https://user-images.githubusercontent.com/25181517/186884152-ae609cca-8cf1-4175-8d60-1ce1fa078ca2.png" width="15"> [*Please Use Docker*] <img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="15">
-3. Windows - <img src="https://user-images.githubusercontent.com/25181517/186884150-05e9ff6d-340e-4802-9533-2c3f02363ee3.png" width="18"> [*Please Use Docker*]<img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="18">
-
-### CUDA Installation 🛠
-
-This project requires CUDA version 12.x. Veri️fy the correct version of CUDA installed by running the following command:
-
-```bash
-nvcc --version
-```
-
-### Installation 🛠️
-
-1. Clone the repository:
-
-```bash
-git clone --recursive git@github.com:kirchhausenlab/cell_interactome.git
-```
-
-2. Create a conda environment.
-
-```bash
-mamba env create -f env.yaml -n cell3d
-mamba activate cell3d
-pip install -e .
-pip install natsort rich tqdm click xformers
-```
-
-📦 In case of errors, please ensure you have the required dependencies for Python installed:
-
-Delete the cache.
-
-```bash
-rm -rf ~/.cache/
-rm -rf cell_interactome.egg-info
-```
-
-```bash
-sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
-libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
-libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python-openssl \
-ninja-build cmake libegl1-mesa-dev python3-dev
-```
-
-## Training
-
-If you do not have a .bashrc file, create one.
+The inference pipeline implements a multi-stage transformation using DINO self-supervised vision transformers adapted for 3D biological imaging:
 
 ```
-touch ~/.bashrc
+Raw Volume → Preprocessing → Feature Extraction → Postprocessing → Segmentation
 ```
 
-To your .bashrc file, add the following:
-**XDG** is a standard for cross-platform directory layout.
+### Global Normalization Strategy
 
-```bash
-export tname="tmux rename-window"
-export XDG_DATA_HOME="$HOME/.local/share"
-export XDG_DATA_DIRS="/usr/local/share:/usr/share"
-export XDG_CONFIG_HOME="$HOME/.config"
-export XDG_CONFIG_DIRS="/etc/xdg"
-export XDG_STATE_HOME="$HOME/.local/state"
-export XDG_CACHE_HOME="$HOME/.cache"
-export XDG_RUNTIME_DIR="$HOME/.local/run"
-export XDG_DESKTOP_DIR="$HOME/Desktop"
-export XDG_DOCUMENTS_DIR="$HOME/Documents"
-export XDG_DOWNLOAD_DIR="$HOME/Downloads"
-export XDG_MUSIC_DIR="$HOME/Music"
-export XDG_PICTURES_DIR="$HOME/Pictures"
-export XDG_PUBLICSHARE_DIR="$HOME/Public"
-export XDG_TEMPLATES_DIR="$HOME/Templates"
-export XDG_VIDEOS_DIR="$HOME/Videos"
-export HUGGINGFACE_HUB_CACHE="${XDG_CACHE_HOME}/huggingface/hub"
-export HF_HUB_ENABLE_HF_TRANSFER=1
-export JUPYTER_PLATFORM_DIRS=1
+**Step 1: Histogram-based Global Normalization**
+
+- Remove first z-stack (focus artifacts)
+- Concatenate volumes across time series
+- Generate background mask using `EMPTY_VOXEL_THRESHOLD`
+- Calculate percentile boundaries (excludes outliers/background noise)
+- Save global min/max values for consistent normalization
+
+**Step 2: Inference Transform Pipeline**
+
+```python
+transforms = [
+    Maskd(),                    # Filter based on intensity thresholds
+    DeleteItemsd(),             # Memory-efficient cleanup
+    Interpolated(),             # Chunked trilinear interpolation
+    AddChannelsd(),             # Add channel dimension
+    ResizeWithPadOrCropd(),     # Median-value padding
+    HistogramNormalize(),       # Global histogram clipping + min-max
+    ToTensord()                 # Final tensor conversion
+]
 ```
 
-**NCCL** is a nvidia's communication library.
+### Distributed Inference Strategy
 
-```bash
-export NCCL_SOCKET_NTHREADS=4 # number of threads per socket
-export NCCL_NSOCKS_PERTHREAD=4 # number of sockets per thread
-export NCCL_IB_DISABLE=0 # enable Infiniband
-export NCCL_IB_HCA="mlx5" # use Mellanox Infiniband
-export CUDA_HOME="/usr/local/cuda-12" # choose the correct CUDA version
-export PATH=$CUDA_HOME/bin:$PATH
-export CPATH="$CUDA_HOME/include:$CPATH"
+**Volume Processing:**
+
+- **Chunk size**: `[196, 196, 196]` (configurable)
+- **Patch size**: `[8, 8, 8]` (ViT patch dimensions)
+- **Isotropic scaling**: Applied before padding for aspect ratio correction
+- **Target shape calculation**: Ensures divisibility by chunk size
+
+**Example Volume Transformation:**
+
+```
+Original: [86, 350, 350]
+Isotropic scaling: [2.401, 1.0, 1.0] → [206, 350, 350]
+Target shape: [400, 400, 400] (padded to be divisible by chunk size)
 ```
 
-**Add c++ library**
+**MONAI Sliding Window:**
 
-```bash
-export CXX=g++
+- Modified `SlidingWindowInference` for 3D volumes
+- Register tokens removed during inference (training stability only)
+- CLS token excluded from output
+- Contiguous tensor requirements enforced
+
+### Feature Extraction Details
+
+**Model Configuration:**
+
+- **Backbone**: DINO ViT adapted for 3D
+- **Batch size**: 1 (sliding window)
+- **Output**: `lr_feats` with shape `[embed_dim + num_heads, Z_patch, Y_patch, X_patch]`
+- **Attention channels**: Last 12 channels contain multi-head attention maps
+- **Feature channels**: First `embed_dim` channels contain patch features
+
+**Padding Removal:**
+
+```python
+scale_factor = volume.shape / lr_feats.shape  # Account for patch downsampling
+padding_3 = padding * scale_factor           # Scale padding to feature resolution
+lr_feats = lr_feats[padding_3[0]:, padding_3[1]:, padding_3[2]:]  # Unpad features
 ```
 
-**Distributed training**
+## Enhanced Normalization for Complex Volumes
 
-```bash
-export NCCL_SOCKET_IFNAME=ib # use all infiniband interfaces
-export RDZV_BACKEND="c10d"
-export OMP_NUM_THREADS=16
-export NUM_ALLOWED_FAILURES=3
+### Problem: Patch-wise Contrast Variations
 
-export RDZV_ID="2001" # set the rdvz id to be the same for all nodes
-export MASTER_PORT="29500" # set the master port to be the same for all nodes, it can be any random number
+Large 3D volumes exhibit:
+
+- **Illumination gradients**: Uneven lighting across regions
+- **Acquisition artifacts**: Variable SNR in different areas
+- **Patch boundary discontinuities**: After processing artifacts
+
+### Solution: Multi-method Normalization
+
+**1. Patch-wise Normalization**
+
+```python
+normalizer = PatchNormalize(
+    patch_size=(448, 448, 448),
+    overlap_factor=0.1,          # 10% overlap between patches
+    method="minmax",             # or "histogram" for robust outlier handling
+    blend_boundaries=True        # Smooth transitions
+)
 ```
 
-To get the Master Address, get the IP address of your infiniband interface. Say you have 3 nodes, you need to set one node to be your master node. Run `ibstat` to confirm infiniband ids. One done, do as follows:
+**2. Enhanced Flat-field Correction**
 
-```bash
-ibstat
+```python
+corrected = enhanced_flat_field_correction(
+    volume=volume,
+    patch_size=(448, 448, 448),
+    blur_radius=50.0,            # Larger = more global correction
+    method="gaussian",           # "gaussian", "median", or "rolling_ball"
+    device=cle_device           # GPU acceleration via pyclesperanto
+)
 ```
 
-Which will give you the following output:
+**3. Hybrid Approach (Recommended)**
 
-```bash
-ib0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
-inet 10.1.0.11 netmask 255.255.0.0 broadcast 10.1.255.255
-...
+```python
+def hybrid_normalization(volume):
+    # Step 1: Remove illumination gradients
+    corrected = enhanced_flat_field_correction(volume, blur_radius=30.0)
 
-ib1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
-inet 10.2.0.11 netmask 255.255.0.0 broadcast 10.2.255.255
-inet6 fe80::63f:7203:d3:ae0e prefixlen 64 scopeid 0x20<link>
-unspec 00-00-10-29-FE-80-00-00-00-00-00-00-00-00-00-00 txqueuelen 256 (UNSPEC)
-RX packets 137081439 bytes 250938047445 (250.9 GB)
-RX errors 0 dropped 0 overruns 0 frame 0
-TX packets 786878109 bytes 1591832370392 (1.5 TB)
-TX errors 0 dropped 0 overruns 0 carrier 0 collisions 0
+    # Step 2: Equalize contrast patch-wise
+    normalizer = PatchNormalize(patch_size=(448, 448, 448), blend_boundaries=True)
+    return normalizer(corrected)
 ```
 
-In this case, the master node is `10.1.0.11` where inet is the IP address of the master node.
+### Performance Guidelines
 
-```bash
-export MASTER_ADDR="10.1.0.11"
-export RDZV_ENDPOINT="$MASTER_ADDR:$MASTER_PORT"
+| Method     | Speed  | Quality   | Use Case                      |
+| ---------- | ------ | --------- | ----------------------------- |
+| Patch-wise | Fast   | Good      | Regional contrast differences |
+| Flat-field | Medium | Excellent | Illumination gradients        |
+| Hybrid     | Slow   | Best      | Complex multi-issue datasets  |
+
+## Postprocessing & Segmentation
+
+### Feature Upsampling & Clustering
+
+**1. Feature Processing:**
+
+```python
+# Split features: attention (last 12) vs patch features (remaining)
+attn_feats = lr_feats[..., -config.num_heads:]
+patch_feats = lr_feats[..., :-config.num_heads]
+
+# L2 normalize patch features
+patch_feats = F.normalize(patch_feats, dim=-1)
+
+# Compute attention weights for K-means sampling
+attn_sum = attn_feats.sum(dim=-1)
+probs = max(attn_sum) - attn_sum  # Higher prob for less-attended regions
 ```
 
-If you chose another machine to be your master node, run `ifconfig` and get the IP address of the machine. To run multi-node training or inference, you will need to ssh into all the machines. For the master node, run `export NODE_RANK=0`, for the other nodes, run `export NODE_RANK=1, 2, 3, ...`. Once done, run the command below starting with the master node and in consectuive order of node ranks running the same command. The example below is for 3 nodes with 8 GPUs per node.
+**2. K-means Clustering:**
 
-**Note this is done for the same set of hardware for all nodes.**
-
-```bash
-# Meaning of the arguments:
-# --nnodes: number of nodes (e.g. n)
-# --node_rank: rank of the node (e.g. 0, 1, 2, 3, ... n) for n nodes
-# --nproc_per_node: number of processes/GPUs per node (e.g. 8)
-# --master_addr: address of the master node (e.g. 10.10.10.10)
-# --master_port: port of the master node (e.g. 29500)
-
-torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK --rdzv-id $RDZV_ID --rdzv-backend $RDZV_BACKEND --rdzv-endpoint $RDZV_ENDPOINT scripts/train/pretrain.py
+```python
+labels = kmeans_fit_predict(
+    features=patch_feats.flatten(),
+    weights=probs.flatten(),
+    n_clusters=config.n_clusters,
+    distance="cosine",
+    init="kmeans++"
+)
 ```
 
-## Inference
+**3. Instance Segmentation Pipeline:**
 
-**To run inference and segmentation, you simply need to run the interactive cli** `python3 scripts/interactive_inf.py`
-
-Similar to how you setup training, you can setup multi-node inference. However, we usually run inference on a single node, to run it you do not need to worry about the master node/children nodes.
-
-**Input size**
-Note that for efficient inference, we recommend using a maximum [Z,Y,X] input of size [150, 750, 750] at the maximum, however this is pertaining to the total volume of Z.X.Y = 84,000,000 pixels^3. Basically you could have volumes of sizes [300, 300, 300], [80, 1000, 500] and so on.
-**Example inference script**
-
-```bash
-#!/bin/bash
-
-folder_path="/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
-number_of_files=1 # -1 for all timepoints, otherwise chose a number
-save_path="/raid1/cme_tests/results/ablations/ap2_test"
-export OMP_NUM_THREADS=32
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-
-torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE --rdzv_endpoint=localhost:9999 ./scripts/inference/inference.py \
-  file_path="$folder_path" \
-  save_path="$save_path" \
-  number_of_files=$number_of_files \
-  crop_params="[0,0,0,0,0,0]"
+```
+Raw Mask → Dilation → Sobel Filter → CLAHE → Foreground Extraction →
+Laplacian of Gaussian → Voronoi-Otsu Labeling → Instance Segmentation
 ```
 
-**Explain the script**
+### Attention Density Analysis
 
-- `folder_path`: path to the folder containing the images
-- `number_of_files`: number of files to process, -1 for all files
-- `save_path`: path to save the results
-- `OMP_NUM_THREADS`: number of threads to use
-- `CUDA_VISIBLE_DEVICES`: list of GPUs to use
-- `NUM_PROC_PER_NODE`: number of processes/GPUs per node
-- `torchrun`: command to run the inference
-- `scripts/inference/inference.py`: path to the inference script
-- `file_path`: path to the folder containing the images
-- `save_path`: path to save the results
-- `crop_params`: parameters for cropping the images
+**Mask Generation:**
 
-## Segmentation
+```python
+def get_3d_mask_and_density(img_3d, labels, attn_feats):
+    # For each cluster, compute attention density per unit area
+    density = compute_attention_density_per_cluster(labels, attn_feats)
 
-**To run segmentation, you simply need to run the interactive cli** `python3 scripts/interactive_seg.py`
-Similar to the inference script, you can run segmentation on a single node or multi-node.
+    # Generate binary mask using density threshold
+    threshold = threshold_otsu(density)
+    seg_3d_mask = density > threshold
 
-**Example segmentation script**
-
-```bash
-#!/bin/bash
-save_path="/raid1/cme_tests/results/ap2_latest" #"/nfs/scratch2/shared_image_recog_ml/spatial_dino_exp/zeiss_experiments/zeiss_560_left"
-blur_image=False # true for most datasets
-blur_factor=1.0 # unless you have very low snr for which I'd recommend setting this to 3, use 1.0 for most datasets
-export OMP_NUM_THREADS=32
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-use_raw_mask=False # Unless you have the non-care'd virus, with a snr of <3, please set this to False
-spot_sigma=2.0 # for most endosomes, viruses
-outline_sigma=2.0
-attention_weight=0.5
-background_removal_radius=10
-skip_existing=False # if you ran a few experiments, then set this to True, but if you have never run any experiments, then set this to False
-
-torchrun --nnodes=1 --node_rank=0 --nproc_per_node=$NUM_PROC_PER_NODE --rdzv_endpoint=localhost:8999 ./scripts/inference/segmentation.py \
-  file_path="$save_path" \
-  save_path="$save_path" \
-  skip_existing=$skip_existing \
-  background_removal_radius=$background_removal_radius \
-  attention_weight=$attention_weight \
-  blur_factor=$blur_factor \
-  use_raw_mask=$use_raw_mask \
-  outline_sigma=$outline_sigma \
-  spot_sigma=$spot_sigma \
-  blur_image=$blur_image \
-  outline_sigma=$outline_sigma
+    return seg_3d_mask, density
 ```
 
-You should checkout the `scripts/notebooks/segmentation_misc/test_segmentation.ipynb` for tuning parameters for segmentation. In the set of screenshots below, you can see how I change the parameters to get good results. For examples where SNR is low, you should increase the blur_factor for the guassian blur and see the results in the notebook. Usually, you should set the blur_factor to 1.0 for most datasets when the SNR > 3.
+## Tracking Algorithm
+
+### Centroid Calculation via Statistical Moments
+
+**Moment-based Centers:**
+
+```python
+def calculate_centroids(volume, instance_labels, features):
+    for label_id in unique_labels:
+        # Get all pixels belonging to this instance
+        mask = (instance_labels == label_id)
+
+        # Zero moment: total intensity
+        m_0 = volume[mask].sum()
+
+        # First moments: weighted coordinate sums
+        coords = np.where(mask)
+        m_1_z = (coords[0] * volume[mask]).sum()
+        m_1_y = (coords[1] * volume[mask]).sum()
+        m_1_x = (coords[2] * volume[mask]).sum()
+
+        # Centroid: first_moment / zero_moment
+        centroid = np.array([m_1_z, m_1_y, m_1_x]) / m_0
+
+        # Feature average
+        avg_features = features[mask].mean(axis=0)
+```
+
+### GPU-Accelerated PCA & Tracking
+
+**Dimensionality Reduction:**
+
+```python
+# Convert to torch tensors for GPU acceleration
+features_tensor = torch.from_numpy(features).cuda()
+pca_features = torch_pca(features_tensor, n_components=10)  # 99.5% variance
+```
+
+**Trackpy Integration:**
+
+```python
+# Create velocity predictor for physics-based tracking
+predictor = trackpy.predict.NearestVelocityPredictor()
+
+# Link particles using both spatial coordinates and PCA features
+tracks = trackpy.link(
+    centroids_df,
+    search_range=config.search_range,
+    predictor=predictor,
+    adaptive_stop=config.adaptive_stop,
+    adaptive_step=config.adaptive_step,
+    memory=config.memory,  # 3-5 frames typical
+    link_strategy='hybrid'  # Combines coordinates + features
+)
+```
+
+### Multi-channel Track Visualization
+
+**Combined Visualization:**
+
+```python
+# Color coding by channel
+channel_colors = {
+    '488': 'green',   # Transferrin
+    '560': 'red',     # Zeiss
+    '642': 'blue'     # Zeiss
+}
+
+# Track ID methods:
+# Offset: Channel 488 (0-7059), 560 (7060-17198), 642 (17199-24870)
+# Prefix: "track_id_channel" format
+```
+
+## SINDER Post-training
+
+### Singular Defect Direction Theory
+
+**Problem**: Vision transformers exhibit high-norm "defective" tokens that create artifacts in biological segmentation.
+
+**Root Cause**: Artifacts correlate with leading left singular vectors of linearized transformer operations, independent of input data.
+
+### Linearization Process
+
+**Attention Block Decomposition:**
+
+```python
+A = A₄ @ A₃ @ A₂ @ A₁ @ A₀
+where:
+A₀ = (I - 1/N * 1ₙₓₙ)      # Centering matrix
+A₁ = diag(norm.weight)       # Layer normalization scaling
+A₂ = qkv.weight[-1/3:]      # Value projection from QKV
+A₃ = attn.proj.weight       # Output projection
+A₄ = diag(layer_scale.gamma) # Layer scaling
+```
+
+**MLP Block Linearization:**
+
+```python
+# Non-linear activation approximated via least-squares
+X = torch.randn(100000, embed_dim)  # Random samples
+Y = activation(mlp.fc1(X))          # Activation output
+C₂ = solve_least_squares(X, Y)      # Linear approximation
+
+C = C₄ @ C₃ @ C₂ @ C₁ @ C₀  # Full MLP linearization
+```
+
+**Layer Composition:**
+
+```python
+for layer_i in range(num_layers):
+    E_i = MLP_linear_i @ (I + Attention_linear_i)  # Residual connection
+    G_i = E_i @ G_{i-1}  # Accumulate transformations
+    u_i, s_i, v_i = SVD(G_i)
+    defect_directions[i] = u_i[:, 0]  # Leading left singular vector
+```
+
+### Training Strategy
+
+**1. Replace Linear Layers:**
+
+```python
+class SVDLinearAddition(nn.Module):
+    def __init__(self, linear_layer):
+        # Decompose: W = U @ diag(S) @ V^T
+        U, S, Vt = torch.svd(linear_layer.weight)
+        self.U = nn.Parameter(U, requires_grad=False)
+        self.S = nn.Parameter(S, requires_grad=False)
+        self.Vt = nn.Parameter(Vt, requires_grad=False)
+        self.epsilon = nn.Parameter(torch.zeros_like(S))  # Only trainable param
+
+    def forward(self, x):
+        W = self.U @ torch.diag(self.S + self.epsilon) @ self.Vt
+        return F.linear(x, W, self.bias)
+```
+
+**2. Anomaly Detection:**
+
+```python
+def detect_anomalies(features, defect_direction, temperature=0.1, threshold=4):
+    # Compute alignment with defect direction
+    feature_norm = F.normalize(features, dim=-1)
+    direction_norm = F.normalize(defect_direction, dim=-1)
+
+    logits = -(feature_norm * direction_norm).sum(dim=-1).abs()
+
+    # Identify anomalous tokens
+    mask = logits < logits.mean() - threshold * logits.std()
+    return mask, logits
+```
+
+**3. Neighbor Loss Computation:**
+
+```python
+def compute_neighbor_loss(x_token, anomaly_mask, kernel_size=3):
+    # Apply 3D Gaussian smoothing to anomalous regions
+    prob = torch.exp(logits / temperature)
+
+    # Create sliding windows
+    windows = x_token.unfold(0, kernel_size, 1).unfold(1, kernel_size, 1).unfold(2, kernel_size, 1)
+
+    # Weight by Gaussian + non-anomalousness scores
+    gaussian_kernel = create_3d_gaussian(kernel_size)
+    weights = prob_weights * gaussian_kernel
+    weights = weights / weights.sum(dim=(-1,-2,-3), keepdims=True)
+
+    # Compute smoothed representation
+    smoothed = (windows * weights[..., None]).sum(dim=(-1,-2,-3))
+
+    # Loss: deviation from smoothed neighbors
+    alpha = x_token.norm(dim=-1).mean()  # Normalization factor
+    loss = (x_token[anomaly_mask] - smoothed[anomaly_mask]).norm(dim=-1).mean() / alpha
+
+    return loss
+```
+
+**4. Layer-Limited Updates:**
+
+```python
+if config.limit_layers:
+    # Only update layers near detected anomalies
+    for layer_idx in range(max(0, anomaly_layer - config.limit_layers + 1)):
+        for param in model.blocks[layer_idx].parameters():
+            if param.grad is not None:
+                param.grad = None  # Freeze earlier layers
+```
+
+### SINDER Results
+
+SINDER achieves targeted artifact removal while preserving semantic features:
+
+- **Minimal parameters**: Only `epsilon` values trainable (~0.1% of total params)
+- **Localized corrections**: Layer-limited updates prevent global disruption
+- **Improved segmentation**: Reduced high-norm token artifacts in biological objects
+- **Preserved features**: Maintains downstream task performance
+
+The approach demonstrates that singular defects in self-supervised vision transformers can be systematically identified and corrected through targeted regularization, enabling more robust biological image analysis.
