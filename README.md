@@ -445,9 +445,9 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### 1. Feature Extraction
 
-![Inference Configuration](icons/inference_config.png)
-![Path Selection](icons/inference_select_paths.png)
-![Setup Interface](icons/inference_setup.png)
+![Inference Configuration](scripts/images/inference_config.png)
+![Path Selection](scripts/images/inference_select_paths.png)
+![Setup Interface](scripts/images/inference_setup.png)
 
 **Configure and extract DINO features from 3D volumes:**
 
@@ -457,8 +457,8 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### 2. Segmentation
 
-![Segmentation Interface](icons/segmentation.png)
-![File Operations](icons/file_operations.png)
+![Segmentation Interface](scripts/images/segmentation.png)
+![File Operations](scripts/images/file_operations.png)
 
 **Generate instance segmentations using attention-based clustering:**
 
@@ -480,9 +480,9 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### 3. Tracking & Visualization
 
-![Tracking](icons/tracking.png)
-![Feature Visualization](icons/visualize_features.png)
-![Track Visualization](icons/tracks.png)
+![Tracking](scripts/images/tracking.png)
+![Feature Visualization](scripts/images/visualize_features.png)
+![Track Visualization](scripts/images/tracks.png)
 
 **Temporal object linking and analysis:**
 
@@ -490,8 +490,8 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 - Feature-enhanced trackpy integration
 - Multi-channel track visualization in Napari
 
-![CLI Summary](icons/summary_of_cli.png)
-![CLI Interface](icons/cli_image.png)
+![CLI Summary](scripts/images/summary_of_cli.png)
+![CLI Interface](scripts/images/cli_image.png)
 
 ---
 
