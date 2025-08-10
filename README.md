@@ -78,13 +78,72 @@ nvcc --version
 
 ## Installation 🛠️
 
-### 1. Clone the repository:
+### 1. SSH Key Setup
+
+To clone this repository, you'll need to set up SSH keys for GitHub authentication. Follow the [GitHub SSH documentation](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent) for complete details.
+
+#### Generate a new SSH key:
+
+```bash
+# Use Ed25519 algorithm (recommended)
+ssh-keygen -t ed25519 -C "your_email@example.com"
+
+# For legacy systems, use RSA
+ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+```
+
+When prompted:
+
+- Press Enter to accept the default file location (`~/.ssh/id_ed25519`)
+- Enter a secure passphrase (optional but recommended)
+
+#### Add SSH key to ssh-agent:
+
+```bash
+# Start the ssh-agent
+eval "$(ssh-agent -s)"
+
+# Add your SSH private key to the ssh-agent
+ssh-add ~/.ssh/id_ed25519
+```
+
+#### Add the public key to GitHub:
+
+1. Copy your public key to clipboard:
+
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+
+2. Go to GitHub → Settings → SSH and GPG keys → New SSH key
+3. Paste your public key and save
+
+### 2. Install Miniforge & Mamba
+
+Mamba is a faster drop-in replacement for conda that we use for environment management:
+
+```bash
+# Download Miniforge (includes mamba)
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O Miniforge3.sh
+
+# Install Miniforge
+bash Miniforge3.sh -b -p $HOME/miniforge3
+
+# Initialize shell integration
+source $HOME/miniforge3/bin/activate
+conda init
+
+# Restart your shell or source bashrc
+source ~/.bashrc
+```
+
+### 3. Clone the repository:
 
 ```bash
 git clone --recursive git@github.com:kirchhausenlab/cell_interactome.git
 ```
 
-### 2. Create a conda environment:
+### 4. Create a conda environment:
 
 ```bash
 mamba env create -f env.yaml -n cell3d

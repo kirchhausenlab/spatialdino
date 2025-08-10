@@ -141,22 +141,7 @@ Specialized preprocessing for biological data:
 
 ### Key Components
 
-#### **`data_loading.py`** - Light Sheet Microscopy Support
-
-- **`LightSheetMetadata`**: Metadata extraction from microscopy files
-- **`DirectoryParser`**: Automated file structure parsing
-- **Multi-channel support**: 488nm, 560nm, 642nm wavelengths
-- **Anisotropy correction**: Converting non-isotropic voxels
-- **Frame rate detection**: Automatic temporal resolution parsing
-
-#### **`deconvolution.py`** - Image Enhancement
-
-- Richardson-Lucy deconvolution
-- Point spread function estimation
-- Noise reduction algorithms
-- Resolution enhancement
-
----
+--
 
 ## 🎯 **Inference Module** (`inference/`)
 
@@ -253,20 +238,6 @@ Specialized preprocessing for biological data:
 
 ---
 
-## 📈 **Visualization Module** (`visualization/`)
-
-**Purpose**: Scientific visualization for biological analysis.
-
-### Components
-
-- **`visualize.py`**: Main visualization utilities
-- 3D volume rendering
-- Multi-channel overlay
-- Tracking trajectory visualization
-- Quantitative plots and statistics
-
----
-
 ## 🛠️ **Utils Module** (`utils/`)
 
 **Purpose**: Shared utility functions across the project.
@@ -314,91 +285,6 @@ Specialized preprocessing for biological data:
 - Training progress tracking
 - Metric visualization
 - Experiment management
-
----
-
-## 🔧 **Usage Patterns**
-
-### For Biologists
-
-```python
-# Load and process microscopy data
-from cell_interactome.processing.data_loading import LightSheetMetadata
-from cell_interactome.inference import inference_3d
-
-# Run inference on your data
-results = inference_3d.predict(your_microscopy_data)
-```
-
-### For ML Researchers
-
-```python
-# Extend the segmentation model
-from cell_interactome.models.segmentation import Segmentation
-from cell_interactome.models.layers import Encoder, Decoder
-
-# Create custom architecture
-custom_model = Segmentation(config)
-```
-
-### For Developers
-
-```python
-# Add new loss functions
-from cell_interactome.loss import SoftNCuts
-from torch import nn
-
-class CustomLoss(nn.Module):
-    # Your implementation
-```
-
----
-
-## 🧪 **Testing Structure**
-
-The codebase includes comprehensive testing:
-
-- **Unit tests**: In `data/tests/`
-- **Integration tests**: Cross-module functionality
-- **Performance tests**: GPU memory and speed optimization
-- **Biological validation**: Against known ground truth
-
----
-
-## 📚 **Extension Points**
-
-The architecture is designed for easy extension:
-
-1. **New Model Architectures**: Add to `models/`
-2. **Custom Data Loaders**: Extend `data/dataset.py`
-3. **Novel Loss Functions**: Add to `loss/`
-4. **Specialized Processing**: Extend `processing/`
-5. **Custom Tracking**: Add algorithms to `tracking/`
-
----
-
-## 💡 **Best Practices**
-
-### Code Organization
-
-- **Modularity**: Each component has a single responsibility
-- **Configuration-driven**: Use YAML files for all parameters
-- **Type hints**: Comprehensive type annotations
-- **Documentation**: Docstrings for all public functions
-
-### Performance
-
-- **Memory efficiency**: Sliding window processing for large volumes
-- **GPU optimization**: Multi-GPU support throughout
-- **Caching**: Intelligent caching of computed features
-- **Batch processing**: Vectorized operations where possible
-
-### Biological Considerations
-
-- **Multi-channel support**: Native support for microscopy data
-- **Anisotropic handling**: Proper 3D spacing considerations
-- **Time series**: Temporal consistency in tracking
-- **Scale awareness**: Multi-scale processing for different magnifications
 
 ---
 
