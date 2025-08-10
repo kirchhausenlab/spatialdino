@@ -111,9 +111,13 @@ python scripts/interactive_inf.py  # Feature extraction & segmentation
 13. [Support](#-support) - Help and contact information
 14. [Citation](#-citation) - Academic reference
 
+### Contributions
+
+15. [Contributions](#-contributions_summary) - Summary of contributions
+
 ### 📖 Advanced Technical Documentation
 
-15. [Technical Supplement](#-technical-supplement) - Deep dive into algorithms
+16. [Technical Supplement](#-technical-supplement) - Deep dive into algorithms
     - [Inference Pipeline](#inference-pipeline-deep-dive) - Architecture details
     - [Global Normalization](#global-normalization-strategy) - Preprocessing methods
     - [Distributed Inference](#distributed-inference-strategy) - Multi-GPU processing
@@ -850,6 +854,14 @@ _This architecture enables cutting-edge research while maintaining production-re
   year={2024}
 }
 ```
+
+---
+
+# 📖 Contributions
+
+## Contributions Summary
+
+![Contributions](scripts/images/contributions.png)
 
 ---
 
