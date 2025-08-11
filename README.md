@@ -227,15 +227,6 @@ Example output:
 ib0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
 inet 10.1.0.11 netmask 255.255.0.0 broadcast 10.1.255.255
 ...
-
-ib1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
-inet 10.2.0.11 netmask 255.255.0.0 broadcast 10.2.255.255
-inet6 fe80::63f:7203:d3:ae0e prefixlen 64 scopeid 0x20<link>
-unspec 00-00-10-29-FE-80-00-00-00-00-00-00-00-00-00-00 txqueuelen 256 (UNSPEC)
-RX packets 137081439 bytes 250938047445 (250.9 GB)
-RX errors 0 dropped 0 overruns 0 frame 0
-TX packets 786878109 bytes 1591832370392 (1.5 TB)
-TX errors 0 dropped 0 overruns 0 carrier 0 collisions 0
 ```
 
 Set the master address (in this case `10.1.0.11`):
