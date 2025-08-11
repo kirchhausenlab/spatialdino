@@ -1,3 +1,4 @@
+
 *.pth
 *.pt
 *.pdf
@@ -73,6 +74,7 @@ target/
 # Database
 *.db
 *.rdb
+*.nfs
 
 # Pycharm
 .idea
@@ -96,6 +98,7 @@ target/
 
 src/third_party/VTK
 *.tif
+
 *.png
 *.npz
 copilot.md
