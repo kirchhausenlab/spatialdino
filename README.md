@@ -14,7 +14,7 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ## 👥 Authors
 
-[Alex Lavaee  ⃰](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain  ⃰](https://www.linkedin.com/in/arkashj/), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+[Alex Lavaee ⃰](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain ⃰](https://www.linkedin.com/in/arkashj/), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
 
 **Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
 
@@ -35,6 +35,8 @@ _Automated detection and tracking of cellular interactions using self-supervised
 - **[Presentations](wiki/presentations/)**: Slides from presentations showing evolution of the project
 - **[Interesting Papers](wiki/interesting_papers/)**: Some key papers that inspired the project
 - **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
+
+**Tip for Non-technical users**: For people unfamiliar with pulling code from github, you need to first setup an ssh key and add the key to your github account. Information is provided on this path `wiki/setup_ssh.md`.
 
 **Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see our GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
 
@@ -352,10 +354,22 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ## 🔄 Pipeline Workflow
 
+When you run the code, you will see the following interface:
+
+![CLI Interface](scripts/images/cli_image.png)
+
 ### 1. Feature Extraction
 
+To run an inference, first you need to setup the configuration file.
+
 ![Inference Configuration](scripts/images/inference_config.png)
+
+Then you need to select the path to the data.
+
 ![Path Selection](scripts/images/inference_select_paths.png)
+
+Finally, you need to setup the parameters for the inference.
+
 ![Setup Interface](scripts/images/inference_setup.png)
 
 **Configure and extract DINO features from 3D volumes:**
@@ -367,7 +381,6 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 ### 2. Segmentation
 
 ![Segmentation Interface](scripts/images/segmentation.png)
-![File Operations](scripts/images/file_operations.png)
 
 **Generate instance segmentations using attention-based clustering:**
 
@@ -384,13 +397,22 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 |                                                **Transferrin (Low SNR)**                                                |                                                **Simulated Low SNR**                                                |
 | :---------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: |
-|       ![Transferrin Config](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/config.png)       |       ![Simulated Config](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/config.png)       |
-| ![Transferrin Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/segmentation.png) | ![Simulated Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/segmentation.png) |
+|       ![Transferrin Config](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/config.png)       | ![Simulated Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/segmentation.png) |
+| ![Transferrin Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/segmentation.png) |       ![Simulated Config](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/config.png)       |
+
+**Moving data**
+Once done, you can copy files from one location to another, delete them, etc.
+
+![File Operations](scripts/images/file_operations.png)
 
 ### 3. Tracking & Visualization
 
+Run the tracking notebook in the `scripts/notebooks/run_tracking/tracking_main.ipynb` folder.
+
 ![Tracking](scripts/images/tracking.png)
-![Feature Visualization](scripts/images/visualize_features.png)
+
+When done you can run the `scripts/notebooks/quantify_tracks/tracking_experiments_2chan.ipynb` notebook to visualize tracks.
+
 ![Track Visualization](scripts/images/tracks.png)
 
 **Temporal object linking and analysis:**
@@ -400,7 +422,6 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 - Multi-channel track visualization in Napari
 
 ![CLI Summary](scripts/images/summary_of_cli.png)
-![CLI Interface](scripts/images/cli_image.png)
 
 ---
 
@@ -408,7 +429,7 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### Output Files
 
-- **`lr_feats.tif`**: DINO feature maps
+- **`lr_feats.pt`**: DINO feature maps
 - **`segmentation.tif`**: Instance masks
 - **`centroids.csv`**: Object coordinates
 - **`tracks.csv`**: Temporal trajectories
@@ -418,10 +439,19 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 Get comprehensive upsampled features as demonstrated in-
 In the codebase, find the pdf at the link below:
 `https://github.com/kirchhausenlab/cell_interactome/tree/main/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features`
-For Kirchhausen lab members find the pdf below:
+For Kirchhausen lab members find the pdf at the link below:
 `/nfs/datasync4/spatial_dino/code/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
 
----
+You can also run the `scripts/notebooks/upsample_feats.py` notebook to visualize the features.
+![Feature Visualization](scripts/images/upsample.png)
+
+The files will look like this:
+
+![Feature Visualization](scripts/images/upsample_dextran.png)
+
+**The detailed_analysis.pdf is an ordered list of features going from most variance to least variance.**
+
+## ![Feature Visualization](scripts/images/visualize_features.png)
 
 # 📁 Source Code Architecture Guide
 
