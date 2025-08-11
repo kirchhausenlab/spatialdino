@@ -415,7 +415,11 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### Feature Visualization
 
-Get comprehensive upsampled features as demonstrated in: `/nfs/scratch1/ajain/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
+Get comprehensive upsampled features as demonstrated in-
+In the codebase, find the pdf at the link below:
+`https://github.com/kirchhausenlab/cell_interactome/tree/main/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features`
+For Kirchhausen lab members find the pdf below:
+`/nfs/datasync4/spatial_dino/code/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
 
 ---
 
