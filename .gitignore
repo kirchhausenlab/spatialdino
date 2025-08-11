@@ -98,4 +98,8 @@ target/
 
 src/third_party/VTK
 *.tif
+
+*.png
 *.npz
+copilot.md
+*.mp4
