@@ -14,9 +14,7 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ## 👥 Authors
 
-[![Arkash Jain - LinkedIn](https://img.shields.io/badge/Arkash%20Jain-LinkedIn-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/arkashj/)
-[![Alex Lavaee - LinkedIn](https://img.shields.io/badge/Alex%20Lavaee-LinkedIn-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/alexlavaee/)
-[![Tom Kirchhausen - PI (Research)](https://img.shields.io/badge/Tom%20Kirchhausen-PI-0b6f9b?style=flat&logo=researchgate)](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+[Alex Lavaee  ⃰](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain  ⃰](https://www.linkedin.com/in/arkashj/), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
 
 **Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
 
@@ -37,9 +35,8 @@ _Automated detection and tracking of cellular interactions using self-supervised
 - **[Presentations](wiki/presentations/)**: Slides from presentations showing evolution of the project
 - **[Interesting Papers](wiki/interesting_papers/)**: Some key papers that inspired the project
 - **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
-- **[SSH Key Setup](wiki/setup_ssh.md)**: For non-technical users, please follow this guide to setup SSH keys for GitHub.
 
-**Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see my GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
+**Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see our GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
 
 ---
 
@@ -727,26 +724,20 @@ _This architecture enables cutting-edge research while maintaining production-re
 
 ---
 
-## 📖 Contributions
-
-![Contributions](scripts/images/contributions.png)
-
----
-
-## 📞 Support
+## Issues
 
 - **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
-- **Contact**: Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com)), Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu))
+- **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
 
 ---
 
 ## 📄 Citation
 
 ```bibtex
-@article{cell_interactome2024,
+@article{cell_interactome2025,
   title={Cell Interactome: Automated Detection of Cellular Interactions using Self-Supervised Deep Learning},
-  author={[Authors]},
+  author={Alex Lavaee ⃰, Arkash Jain ⃰, Tom Kirchhausen},
   journal={[Journal]},
-  year={2024}
+  year={2025}
 }
 ```
