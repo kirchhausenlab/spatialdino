@@ -88,12 +88,9 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 11. [Architecture](#-architecture) - Codebase structure overview
 12. [Configuration](#-configuration) - Key parameter settings
-13. [Support](#-support) - Help and contact information
-14. [Citation](#-citation) - Academic reference
-
-### Contributions
-
-15. [Contributions](#-contributions_summary) - Summary of contributions
+13. [Contributions](#-contributions) - Summary of contributions
+14. [Support](#-support) - Help and contact information
+15. [Citation](#-citation) - Academic reference
 
 ---
 
@@ -739,6 +736,12 @@ _This architecture enables cutting-edge research while maintaining production-re
 
 ---
 
+## 📖 Contributions
+
+![Contributions](scripts/images/contributions.png)
+
+---
+
 ## 📞 Support
 
 - **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
@@ -756,13 +759,3 @@ _This architecture enables cutting-edge research while maintaining production-re
   year={2024}
 }
 ```
-
----
-
-# 📖 Contributions
-
-## Contributions Summary
-
-![Contributions](scripts/images/contributions.png)
-
----
