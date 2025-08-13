@@ -14,7 +14,9 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ## 👥 Authors
 
-[Alex Lavaee  ⃰](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain  ⃰](https://www.linkedin.com/in/arkashj/), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+[Alex Lavaee\*](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain\*](https://www.linkedin.com/in/arkashj/), [Gustavo Scanavachi](https://scholar.google.com/citations?user=w4oASWoAAAAJ&hl=pt-BR), [Jose Inacio](https://scholar.google.com/citations?user=oZdz4lEAAAAJ&hl=en), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+
+_Equal contribution, equal first authorship_
 
 **Cell Interactome** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
 
@@ -22,6 +24,31 @@ _Automated detection and tracking of cellular interactions using self-supervised
 - **✂️ Precise segmentation** with no manual annotation required
 - **🔗 Temporal tracking** for cellular dynamics analysis
 - **📊 Multi-channel support** (488nm, 560nm, 642nm wavelengths)
+
+---
+
+## 🧪 Experiment Results Gallery
+
+The following showcase demonstrates segmentation results across various biological experiments, highlighting the pipeline's versatility across different cellular structures and imaging conditions.
+
+| Experiment & Description                                                                      | Segmentation Results                                                    |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **AP2** - Clathrin-coated pits, endocytic proteins with easily fitted PSF<br/>_blur=1_        | ![AP2 Segmentation](scripts/images/ap2.png)                             |
+| **Apilimod** - Small molecule that binds to ER and inhibits endocytic pathway<br/>_blur=1_    | ![Apilimod Segmentation](scripts/images/apilimod.png)                   |
+| **Dextran** - Fluid phase markers for endosomal uptake<br/>_blur=1_                           | ![Dextran Segmentation](scripts/images/dextran.png)                     |
+| **Membranes** - Cellular membrane structures<br/>_blur=1_                                     | ![Membranes Segmentation](scripts/images/membranes.png)                 |
+| **Mitochondria** - Mitochondrial networks and dynamics<br/>_blur=1_                           | ![Mitochondria Segmentation](scripts/images/mitochondria.png)           |
+| **Nuclei** - Nuclear segmentation and morphology<br/>_blur=1_                                 | ![Nuclei Segmentation](scripts/images/nuclei.png)                       |
+| **Nuclei (Large)** - Large-scale nuclear imaging<br/>_spot_sigma=10_                          | ![Nuclei Big Segmentation](scripts/images/nuclei_big.png)               |
+| **Transferrin (488nm)** - Iron transport protein, Channel 488nm<br/>_blur=3_                  | ![Transferrin 488 Segmentation](scripts/images/transferrin_chan488.png) |
+| **Transferrin (642nm)** - Iron transport protein, Channel 642nm (pH insensitive)<br/>_blur=3_ | ![Transferrin 642 Segmentation](scripts/images/transferrin_chan642.png) |
+
+**Additional Files Available for Each Experiment:**
+
+- `instance_seg.tif` - 3D instance segmentation masks
+- `patch_tokens.tif` - DINO feature visualizations
+- `volume.tif` - Original volume data
+- `segmentation.png` - 2D visualization shown above
 
 ---
 
@@ -36,6 +63,8 @@ _Automated detection and tracking of cellular interactions using self-supervised
 - **[Interesting Papers](wiki/interesting_papers/)**: Some key papers that inspired the project
 - **[Getting Started](wiki/getting_started.md)**: Step-by-step guide
 
+**Tip for Non-technical users**: For people unfamiliar with pulling code from github, you need to first setup an ssh key and add the key to your github account. Information is provided on this path `wiki/setup_ssh.md`.
+
 **Interested in infrastructure setup?** For low-level infrastructure details and configuration notes, see our GitHub issue on the PyTorch repository: [PyTorch issue #144779 — low-level infra details](https://github.com/pytorch/pytorch/issues/144779).
 
 ---
@@ -44,8 +73,8 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ### 🚀 Getting Started
 
-1. [Resources](#-resources) - Video tutorials, technical docs, and guides
-2. [Quick Start](#-quick-start) - One-command installation and basic usage
+1. [Experiment Results Gallery](#-experiment-results-gallery) - Comprehensive experiment showcase
+2. [Resources](#-resources) - Video tutorials, technical docs, and guides
 3. [Machine Setup](#machine-setup-💻) - Ubuntu/MacOS/Windows compatibility guide
 4. [CUDA Installation](#cuda-installation-🛠️) - GPU requirements and setup verification
 5. [Installation](#installation-🛠️) - Complete setup process
@@ -56,19 +85,19 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ### 🔬 Core Pipeline
 
-6. [Training](#training-🏃) - Multi-node self-supervised model training
-   - [Environment Setup](#environment-setup) - Configuration variables
-   - [Multi-Node Setup](#multi-node-setup) - Distributed training configuration
-   - [Training Command](#training-command) - Execution examples
-7. [Inference](#inference-🔍) - Feature extraction from 3D volumes
+6. [Inference](#inference-🔍) - Feature extraction from 3D volumes
    - [Interactive CLI](#inference-🔍) - Recommended user interface
    - [Input Size Guidelines](#input-size-guidelines) - Volume constraints
    - [Example Scripts](#example-inference-script) - Batch processing setup
    - [Script Parameters](#script-parameters) - Configuration options
-8. [Segmentation](#segmentation-✂️) - Instance mask generation
+7. [Segmentation](#segmentation-✂️) - Instance mask generation
    - [Interactive CLI](#segmentation-✂️) - User-friendly interface
    - [Example Scripts](#example-segmentation-script) - Automation examples
    - [Parameter Tuning](#parameter-tuning) - SNR-specific optimization
+8. [Training](#training-🏃) - Multi-node self-supervised model training
+   - [Environment Setup](#environment-setup) - Configuration variables
+   - [Multi-Node Setup](#multi-node-setup) - Distributed training configuration
+   - [Training Command](#training-command) - Execution examples
 
 ### 📊 Workflow & Analysis
 
@@ -168,91 +197,9 @@ ninja-build cmake libegl1-mesa-dev python3-dev
 
 ---
 
-## Training 🏃
-
-### Environment Setup
-
-If you do not have a `.bashrc` file, create one:
-
-```bash
-touch ~/.bashrc
-```
-
-Add the following to your `.bashrc` file:
-
-**NCCL Configuration** (NVIDIA's communication library):
-
-```bash
-export NCCL_SOCKET_NTHREADS=4     # number of threads per socket
-export NCCL_NSOCKS_PERTHREAD=4    # number of sockets per thread
-export NCCL_IB_DISABLE=0          # enable Infiniband
-export NCCL_IB_HCA="mlx5"         # use Mellanox Infiniband
-export CUDA_HOME="/usr/local/cuda-12"  # choose the correct CUDA version
-export PATH=$CUDA_HOME/bin:$PATH
-export CPATH="$CUDA_HOME/include:$CPATH"
-```
-
-**C++ Library:**
-
-```bash
-export CXX=g++
-```
-
-**Distributed Training:**
-
-```bash
-export NCCL_SOCKET_IFNAME=ib      # use all infiniband interfaces
-export RDZV_BACKEND="c10d"
-export OMP_NUM_THREADS=16
-export NUM_ALLOWED_FAILURES=3
-
-export RDZV_ID="2001"             # set the rdzv id to be the same for all nodes
-export MASTER_PORT="29500"        # set the master port to be the same for all nodes
-```
-
-### Multi-Node Setup
-
-To get the Master Address, get the IP address of your infiniband interface:
-
-```bash
-ibstat
-```
-
-Example output:
-
-```bash
-ib0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
-inet 10.1.0.11 netmask 255.255.0.0 broadcast 10.1.255.255
-...
-```
-
-Set the master address (in this case `10.1.0.11`):
-
-```bash
-export MASTER_ADDR="10.1.0.11"
-export RDZV_ENDPOINT="$MASTER_ADDR:$MASTER_PORT"
-```
-
-### Training Command
-
-For multi-node training with 3 nodes and 8 GPUs per node:
-
-```bash
-# Arguments explanation:
-# --nnodes: number of nodes (e.g. 3)
-# --node_rank: rank of the node (e.g. 0, 1, 2, ... n) for n nodes
-# --nproc_per_node: number of processes/GPUs per node (e.g. 8)
-# --master_addr: address of the master node (e.g. 10.10.10.10)
-# --master_port: port of the master node (e.g. 29500)
-
-torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
-         --rdzv-id $RDZV_ID --rdzv-backend $RDZV_BACKEND \
-         --rdzv-endpoint $RDZV_ENDPOINT scripts/train/pretrain.py
-```
-
----
-
 ## Inference 🔍
+
+> **⚠️ Important**: Before running inference, ensure you have the pretrained model. Use the model path `../models/backbone.pth` which contains the pretrained weights for the DINO vision transformer.
 
 **Interactive CLI (Recommended):**
 
@@ -352,10 +299,22 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ## 🔄 Pipeline Workflow
 
+When you run the code, you will see the following interface:
+
+![CLI Interface](scripts/images/cli_image.png)
+
 ### 1. Feature Extraction
 
+To run an inference, first you need to setup the configuration file.
+
 ![Inference Configuration](scripts/images/inference_config.png)
+
+Then you need to select the path to the data.
+
 ![Path Selection](scripts/images/inference_select_paths.png)
+
+Finally, you need to setup the parameters for the inference.
+
 ![Setup Interface](scripts/images/inference_setup.png)
 
 **Configure and extract DINO features from 3D volumes:**
@@ -367,7 +326,6 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 ### 2. Segmentation
 
 ![Segmentation Interface](scripts/images/segmentation.png)
-![File Operations](scripts/images/file_operations.png)
 
 **Generate instance segmentations using attention-based clustering:**
 
@@ -384,13 +342,22 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 |                                                **Transferrin (Low SNR)**                                                |                                                **Simulated Low SNR**                                                |
 | :---------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: |
-|       ![Transferrin Config](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/config.png)       |       ![Simulated Config](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/config.png)       |
-| ![Transferrin Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/segmentation.png) | ![Simulated Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/segmentation.png) |
+|       ![Transferrin Config](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/config.png)       | ![Simulated Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/segmentation.png) |
+| ![Transferrin Segmentation](scripts/notebooks/segmentation_misc/sample_experiments/transferrin_lowsnr/segmentation.png) |       ![Simulated Config](scripts/notebooks/segmentation_misc/sample_experiments/simulated_lowsnr/config.png)       |
+
+**Moving data**
+Once done, you can copy files from one location to another, delete them, etc.
+
+![File Operations](scripts/images/file_operations.png)
 
 ### 3. Tracking & Visualization
 
+Run the tracking notebook in the `scripts/notebooks/run_tracking/tracking_main.ipynb` folder.
+
 ![Tracking](scripts/images/tracking.png)
-![Feature Visualization](scripts/images/visualize_features.png)
+
+When done you can run the `scripts/notebooks/quantify_tracks/tracking_experiments_2chan.ipynb` notebook to visualize tracks.
+
 ![Track Visualization](scripts/images/tracks.png)
 
 **Temporal object linking and analysis:**
@@ -400,7 +367,90 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 - Multi-channel track visualization in Napari
 
 ![CLI Summary](scripts/images/summary_of_cli.png)
-![CLI Interface](scripts/images/cli_image.png)
+
+---
+
+## Training 🏃
+
+### Environment Setup
+
+If you do not have a `.bashrc` file, create one:
+
+```bash
+touch ~/.bashrc
+```
+
+Add the following to your `.bashrc` file:
+
+**NCCL Configuration** (NVIDIA's communication library):
+
+```bash
+export NCCL_SOCKET_NTHREADS=4     # number of threads per socket
+export NCCL_NSOCKS_PERTHREAD=4    # number of sockets per thread
+export NCCL_IB_DISABLE=0          # enable Infiniband
+export NCCL_IB_HCA="mlx5"         # use Mellanox Infiniband
+export CUDA_HOME="/usr/local/cuda-12"  # choose the correct CUDA version
+export PATH=$CUDA_HOME/bin:$PATH
+export CPATH="$CUDA_HOME/include:$CPATH"
+```
+
+**C++ Library:**
+
+```bash
+export CXX=g++
+```
+
+**Distributed Training:**
+
+```bash
+export NCCL_SOCKET_IFNAME=ib      # use all infiniband interfaces
+export RDZV_BACKEND="c10d"
+export OMP_NUM_THREADS=16
+export NUM_ALLOWED_FAILURES=3
+
+export RDZV_ID="2001"             # set the rdzv id to be the same for all nodes
+export MASTER_PORT="29500"        # set the master port to be the same for all nodes
+```
+
+### Multi-Node Setup
+
+To get the Master Address, get the IP address of your infiniband interface:
+
+```bash
+ibstat
+```
+
+Example output:
+
+```bash
+ib0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 2044
+inet 10.1.0.11 netmask 255.255.0.0 broadcast 10.1.255.255
+...
+```
+
+Set the master address (in this case `10.1.0.11`):
+
+```bash
+export MASTER_ADDR="10.1.0.11"
+export RDZV_ENDPOINT="$MASTER_ADDR:$MASTER_PORT"
+```
+
+### Training Command
+
+For multi-node training with 3 nodes and 8 GPUs per node:
+
+```bash
+# Arguments explanation:
+# --nnodes: number of nodes (e.g. 3)
+# --node_rank: rank of the node (e.g. 0, 1, 2, ... n) for n nodes
+# --nproc_per_node: number of processes/GPUs per node (e.g. 8)
+# --master_addr: address of the master node (e.g. 10.10.10.10)
+# --master_port: port of the master node (e.g. 29500)
+
+torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
+         --rdzv-id $RDZV_ID --rdzv-backend $RDZV_BACKEND \
+         --rdzv-endpoint $RDZV_ENDPOINT scripts/train/pretrain.py
+```
 
 ---
 
@@ -408,7 +458,7 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 
 ### Output Files
 
-- **`lr_feats.tif`**: DINO feature maps
+- **`lr_feats.pt`**: DINO feature maps
 - **`segmentation.tif`**: Instance masks
 - **`centroids.csv`**: Object coordinates
 - **`tracks.csv`**: Temporal trajectories
@@ -418,12 +468,21 @@ For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segm
 Get comprehensive upsampled features as demonstrated in-
 In the codebase, find the pdf at the link below:
 `https://github.com/kirchhausenlab/cell_interactome/tree/main/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features`
-For Kirchhausen lab members find the pdf below:
+For Kirchhausen lab members find the pdf at the link below:
 `/nfs/datasync4/spatial_dino/code/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
 
----
+You can also run the `scripts/notebooks/upsample_feats.py` notebook to visualize the features.
+![Feature Visualization](scripts/images/upsample.png)
 
-# 📁 Source Code Architecture Guide
+The files will look like this:
+
+![Feature Visualization](scripts/images/upsample_dextran.png)
+
+**The detailed_analysis.pdf is an ordered list of features going from most variance to least variance.**
+
+![Feature Visualization](scripts/images/visualize_features.png)
+
+## 📁 Architecture
 
 ## 🧠 `src/cell_interactome/` - Core Framework
 
@@ -728,7 +787,27 @@ _This architecture enables cutting-edge research while maintaining production-re
 
 ---
 
-## Issues
+## 🤝 Contributions
+
+**Key contributions of this work:**
+
+- **Self-supervised learning**: DINO-based feature extraction for biological imaging without manual annotation
+- **3D processing**: Full volumetric analysis of light-sheet microscopy data
+- **Multi-scale inference**: Efficient processing of large biological datasets
+- **Instance segmentation**: Attention-guided clustering for precise object detection
+- **Temporal tracking**: Physics-based object linking across time series
+- **Interactive tools**: User-friendly CLI interfaces for non-technical users
+
+**Technical innovations:**
+
+- 3D vision transformer adaptation for biological imaging
+- Attention density-guided segmentation refinement
+- Multi-channel processing pipeline for fluorescence microscopy
+- Distributed training framework for large-scale self-supervised learning
+
+---
+
+## 🆘 Support
 
 - **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
 - **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
