@@ -30,6 +30,7 @@ _Equal contribution, equal first authorship_
 ## 🧪 Experiment Results Gallery
 
 The following showcase demonstrates segmentation results across various biological experiments, highlighting the pipeline's versatility across different cellular structures and imaging conditions.
+Note that the patch tokens are the interpolated sum of the 384 features from the model. We use a ViTs with 390 embedding dimensions out of which 384 is the patch features and 6 are the attention features.
 
 | Experiment & Description                                                                      | Segmentation Results                                                    |
 | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
