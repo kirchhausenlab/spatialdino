@@ -52,6 +52,116 @@ The following showcase demonstrates segmentation results across various biologic
 
 ---
 
+## ☁️ AWS S3 Integration
+
+Cell Interactome now supports seamless data and model management with AWS S3. Upload your large datasets and model weights to the cloud for easy access and sharing.
+
+### 🚀 Quick Start with AWS
+
+**1. Setup AWS credentials:**
+
+```bash
+./aws/aws_manager.sh setup
+```
+
+**2. Upload your datasets (2+ TB):**
+
+```bash
+# Test first
+./aws/aws_manager.sh upload-data --dry-run
+
+# Upload datasets
+./aws/aws_manager.sh upload-data
+```
+
+**3. Upload model weights:**
+
+```bash
+# Upload the backbone model
+./aws/aws_manager.sh upload-model ../models vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb
+
+# Upload custom models
+./aws/aws_manager.sh upload-model ./my_models my-custom-model
+```
+
+**4. Download data from anywhere:**
+
+```bash
+# Download datasets
+./aws/aws_manager.sh cli data download dataset_part1/dataset1 ./local_data
+
+# Download models
+./aws/aws_manager.sh download-model vits8-pretrained ./models
+```
+
+**5. Monitor and verify:**
+
+```bash
+./aws/aws_manager.sh status         # Check upload progress
+./aws/aws_manager.sh verify         # Verify data integrity
+./aws/aws_manager.sh storage-usage  # Check S3 usage
+```
+
+### 📦 S3 Bucket Structure
+
+Your data is organized in S3 as:
+
+```
+s3://spatialdino/dataset_part1/
+├── dataset1/          # /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop (870 files, 817GB)
+├── dataset2/          # /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop (780 files, 732GB)
+├── dataset3/          # /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop (770 files, 723GB)
+└── models/
+    ├── vits8-pretrained/
+    │   ├── backbone.pth
+    │   ├── config.yaml
+    │   └── manifest.json
+    └── custom-model/
+        └── ...
+```
+
+### 🛠️ Advanced AWS Commands
+
+For full control, use the comprehensive CLI:
+
+```bash
+# Data operations
+./aws/aws_cli.py data upload --dry-run    # Test upload
+./aws/aws_cli.py data verify               # Verify integrity
+./aws/aws_cli.py data download PREFIX DIR # Download specific data
+
+# Model operations
+./aws/aws_cli.py models list               # List uploaded models
+./aws/aws_cli.py models upload DIR NAME    # Upload model
+./aws/aws_cli.py models download NAME DIR  # Download model
+
+# Storage management
+./aws/aws_cli.py storage list              # List S3 contents
+./aws/aws_cli.py storage usage             # Storage statistics
+./aws/aws_cli.py storage cleanup           # Clean temporary files
+```
+
+### ⚙️ Configuration
+
+AWS settings are in `aws/s3_upload/s3_upload_config.py`:
+
+- **S3 Bucket**: `spatialdino`
+- **Upload concurrency**: 4 parallel transfers
+- **Chunk size**: 100MB for multipart uploads
+- **Auto-resume**: Interrupted uploads continue automatically
+
+Set environment variables to override defaults:
+
+```bash
+export S3_BUCKET_NAME=my-bucket
+export MAX_CONCURRENCY=8
+export CHUNK_SIZE_MB=200
+```
+
+📋 **Performance**: Expect ~50-200 MB/s upload speeds. Total upload time for ~2.3TB: 2-4 hours.
+
+---
+
 ## 📚 Resources
 
 **Play around with the interactive CLI to get a feel for the pipeline and then tune the actual scripts. If you get stuck, please watch the video tutorials before asking questions.**
