@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
 
 @dataclass
@@ -11,11 +11,8 @@ class S3UploadConfig:
 
     # AWS S3 Settings
     bucket_name: str = "spatialdino"
-    s3_prefix: str = "dataset_part1"
+    s3_prefix: str = "models"
     aws_region: str = "us-east-1"
-
-    # Local directories to upload
-    dataset_mappings: Optional[Dict[str, str]] = None
 
     # Upload settings
     chunk_size: int = 100 * 1024 * 1024  # 100MB chunks for multipart
@@ -31,21 +28,7 @@ class S3UploadConfig:
     progress_file: str = "s3_upload_progress.json"
 
     def __post_init__(self):
-        if self.dataset_mappings is None:
-            self.dataset_mappings = {
-                "/raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop": "dataset1",
-                "/raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop": "dataset2",
-                "/raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop": "dataset3",
-            }
-
-    @property
-    def model_mappings(self):
-        """Default model directories to search for upload."""
-        return {
-            "models": "../models",
-            "checkpoints": "./checkpoints",
-            "weights": "./weights",
-        }
+        pass
 
 
 def get_config() -> S3UploadConfig:
