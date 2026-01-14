@@ -1,0 +1,27 @@
+in_chans: 1
+global_crop_size: [112, 112, 112] # Global crop size for training
+local_crop_size: [48, 48, 48] # Local crop size for training
+patch_size: [8, 8, 8]
+stride: [8, 8, 8]
+embed_dim: 384
+drop_path_rate: 0.4
+layerscale: 1.0e-05
+drop_path_uniform: true
+qkv_bias: true
+proj_bias: true
+ffn_bias: true
+ffn_layer: mlp
+depth: 12
+num_heads: 6
+mlp_ratio: 4
+num_tt_register_tokens: 1
+interpolate_offset: 0.1
+interpolate_antialias: true
+interpolate_align_corners: true
+pos_embed_type: "none" # "sincos", "learned", "none"
+
+mean: [0.0] # [0.163] # [0.485, 0.456, 0.406]
+std: [1.0] # [0.0988] # [0.229, 0.224, 0.225]
+
+crop_size: [192, 192, 192] # Crop size for training
+decoder_dropout: 0.65

@@ -1,0 +1,57 @@
+experiment_name: vitb8-sinder-mask_thr_4-200k_steps_ca_mask
+logging:
+  project: cell-interactome
+  entity: artificial-intelligence-research
+
+# Training parameters
+batch_size: 1 # Batch size per GPU (effective batch size is batch_size * n_global_crops * # gpus)
+max_steps: 20000
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+
+find_unused_parameters: false # Distributed DDP find unused parameters
+save_interval: 1000 # Steps to save checkpoint
+log_interval: 10 # Steps to log
+
+# Model parameters
+model: vitb8
+# Optimizer parameters
+weight_decay: 0.04
+weight_decay_end: 0.2
+clip_grad: 3.0
+lr: null # Learning rate (absolute lr)
+betas: [0.9, 0.999]
+blr: 0.005 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
+
+crop_size: [256, 256, 256]
+isotropic_scale_factor: [2.404, 1.0, 1.0]
+# Dataset parameters
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+    - /raid4/shared_image_recog_ml/llsm_3d_ds_ap2_complete/dataset-{000000..000090}.tar
+
+base_path: /raid3/shared_image_recog_ml
+base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}::${shards.train[3]}"
+output_dir: "${base_path}/output/${experiment_name}"
+device: "cuda"
+seed: 0
+ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=9999/ckpt.pth" # Resume from checkpoint
+resume: false
+num_workers: 20
+pin_mem: false # Pin CPU memory in DataLoader
+persistent_workers: true
+shuffle_buffer_size: 250
+
+mask_thr: 4
+skip_less_than: 3
+kernel: 3
+limit_layers: 10
+temperature: 0.1
+
+backbone_path: "${base_path}/output/vitb8-mlp-pretrain-latent_loss_1-sknopp-4_local_crops-minmr0.1-maxmr0.5-ca_mask_reg4_131k_prototypes_median_padding_teacher_temp_0.07_new_norm_new_interp_lr2e-5/checkpoints/step=49999/backbone.pth"

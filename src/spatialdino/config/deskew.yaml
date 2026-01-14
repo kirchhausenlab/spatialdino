@@ -1,0 +1,16 @@
+seed: 0
+device: "cuda:0"
+file_path: "/nfs/datasync4/tklab-llsm/20240212_p5_p55_sCMOS_Nick_Anand/processed/CS1_verotmp_vsvpegfp-s_dex_60min_NOatto/Ex04_488nm_100mW_560_100mW_642nm_100mW_z0p5" 
+
+start_frame: 1
+device_type: "cuda"
+find_unused_parameters: false # Distributed DDP find unused parameters
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+base_path: "/raid3/cme_tests/results"
+save_path: "${base_path}/nick_apili_488_virus/DS"
+
+batch_size: 8
+num_workers: 20
+pin_mem: false # Pin CPU memory in DataLoader
+persistent_workers: false

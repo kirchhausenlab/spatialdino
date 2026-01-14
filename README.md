@@ -196,7 +196,7 @@ source ~/.bashrc
 ### 2. Clone the repository:
 
 ```bash
-git clone --recursive git@github.com:kirchhausenlab/cell_interactome.git
+git clone --recursive git@github.com:kirchhausenlab/spatialdino.git
 ```
 
 ### 3. Create a conda environment:
@@ -217,7 +217,7 @@ In case of errors, ensure you have the required dependencies for Python installe
 
 ```bash
 rm -rf ~/.cache/
-rm -rf cell_interactome.egg-info
+rm -rf spatialdino.egg-info
 ```
 
 **Install system dependencies:**
@@ -501,9 +501,9 @@ torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
 
 Get comprehensive upsampled features as demonstrated in-
 In the codebase, find the pdf at the link below:
-`https://github.com/kirchhausenlab/cell_interactome/tree/main/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features`
+`https://github.com/kirchhausenlab/spatialdino/tree/main/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features`
 For Kirchhausen lab members find the pdf at the link below:
-`/nfs/datasync4/spatial_dino/code/cell_interactome/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
+`/nfs/datasync4/spatial_dino/code/spatialdino/scripts/notebooks/feature_visualizations/ap2/ap2_latest_ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t/features/`
 
 You can also run the `scripts/notebooks/upsample_feats.py` notebook to visualize the features.
 ![Feature Visualization](scripts/images/upsample.png)
@@ -518,7 +518,7 @@ The files will look like this:
 
 ## 📁 Architecture
 
-## 🧠 `src/cell_interactome/` - Core Framework
+## 🧠 `src/spatialdino/` - Core Framework
 
 This document provides a comprehensive overview of the source code organization for the Cell Interactome project. The codebase is designed with modularity and extensibility in mind, supporting both research experimentation and production deployment.
 
@@ -527,7 +527,7 @@ This document provides a comprehensive overview of the source code organization 
 ## 📊 **Main Modules Overview**
 
 ```
-src/cell_interactome/
+src/spatialdino/
 ├── 🏗️  models/              # Neural network architectures & training
 ├── 📊 data/                 # Data handling & preprocessing
 ├── 🔬 processing/           # Biological data processing
@@ -812,7 +812,7 @@ _This architecture enables cutting-edge research while maintaining production-re
 
 ## 🔧 Configuration
 
-**Key parameters in `src/cell_interactome/config/inference.yaml`:**
+**Key parameters in `src/spatialdino/config/inference.yaml`:**
 
 - `chunk_size`: Processing volume size
 - `patch_size`: Transformer patch dimensions
@@ -843,7 +843,7 @@ _This architecture enables cutting-edge research while maintaining production-re
 
 ## 🆘 Support
 
-- **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/cell_interactome/issues)
+- **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/spatialdino/issues)
 - **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
 
 ---
@@ -851,7 +851,7 @@ _This architecture enables cutting-edge research while maintaining production-re
 ## 📄 Citation
 
 ```bibtex
-@article{cell_interactome2025,
+@article{spatialdino2025,
   title={Cell Interactome: Automated Detection of Cellular Interactions using Self-Supervised Deep Learning},
   author={Alex Lavaee ⃰, Arkash Jain ⃰, Tom Kirchhausen},
   journal={[Journal]},

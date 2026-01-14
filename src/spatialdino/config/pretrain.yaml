@@ -1,0 +1,76 @@
+experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb-bs_2352
+logging:
+  project: cell-interactome
+  entity: artificial-intelligence-research
+
+# Training parameters
+batch_size: 14 # Batch size per GPU (effective batch size is batch_size * n_global_crops * # gpus)
+accum_iter: 7 # Gradient accumulation steps
+max_steps: 250000
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+
+mask_type: "block" # "block", "random"
+min_mask_ratio: 0.1 # Minimum masking ratio (1 - percentage of remained patches)
+max_mask_ratio: 0.5 # Maximum masking ratio (1 - percentage of remained patches)
+mask_sample_probability: 0.5
+n_global_crops: 2
+n_local_crops: 8
+find_unused_parameters: false # Distributed DDP find unused parameters
+save_interval: 1000 # Steps to save checkpoint
+log_interval: 10 # Steps to log
+
+# Model parameters
+model: vits8
+# Optimizer parameters
+weight_decay: 0.04
+weight_decay_end: 0.2
+clip_grad: 3.0
+lr: null # Learning rate (absolute lr)
+betas: [0.9, 0.999]
+blr: 2.0e-04 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
+min_lr: 1.0e-06 # Lower lr bound for cyclic schedulers
+freeze_last_layer_steps: 300
+warmup_steps: 24000
+optim: "adamw"
+layerwise_decay: 1.0
+patch_embed_lr_mult: 0.2
+dino_loss_weight: 1.0
+ibot_loss_weight: 1.0
+koleo_loss_weight: 0.1
+centering: "sinkhorn_knopp" # only applies to ce loss, "centering" for centering the target, "sinkhorn_knopp" for sinkhorn knopp
+center_momentum: 0.9 # only applies to centering
+momentum_teacher: 0.994
+final_momentum_teacher: 1.0
+warmup_teacher_temp_steps: 9000
+warmup_teacher_temp: 0.04
+teacher_temp: 0.07
+student_temp: 0.1
+n_prototypes: 32768 # 65536 # 131072
+isotropic_scale_factor: [2.404, 1.0, 1.0]
+# Dataset parameters
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+    - /raid4/shared_image_recog_ml/llsm_3d_ds_ap2_complete/dataset-{000000..000090}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_apili_virus/dataset-{000000..000022}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_mito/dataset-{000000..000019}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_non_cared_ebola_virus/dataset-{000000..000002}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_apili_642/dataset-{000000..000041}.tar
+
+base_path: /raid3/shared_image_recog_ml
+base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}::${shards.train[3]}::${shards.train[4]}::${shards.train[5]}::${shards.train[6]}::${shards.train[7]}"
+output_dir: "${base_path}/output/${experiment_name}"
+device: "cuda"
+seed: 0
+ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=26999/ckpt.pth" # Resume from checkpoint
+resume: false
+num_workers: 20
+pin_mem: false # Pin CPU memory in DataLoader
+persistent_workers: true
+shuffle_buffer_size: 250

@@ -1,0 +1,155 @@
+experiment_name: LIFT_crossmae
+logging:
+  project: cell-interactome
+  entity: artificial-intelligence-research
+  num_pca_images: 1
+
+# Training parameters
+batch_size: 16 # Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus)
+total_steps: 250000
+accum_iter: 1 # Accumulate gradient iterations for incrsing effective batch size
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+
+mask_ratio: 0.75 # Masking ratio (1 - percentage of remained patches)
+kept_mask_ratio: 0.25 # Percentage of mask tokens that are kept
+n_global_crops: 2
+n_local_crops: 4
+inverse_lr: false # Use inverse lr scheduler
+no_lr_scale: false # Do not scale lr by mask_ratio
+norm_pix_loss: true # Use (per-patch) normalized pixels as targets
+find_unused_parameters: false # Distributed DDP find unused parameters
+save_interval: 1000 # Steps to save checkpoint
+log_interval: 10 # Steps to log
+pred_interval: 200 # Steps to predict
+backbone_path: /raid3/shared_image_recog_ml/output/mae-vitb-pretrain-pix_loss_0.9-latent_loss_0.1-sinkhorn_knopp-large_dataset-isotropic-4_local_crops-minmr0.1-maxmr0.5-full_dataset-block_mask_reg4/checkpoints/step=16999/backbone.pth
+
+model: vitb8
+patch_embed_lr_mult: 0.2
+weight_decay_end: 0.2
+weight_decay: 0.05
+lr: null # Learning rate (absolute lr)
+betas: [0.9, 0.95]
+blr: 1.0e-4 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
+min_lr: 0.0 # Lower lr bound for cyclic schedulers
+warmup_steps: 1000 # Steps to warmup LR
+max_steps: 55000 # Total number of training steps
+freeze_last_layer_steps: 300
+
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+    - /raid4/shared_image_recog_ml/llsm_3d_ds_ap2_complete/dataset-{000000..000090}.tar
+  test:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds/dataset-{000000..000919}.tar
+    - /raid4/shared_image_recog_ml/llsm_3d_ap2/dataset-{000000..000043}.tar
+base_path: /raid3/shared_image_recog_ml
+base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}::${shards.train[3]}"
+base_test_data_dir: "${shards.test[0]}" # "${shards.test[0]}::${shards.test[1]}"
+output_dir: "${base_path}/output/${experiment_name}"
+device: "cuda:0"
+seed: 42
+ckpt_path: /nfs/scratch2/shared_image_recog_ml/LiFT/MAE_blur_original_with_ap2_moretransforms_test/checkpoints/checkpoint_iteration_41999.pth
+resume: true
+num_workers: 16
+pin_mem: false # Pin CPU memory in DataLoader
+persistent_workers: true
+shuffle_buffer_size: 500
+scale: [0.2, 1.0]
+ratio: [0.75, 1.3333]
+mean: [0.0] # [0.163] #[0.485, 0.456, 0.406] # [0]
+std: [1.0] # [0.0988] #[0.229, 0.224, 0.225] #[1]
+
+# MAE specific parameters
+weight_fm: true # Weight the feature maps for decoder
+use_fm: [-1] # Feature maps to use for decoder
+use_input: true # Use input as a feature map
+self_attn: false # Use self attention in decoder
+enable_flash_attention2: true # Enable flash attention 2
+
+# training parameters
+use_fp16: true
+upsample_factor: 1
+chunk_size: 1
+mode: "constant"
+overlap: 0.0
+sigma_scale: 0.125
+isotropic_scale_factor: [2.404, 1.0, 1.0]
+iters: 3
+###
+# LiFT specific parameters
+output_base: /nfs/scratch2/shared_image_recog_ml
+lift_model:
+  isotropic_scale_factor: [2.404, 1.0, 1.0]
+  output_dir: ${output_base}/LiFT/MAE_blur_original_with_ap2_moretransforms_test
+  norm: true
+  scale_factor: 1
+  compile: false
+  stride: 8
+  embed_dim: 768
+  latent_dim: 96
+  num_blocks: 3
+  patch_size: 8
+  imsize: [128, 224, 224]
+  loss_type: cosine
+  in_chans: 1 # based on the new dataset
+  start_step: 0
+  add_color_jitter: false
+  max_steps: 55000
+  iteration: 1
+  add_seperate_transform: false
+lift_warmup_steps: 1000
+use_torch_pca: true
+foreground_threshold: 0.992
+
+#####
+# Prediction parameters
+output_base_raid: /raid3/shared_image_recog_ml
+weights_dir_raid: ${output_base_raid}/weights
+prediction:
+  dtype: fp16
+  do_max_proj: true
+  dir_path: /nfs/scratch2/shared_image_recog_ml/LiFT
+  ckpt_stem: MAE_blur_original_with_ap2_moretransforms_test/checkpoints #MAE_no_constrast/checkpoints #  MAE_constrast_noise/checkpoints
+  ckpt_path: ${prediction.dir_path}/${prediction.ckpt_stem}/checkpoint_iteration_2999.pth
+  device: cuda:0
+  save_path: /nfs/scratch2/shared_image_recog_ml/LiFT/predictions
+  backbone:
+    global_crops: [32, 224, 224]
+    add_color_jitter: false
+    use_additional_params: False
+    add_scheduler: False
+    start_epoch: 0
+    max_steps: 40000
+    resume: false
+  model:
+    stride: 4
+    embed_dim: 768
+    latent_dim: 96
+    num_blocks: 3
+    patch_size: 8
+    imsize: [64, 256, 256]
+    loss_type: cosine
+    in_chans: 1
+  visualize:
+    file_number: 40
+    all_dims: true
+    iteration: 3
+    norm: true
+    do_max_proj: false
+    use_lr_feats: true
+    crop_value: [24, 360, 408]
+    save_images: true
+    chunk_size: [64, 96, 96]
+    prediction_on_volume: false
+    volume_path: /nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS/Ex05_CamA_ch0_stack0005_488nm_0004270msec_0007639546msecAbs_000x_000y_000z_0000t.tif
+    #/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS/Ex05_CamA_ch0_stack0004_488nm_0003416msec_0007638692msecAbs_000x_000y_000z_0000t.tif
+    # /nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS/Ex05_CamA_ch0_stack0006_488nm_0005124msec_0007640400msecAbs_000x_000y_000z_0000t.tif
+    #/nfs/datasync4/tklab-llsm/20220829_p5_p55_sCMOS_Anand/processed/CS1_Dextranphrodogreen_aso_2PM/Ex05_488_100mW_z0p5/ch488nmCamA/DS/Ex05_CamA_ch0_stack0008_488nm_0006832msec_0007642108msecAbs_000x_000y_000z_0000t.tif
+    thresholding: true
+    foreground_threshold: 0.992

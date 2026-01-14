@@ -1,0 +1,69 @@
+logging:
+  project: cell-interactome
+  entity: artificial-intelligence-research
+
+# Training parameters
+batch_size: 1 # 32 # Batch size per GPU (effective batch size is batch_size * n_global_crops * # gpus)
+max_steps: 100000
+device_type: "cuda"
+dtype: "bf16"
+use_amp: true
+distributed: true
+backend: "cpu:gloo,cuda:nccl"
+
+freeze_encoder: true # Freeze encoder during training
+find_unused_parameters: false # Distributed DDP find unused parameters
+save_interval: 2000 # Steps to save checkpoint
+log_interval: 10 # Steps to log
+
+intensity_sigma: 1.0
+spatial_sigma: 4.0
+radius: 2
+
+# Model parameters
+# model: vitb8
+model: vits8
+# Optimizer parameters
+clip_grad: null
+lr: null # Learning rate (absolute lr)
+lr_decay_factor: 0.5
+lr_sched_patience: 2000
+betas: [0.9, 0.999]
+blr: 2.0e-04 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
+optim: "adamw"
+pix_loss_type: "l2" # l1 for l1 loss, l2 for l2 loss, charbonnier for charbonnier loss
+pix_loss_weight: 0.995
+n_cuts_weight: 0.005
+
+isotropic_scale_factor: [2.404, 1.0, 1.0]
+# Dataset parameters
+
+shards:
+  train:
+    - /raid1/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000868}.tar
+    - /raid2/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000778}.tar
+    - /raid3/shared_image_recog_ml/llsm_3d_ds_auto_crop/dataset-{000000..000768}.tar
+    - /raid4/shared_image_recog_ml/llsm_3d_ds_ap2_complete/dataset-{000000..000090}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_apili_virus/dataset-{000000..000022}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_mito/dataset-{000000..000019}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_non_cared_ebola_virus/dataset-{000000..000002}.tar
+    - /raid2/shared_image_recog_ml2/llsm_3d_ds_apili_642/dataset-{000000..000041}.tar
+
+base_path: /raid3/shared_image_recog_ml
+base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}::${shards.train[3]}::${shards.train[4]}::${shards.train[5]}::${shards.train[6]}::${shards.train[7]}"
+
+output_dir: "${base_path}/output/${experiment_name}"
+device: "cuda"
+seed: 0
+ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=29999/ckpt.pth" # Resume from checkpoint
+resume: false
+num_workers: 10
+pin_mem: false # Pin CPU memory in DataLoader
+persistent_workers: true
+shuffle_buffer_size: 250
+weight_decay: 0.01
+
+step: 149999
+# experiment_name: vitb8-segmentation-10k_steps_unet_decoder_rescale_pix_loss_weight_0.9_n_cuts_weight_0.1
+experiment_name: seg_vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb_pix_loss_0.995_n_cuts_0.005
+backbone_path: "${base_path}/output/vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb/checkpoints/step=${step}/backbone.pth"
