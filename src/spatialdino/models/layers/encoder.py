@@ -13,13 +13,10 @@ import logging
 import math
 from functools import partial
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-from monai.utils.type_conversion import convert_to_numpy, convert_to_tensor
 import torch
 import torch.amp
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.inferers.utils import sliding_window_inference
-from monai.data.utils import get_valid_patch_size
 from spatialdino.data.transforms import trilinear_interpolate_with_antialias
 from spatialdino.models.layers.attention import MemEffAttention
 from spatialdino.models.layers.block import NestedTensorBlock as Block
@@ -436,6 +433,7 @@ class Encoder(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         use_amp: bool = True,
         device_type: str = "cuda",
+        sw_device: torch.device | str | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         with torch.no_grad():
@@ -444,27 +442,10 @@ class Encoder(nn.Module):
                 dtype=dtype,
                 device_type=device_type,
             ):
-                num_spatial_dims = len(img.shape) - 2
-                image_size_ = img.shape[-3:]
-                roi_size = kwargs["roi_size"]
-                image_size = tuple(
-                    max(image_size_[i], roi_size[i]) for i in range(num_spatial_dims)
-                )
-                patch_size = get_valid_patch_size(image_size, roi_size)
-                lr_feats = convert_to_tensor(
-                    sliding_window_inference(
-                        inputs=img,
-                        predictor=lambda x: self._predict(
-                            x,
-                            vit_feat=vit_feat,
-                            norm_feat=norm_feat,
-                        ),
-                        mode="constant",
-                        roi_weight_map=torch.ones(
-                            patch_size, device=kwargs["device"], dtype=torch.float32
-                        ),
-                        **kwargs,
-                    )
+                lr_feats = self._predict(
+                    img.to(sw_device),
+                    vit_feat=vit_feat,
+                    norm_feat=norm_feat,
                 )
 
         return lr_feats
