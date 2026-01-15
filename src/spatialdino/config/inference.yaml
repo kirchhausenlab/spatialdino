@@ -17,14 +17,35 @@ num_workers: 4
 pin_mem: true # Pin CPU memory in DataLoader
 persistent_workers: true
 
-chunk_size: [8, 8, 8] # [112, 784, 784] or [448, 448, 448]
+chunk_size: [8,8,8] # [112, 784, 784] or [448, 448, 448]
 overlap: 0.0
 upsample_factor: 3.0
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
 norm_feat: norm
 
-base_path: "/raid1/cme_tests"
-save_path: "${base_path}/results/care_virus"
+inference_route: "streaming" # "default" or "streaming"
+
+streaming_storage: "gpu" # "gpu", "cpu", or "disk"
+streaming_storage_dtype: "bf16"
+streaming_output_dtype: "bf16"
+streaming_output_to_float32: false
+streaming_q_block_tokens: 16384
+streaming_kv_block_tokens: 16384
+streaming_patch_chunk_size: [224,448,448] # when null, uses vol_metadata["chunk_size"]
+streaming_pin_memory: true
+streaming_tmp_dir: "/nfs/scratch2/data/llsm/spatialdino/tmp/spatialdino_streaming"
+streaming_precompute_kv: true
+streaming_kv_storage: "gpu" # "gpu", "cpu", or "disk"
+streaming_kv_storage_dtype: "bf16"
+
+streaming_use_triton: true
+streaming_triton_block_m: 128
+streaming_triton_block_n: 256
+streaming_triton_block_d: 64
+streaming_triton_num_warps: 4
+streaming_triton_num_stages: 3
+
+save_path: "$/raid1/cme_tests/results/care_virus"
 
 chunk_interpolate: true
 interpolate_volume_chunk_size: [1, 448, 448, 448]
