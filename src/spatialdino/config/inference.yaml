@@ -1,10 +1,7 @@
 experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb
 backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=249999/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
 seed: 0
-device: "cuda"
 file_path: "/nfs/scratch/Nchow/quantification/DataForCalculation/Figure_for_hypo_and_apili_enlargement/20250226_Zeiss_apili_svga_Ebola_vsvG/deskew/crop_x04/Ex06_560nm_100mW_642nm_100mW_z0p5/ch560nmCamA/DS"
-exp_name: ex07_CamA_ch0_stack0000_488nm_0000000msec_0087860321msecAbs_000x_000y_000z_0000t.tif
-file: "${file_path}/${exp_name}"
 model: vits8
 
 device_type: "cuda"
@@ -20,33 +17,18 @@ num_workers: 4
 pin_mem: true # Pin CPU memory in DataLoader
 persistent_workers: true
 
-chunk_size: [112, 112, 112] # [112, 784, 784] or [448, 448, 448]
+chunk_size: [8, 8, 8] # [112, 784, 784] or [448, 448, 448]
 overlap: 0.0
-remove_background: false
-foreground_threshold: "<= 0.85"
 upsample_factor: 3.0
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
 norm_feat: norm
-
-global_hist_max: 0.0
-global_hist_min: 1.0
-# kmeans
-nbins: 65536
-num_clusters: 80
-num_samples: 512_000
-random_seed: 42
-kmeans_max_samples_per_batch: 2_048_000
-type_of_seg: "instance"
 
 base_path: "/raid1/cme_tests"
 save_path: "${base_path}/results/care_virus"
 
 chunk_interpolate: true
 interpolate_volume_chunk_size: [1, 448, 448, 448]
-interpolate_chunk_size: [48, 448, 448, 448]
 
-min_particle_size: 3
-crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses smart defaults: z=0-112, y=0-784, x=0-784 (auto-adjusts if volume is smaller)
+crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume
 
-spot_sigma: 0.5
-sigma_vals: 2.0
+spot_sigma: 0.5 # for segmentation script
