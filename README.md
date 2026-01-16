@@ -146,13 +146,13 @@ git clone --recursive git@github.com:kirchhausenlab/spatialdino.git
 
 ### 3. Create a uv environment:
 
+In the repository directory, run
 ```bash
-mamba env create -f env.yaml -n cell3d
-mamba activate cell3d
-pip install -e . && pip install natsort rich click xformers wheel setuptools
+uv venv --python 3.12
+uv sync
 ```
 
-**Incase of torch issues, check your Cuda version at `/usr/local/` and install torch from source `pip install torch --index-url https://download.pytorch.org/whl/cu121`, where you can change cu121 for your version. Say you have `cuda-12.1` installed, then you can install torch with `pip install torch --index-url https://download.pytorch.org/whl/cu121`.**
+**Incase of torch issues, check your Cuda version at `/usr/local/` and install torch from source `uv pip install torch --index-url https://download.pytorch.org/whl/cu121`, where you can change cu121 for your version. Say you have `cuda-12.1` installed, then you can install torch with `pip install torch --index-url https://download.pytorch.org/whl/cu121`.**
 
 ### 📦 Troubleshooting
 
@@ -192,7 +192,7 @@ export OMP_NUM_THREADS=32
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 
-torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
+uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
          --rdzv_endpoint=localhost:9999 ./scripts/inference/inference.py \
   file_path="$folder_path" \
   save_path="$save_path" \
@@ -231,7 +231,7 @@ attention_weight=0.5
 background_removal_radius=10
 skip_existing=False                  # set to True if continuing previous experiments
 
-torchrun --nnodes=1 --node_rank=0 --nproc_per_node=$NUM_PROC_PER_NODE \
+uv run torchrun --nnodes=1 --node_rank=0 --nproc_per_node=$NUM_PROC_PER_NODE \
          --rdzv_endpoint=localhost:8999 ./scripts/inference/segmentation.py \
   file_path="$save_path" \
   save_path="$save_path" \
