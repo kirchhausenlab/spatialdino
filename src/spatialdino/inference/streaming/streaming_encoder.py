@@ -26,12 +26,6 @@ def _iter_blocks(total: int, block: int) -> Iterable[Tuple[int, int]]:
         yield start, end
 
 
-def _resolve_dtype(config: DictConfig, key: str, fallback: torch.dtype) -> torch.dtype:
-    if key in config:
-        return DTYPE_MAPPING[str(config[key])]
-    return fallback
-
-
 class StreamingEncoder:
     def __init__(
         self,
@@ -49,20 +43,12 @@ class StreamingEncoder:
         self.storage_kind: StorageKind = str(
             getattr(config, "streaming_storage", "cpu")
         )  # type: ignore
-        self.storage_dtype = _resolve_dtype(
-            config,
-            "streaming_storage_dtype",
-            self.compute_dtype,
-        )
-        self.output_dtype = _resolve_dtype(
-            config,
-            "streaming_output_dtype",
-            self.storage_dtype,
-        )
+        self.storage_dtype = self.compute_dtype
+        self.output_dtype = self.compute_dtype
         self.q_block_tokens = int(getattr(config, "streaming_q_block_tokens", 1024))
-        self.kv_block_tokens = int(getattr(config, "streaming_kv_block_tokens", 1024))
+        self.kv_block_tokens = self.q_block_tokens
         self.pin_memory = bool(getattr(config, "streaming_pin_memory", True))
-        self.precompute_kv = bool(getattr(config, "streaming_precompute_kv", False))
+        self.precompute_kv = True
         self.use_triton = bool(getattr(config, "streaming_use_triton", False))
         if self.use_triton and not TRITON_AVAILABLE:
             raise RuntimeError("streaming_use_triton requested but Triton is not available.")
@@ -74,18 +60,15 @@ class StreamingEncoder:
         self.kv_storage_kind: StorageKind = str(
             getattr(config, "streaming_kv_storage", self.storage_kind)
         )  # type: ignore
-        self.kv_storage_dtype = _resolve_dtype(
-            config,
-            "streaming_kv_storage_dtype",
-            self.storage_dtype,
-        )
+        self.kv_storage_dtype = self.storage_dtype
 
         self.tmp_dir: Optional[Path] = None
         if self.storage_kind == "disk" or self.kv_storage_kind == "disk":
-            tmp_dir = getattr(config, "streaming_tmp_dir", None)
-            if tmp_dir is None:
-                raise ValueError("streaming_tmp_dir is required for disk storage.")
-            self.tmp_dir = Path(str(tmp_dir))
+            save_path = getattr(config, "save_path", None)
+            if save_path is None:
+                raise ValueError("save_path is required for disk storage.")
+            self.tmp_dir = Path(str(save_path)).joinpath("tmp")
+            self.tmp_dir.mkdir(parents=True, exist_ok=True)
             if self.storage_kind == "disk":
                 if self.storage_dtype == torch.bfloat16:
                     logger.warning(

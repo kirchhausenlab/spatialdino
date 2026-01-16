@@ -1,7 +1,7 @@
 experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb
 backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=249999/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
 seed: 0
-file_path: "/nfs/scratch/Nchow/quantification/DataForCalculation/Figure_for_hypo_and_apili_enlargement/20250226_Zeiss_apili_svga_Ebola_vsvG/deskew/crop_x04/Ex06_560nm_100mW_642nm_100mW_z0p5/ch560nmCamA/DS"
+file_path: null
 model: vits8
 
 device_type: "cuda"
@@ -18,7 +18,6 @@ pin_mem: true # Pin CPU memory in DataLoader
 persistent_workers: true
 
 chunk_size: [8,8,8] # [112, 784, 784] or [448, 448, 448]
-overlap: 0.0
 upsample_factor: 3.0
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
 norm_feat: norm
@@ -26,17 +25,10 @@ norm_feat: norm
 inference_route: "streaming" # "default" or "streaming"
 
 streaming_storage: "gpu" # "gpu", "cpu", or "disk"
-streaming_storage_dtype: "bf16"
-streaming_output_dtype: "bf16"
-streaming_output_to_float32: false
 streaming_q_block_tokens: 16384
-streaming_kv_block_tokens: 16384
 streaming_patch_chunk_size: [224,448,448] # when null, uses vol_metadata["chunk_size"]
 streaming_pin_memory: true
-streaming_tmp_dir: "/nfs/scratch2/data/llsm/spatialdino/tmp/spatialdino_streaming"
-streaming_precompute_kv: true
 streaming_kv_storage: "gpu" # "gpu", "cpu", or "disk"
-streaming_kv_storage_dtype: "bf16"
 
 streaming_use_triton: true
 streaming_triton_block_m: 128
@@ -45,11 +37,9 @@ streaming_triton_block_d: 64
 streaming_triton_num_warps: 4
 streaming_triton_num_stages: 3
 
-save_path: "$/raid1/cme_tests/results/care_virus"
+save_path: null
 
 chunk_interpolate: true
 interpolate_volume_chunk_size: [1, 448, 448, 448]
 
 crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume
-
-spot_sigma: 0.5 # for segmentation script

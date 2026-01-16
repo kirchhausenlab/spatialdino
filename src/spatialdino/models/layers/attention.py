@@ -26,7 +26,6 @@ if XFORMERS_ENABLED:
         raise ImportError("xFormers is not available (Attention)")
 else:
     XFORMERS_AVAILABLE = False
-print('xformers:', XFORMERS_ENABLED, XFORMERS_AVAILABLE)
 
 class Attention(nn.Module):
     def __init__(

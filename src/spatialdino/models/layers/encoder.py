@@ -433,7 +433,7 @@ class Encoder(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         use_amp: bool = True,
         device_type: str = "cuda",
-        sw_device: torch.device | str | None = None,
+        device: torch.device | str | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         with torch.no_grad():
@@ -443,7 +443,7 @@ class Encoder(nn.Module):
                 device_type=device_type,
             ):
                 lr_feats = self._predict(
-                    img.to(sw_device),
+                    img.to(device),
                     vit_feat=vit_feat,
                     norm_feat=norm_feat,
                 )
