@@ -49,50 +49,6 @@ def validate_crop_params(
         "end_x must be less than or equal to the number of x-stacks"
     )
 
-
-def generate_smart_crop_params(
-    raw_volume_shape: Tuple[int, int, int],
-    default_z_end: int = 112,
-    default_y_end: int = 784,
-    default_x_end: int = 784,
-) -> Tuple[int, int, int, int, int, int]:
-    """
-    Generate smart crop parameters that use default sizes but auto-adjust if the volume is smaller.
-
-    Crop parameters define a 3D bounding box within the volume to process. They specify which
-    portion of the volume to extract and process, allowing for focused analysis on specific
-    regions. The format is (z_start, z_end, y_start, y_end, x_start, x_end).
-
-    Default crop regions:
-    - Z-axis: 0 to 112 (suitable for most microscopy depths)
-    - Y-axis: 0 to 784 (standard field of view height)
-    - X-axis: 0 to 784 (standard field of view width)
-
-    If the actual volume is smaller than these defaults in any dimension,
-    the function automatically uses the full available size in that dimension.
-
-    Args:
-        raw_volume_shape: (Z, Y, X) dimensions of the volume
-        default_z_end: Default maximum Z dimension (depth)
-        default_y_end: Default maximum Y dimension (height)
-        default_x_end: Default maximum X dimension (width)
-
-    Returns:
-        Tuple of (z_start, z_end, y_start, y_end, x_start, x_end)
-    """
-    z_size, y_size, x_size = raw_volume_shape
-
-    # Start at 0 for all dimensions
-    z_start, y_start, x_start = 0, 0, 0
-
-    # Use the minimum of default size or actual volume size
-    z_end = min(default_z_end, z_size)
-    y_end = min(default_y_end, y_size)
-    x_end = min(default_x_end, x_size)
-
-    return (z_start, z_end, y_start, y_end, x_start, x_end)
-
-
 def median_fill(raw_volume: np.ndarray) -> np.ndarray:
     """Create a median fill for the volume.
 

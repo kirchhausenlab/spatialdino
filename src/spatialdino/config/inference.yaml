@@ -2,10 +2,10 @@ experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-blo
 backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=249999/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
 seed: 0
 file_path: null
+save_path: null
 model: vits8
 
 device_type: "cuda"
-
 dtype: "bf16"
 use_amp: true
 find_unused_parameters: false # Distributed DDP find unused parameters
@@ -17,10 +17,13 @@ num_workers: 4
 pin_mem: true # Pin CPU memory in DataLoader
 persistent_workers: true
 
-chunk_size: [8,8,8] # [112, 784, 784] or [448, 448, 448]
 upsample_factor: 3.0
+chunk_size: [8,8,8]
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
+crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume
 norm_feat: norm
+chunk_interpolate: true
+interpolate_volume_chunk_size: [1, 448, 448, 448]
 
 inference_route: "streaming" # "default" or "streaming"
 
@@ -36,10 +39,3 @@ streaming_triton_block_n: 256
 streaming_triton_block_d: 64
 streaming_triton_num_warps: 4
 streaming_triton_num_stages: 3
-
-save_path: null
-
-chunk_interpolate: true
-interpolate_volume_chunk_size: [1, 448, 448, 448]
-
-crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume

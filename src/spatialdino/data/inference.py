@@ -15,7 +15,6 @@ from spatialdino.data.transforms import (
 from spatialdino.data.utils import (
     median_fill,
     validate_crop_params,
-    generate_smart_crop_params,
 )
 from spatialdino.utils.misc import make_3tuple
 import torch.nn.functional as F
