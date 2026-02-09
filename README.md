@@ -15,21 +15,13 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 _Equal contribution, equal first authorship_
 
-**SpatialDINO** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data. Key capabilities:
+**SpatialDINO** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data.
 
 ---
 
 ## 📂 Public Data Access
 
-**For researchers and biologists**: All datasets and pre-trained models are publicly available on AWS S3.
-
-### S3 Bucket Structure
-
-![AWS URI Structure](scripts/images/uri.png)
-
-| **Datasets**                                     | **Models**                                    |
-| ------------------------------------------------ | --------------------------------------------- |
-| ![Dataset Structure](scripts/images/dataset.png) | ![Model Structure](scripts/images/models.png) |
+All datasets and pre-trained models are publicly available on AWS S3.
 
 ### Download Commands
 
@@ -50,67 +42,6 @@ aws s3 cp s3://spatialdino/models/ ./models/ --recursive --no-sign-request
 ```bash
 aws s3 ls s3://spatialdino/ --no-sign-request
 ```
-
----
-
-## 📋 Table of Contents
-
-### 🚀 Getting Started
-
-1. [Experiment Results Gallery](#-experiment-results-gallery) - Comprehensive experiment showcase
-2. [Resources](#-resources) - Video tutorials, technical docs, and guides
-3. [Machine Setup](#machine-setup-💻) - Ubuntu/MacOS/Windows compatibility guide
-4. [CUDA Installation](#cuda-installation-🛠️) - GPU requirements and setup verification
-5. [Installation](#installation-🛠️) - Complete setup process
-   - [Miniforge & Mamba](#1-install-miniforge--mamba) - Environment management
-   - [Repository Clone](#2-clone-the-repository) - Source code download
-   - [Environment Creation](#3-create-a-conda-environment) - Dependencies installation
-   - [Troubleshooting](#-troubleshooting) - Common issues and fixes
-
-### 🔬 Core Pipeline
-
-6. [Inference](#inference-🔍) - Feature extraction from 3D volumes
-   - [Interactive CLI](#inference-🔍) - Recommended user interface
-   - [Input Size Guidelines](#input-size-guidelines) - Volume constraints
-   - [Example Scripts](#example-inference-script) - Batch processing setup
-   - [Script Parameters](#script-parameters) - Configuration options
-7. [Segmentation](#segmentation-✂️) - Instance mask generation
-   - [Interactive CLI](#segmentation-✂️) - User-friendly interface
-   - [Example Scripts](#example-segmentation-script) - Automation examples
-   - [Parameter Tuning](#parameter-tuning) - SNR-specific optimization
-8. [Training](#training-🏃) - Multi-node self-supervised model training
-   - [Environment Setup](#environment-setup) - Configuration variables
-   - [Multi-Node Setup](#multi-node-setup) - Distributed training configuration
-   - [Training Command](#training-command) - Execution examples
-
-### 📊 Workflow & Analysis
-
-9. [Pipeline Workflow](#-pipeline-workflow) - Complete processing pipeline
-   - [Feature Extraction](#1-feature-extraction) - DINO feature computation
-   - [Segmentation Process](#2-segmentation) - Attention-based clustering
-   - [Sample Results](#sample-results-by-data-type) - Data type examples
-   - [Tracking & Visualization](#3-tracking--visualization) - Temporal analysis
-10. [Results & Features](#-results--features) - Output files and capabilities
-    - [Output Files](#output-files) - Generated data formats
-    - [Feature Visualization](#feature-visualization) - Analysis examples
-
-### 🔧 Technical Details
-
-11. [Architecture](#-architecture) - Codebase structure overview
-12. [Configuration](#-configuration) - Key parameter settings
-13. [Contributions](#-contributions) - Summary of contributions
-14. [Support](#-support) - Help and contact information
-15. [Citation](#-citation) - Academic reference
-
----
-
-## Machine Setup 💻
-
-You can use the following machines to run the Cell Interactome pipeline:
-
-1. **Ubuntu** <img src="https://user-images.githubusercontent.com/25181517/186884153-99edc188-e4aa-4c84-91b0-e2df260ebc33.png" width="15">
-2. **MacOS** <img src="https://user-images.githubusercontent.com/25181517/186884152-ae609cca-8cf1-4175-8d60-1ce1fa078ca2.png" width="15"> [*Please Use Docker*] <img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="15">
-3. **Windows** <img src="https://user-images.githubusercontent.com/25181517/186884150-05e9ff6d-340e-4802-9533-2c3f02363ee3.png" width="18"> [*Please Use Docker*] <img src="https://user-images.githubusercontent.com/25181517/117207330-263ba280-adf4-11eb-9b97-0ac5b40bc3be.png" width="18">
 
 ---
 
@@ -152,31 +83,9 @@ uv venv --python 3.12
 uv sync
 ```
 
-**Incase of torch issues, check your Cuda version at `/usr/local/` and install torch from source `uv pip install torch --index-url https://download.pytorch.org/whl/cu121`, where you can change cu121 for your version. Say you have `cuda-12.1` installed, then you can install torch with `pip install torch --index-url https://download.pytorch.org/whl/cu121`.**
-
-### 📦 Troubleshooting
-
-In case of errors, ensure you have the required dependencies for Python installed:
-
-**Delete the cache:**
-
-```bash
-rm -rf ~/.cache/
-rm -rf spatialdino.egg-info
-```
-
-**Install system dependencies:**
-
-```bash
-sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
-libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
-libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python-openssl \
-ninja-build cmake libegl1-mesa-dev python3-dev
-```
-
 ---
 
-## Inference 🔍
+## Inference
 
 > **⚠️ Important**: Before running inference, ensure you have the pretrained model. Use the model path `../models/backbone.pth` which contains the pretrained weights for the DINO vision transformer.
 
@@ -212,48 +121,9 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
 
 ---
 
-## Segmentation ✂️
+## Segmentation
 
-### Example Segmentation Script
-
-```bash
-#!/bin/bash
-save_path="/raid1/cme_tests/results/ap2_latest"
-blur_image=False                     # true for most datasets
-blur_factor=1.0                      # use 3.0 for very low SNR, 1.0 for SNR > 3
-export OMP_NUM_THREADS=32
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-use_raw_mask=False                   # set to False unless SNR < 3
-spot_sigma=2.0                       # for most endosomes, viruses
-outline_sigma=2.0
-attention_weight=0.5
-background_removal_radius=10
-skip_existing=False                  # set to True if continuing previous experiments
-
-uv run torchrun --nnodes=1 --node_rank=0 --nproc_per_node=$NUM_PROC_PER_NODE \
-         --rdzv_endpoint=localhost:8999 ./scripts/inference/segmentation.py \
-  file_path="$save_path" \
-  save_path="$save_path" \
-  skip_existing=$skip_existing \
-  background_removal_radius=$background_removal_radius \
-  attention_weight=$attention_weight \
-  blur_factor=$blur_factor \
-  use_raw_mask=$use_raw_mask \
-  outline_sigma=$outline_sigma \
-  spot_sigma=$spot_sigma \
-  blur_image=$blur_image
-```
-
-### Parameter Tuning
-
-For parameter optimization, check `scripts/notebooks/segmentation_misc/test_segmentation.ipynb`.
-
-**Key guidelines:**
-
-- **Low SNR datasets**: Increase `blur_factor` to 3.0 for Gaussian blur
-- **Standard datasets (SNR > 3)**: Use `blur_factor=1.0`
-- **Parameter visualization**: The sample experiment images above show optimal configurations for different data types
+### Work in progress
 
 ---
 
@@ -341,30 +211,10 @@ torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
 
 ---
 
-## 🤝 Contributions
-
-**Key contributions of this work:**
-
-- **Self-supervised learning**: DINO-based feature extraction for biological imaging without manual annotation
-- **3D processing**: Full volumetric analysis of light-sheet microscopy data
-- **Multi-scale inference**: Efficient processing of large biological datasets
-- **Instance segmentation**: Attention-guided clustering for precise object detection
-- **Temporal tracking**: Physics-based object linking across time series
-- **Interactive tools**: User-friendly CLI interfaces for non-technical users
-
-**Technical innovations:**
-
-- 3D vision transformer adaptation for biological imaging
-- Attention density-guided segmentation refinement
-- Multi-channel processing pipeline for fluorescence microscopy
-- Distributed training framework for large-scale self-supervised learning
-
----
-
 ## 🆘 Support
 
 - **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/spatialdino/issues)
-- **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Araksh Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
+- **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Arkash Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
 
 ---
 
