@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="spatialdino-server-hostname" content="__SPATIALDINO_SERVER_HOSTNAME__" />
+    <meta name="spatialdino-session-label" content="__SPATIALDINO_SESSION_LABEL__" />
+    <script>
+      (function () {
+        var key = "spatialdino.theme";
+        var stored = null;
+        try {
+          stored = window.localStorage.getItem(key);
+        } catch (e) {
+          console.warn("[spatialDINO] Unable to read theme from localStorage:", e);
+        }
+        var valid = stored === "light" || stored === "dark";
+        var theme = valid
+          ? stored
+          : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <title>spatialDINO</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

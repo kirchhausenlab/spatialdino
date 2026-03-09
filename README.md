@@ -80,8 +80,11 @@ git clone --recursive git@github.com:kirchhausenlab/spatialdino.git
 In the repository directory, run
 ```bash
 uv venv --python 3.12
-uv sync
+uv sync --all-packages
 ```
+
+This creates a single root `.venv` shared by the core `spatialdino` package and the GUI server in
+`apps/server`.
 
 ---
 

@@ -102,3 +102,7 @@ src/third_party/VTK
 *.npz
 copilot.md
 *.mp4
+node_modules/
+.vite/
+.uv-cache/
+apps/server/.venv/
