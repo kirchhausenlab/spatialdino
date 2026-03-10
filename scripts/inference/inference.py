@@ -1,0 +1,164 @@
+import logging
+import math
+from pathlib import Path
+import numpy as np
+import torch
+from natsort import natsorted
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from tqdm.auto import tqdm
+from spatialdino.data import DTYPE_MAPPING
+import spatialdino.distributed as dist
+from spatialdino.config import CONFIG_PATH, parse_config
+from spatialdino.data.inference import (
+    InferenceDataset,
+    InferenceTransform,
+    collate_fn,
+)
+from spatialdino.logging import setup_logging
+from spatialdino.models.utils import init_backbone
+from spatialdino.inference.streaming import StreamingEncoder
+from spatialdino.utils.misc import set_seed
+
+torch.backends.cuda.matmul.allow_tf32 = (
+    True  # PyTorch 1.12 sets this to False by default
+)
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+
+logger = logging.getLogger("inference_3d")
+
+
+def main() -> None:
+    config = parse_config(CONFIG_PATH.joinpath("inference.yaml"))  # type: ignore
+    local_rank, rank, world_size = dist.setup(
+        distributed=config.distributed,
+        backend=config.backend,
+    )
+
+    torch.cuda.empty_cache()
+    torch.cuda.set_device(local_rank)
+
+    setup_logging(rank=rank)
+
+    device_id = torch.cuda.current_device()
+    device = torch.device(f"cuda:{device_id}")
+
+    seed = config.seed + dist.get_rank()
+    set_seed(seed)
+
+    dtype = DTYPE_MAPPING[config.dtype]
+
+    model = init_backbone(config=config).eval().to(dtype).to(device)
+    model.forward = model.predict  # type: ignore
+    use_streaming = bool(getattr(config, "inference_route", "default") == "streaming")
+    streaming_encoder = StreamingEncoder(model, device, config) if use_streaming else None
+
+    file_path = config.file_path
+    fnames = natsorted(list(Path(file_path).glob("*.tif")))
+    file_start = int(getattr(config, "file_start", 0) or 0)
+    file_end = getattr(config, "file_end", None)
+    fnames = fnames[file_start:file_end]
+
+    logger.info(f"Processing {len(fnames)} files")
+    dataset = InferenceDataset(config=config, fnames=fnames)
+    inference_transform = InferenceTransform(config=config)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        drop_last=False,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_mem,
+        persistent_workers=config.persistent_workers,
+        sampler=DistributedSampler(dataset, shuffle=False),
+        collate_fn=collate_fn,
+    )
+    dataloader.sampler.set_epoch(0)  # type: ignore
+
+    # only rank 0 shows a tqdm bar
+    if rank == 0:
+        prog = tqdm(dataloader, desc="Inference Progress", unit="batch")
+    else:
+        prog = dataloader
+
+    def predict() -> None:
+        """Run inference on the model."""
+        for i, batch in enumerate(prog):
+            B = len(batch["vol_metadata"])
+            for inner_idx in range(B):
+                data = {
+                    "image": batch["images"][inner_idx],
+                    "mask": batch["masks"][inner_idx],
+                }
+                vol_metadata = batch["vol_metadata"][inner_idx]
+            res = inference_transform(
+                data=data,
+                vol_metadata=vol_metadata,
+                chunk_interpolate=config.chunk_interpolate,
+                interpolate_chunk_size=config.interpolate_volume_chunk_size,
+                device="cpu" if use_streaming else device,
+            )
+            volume = torch.as_tensor(res["volume"])  # [C, Z, Y, X]
+
+            save_path = Path(vol_metadata["save_path"])
+            save_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Saving to {save_path}")
+
+            if use_streaming:
+                lr_feats = streaming_encoder.predict(
+                    volume,
+                    vol_metadata=vol_metadata,
+                    vit_feat="patch_attn",
+                    norm_feat=config.norm_feat,
+                ).squeeze(0)
+                lr_feats = lr_feats.float()
+            else:
+                lr_feats = (
+                    model(
+                        img=volume.unsqueeze_(0),
+                        vit_feat="patch_attn",
+                        norm_feat=config.norm_feat,
+                        dtype=dtype,
+                        use_amp=config.use_amp,
+                        device_type=config.device_type,
+                        device=device,
+                    )
+                    .cpu()
+                    .squeeze_(0)
+                    .float()
+                )
+
+            padding = vol_metadata["padding"]
+            scale_factor = (
+                volume.shape[-3] / lr_feats.shape[-3],
+                volume.shape[-2] / lr_feats.shape[-2],
+                volume.shape[-1] / lr_feats.shape[-1],
+            )
+            padding_lr = (
+                math.floor(padding[0] / scale_factor[0]),
+                math.floor(padding[1] / scale_factor[1]),
+                math.floor(padding[2] / scale_factor[2]),
+            )
+            lr_feats = lr_feats[
+                :,
+                padding_lr[0] // 2 : lr_feats.shape[-3] - padding_lr[0] // 2,
+                padding_lr[1] // 2 : lr_feats.shape[-2] - padding_lr[1] // 2,
+                padding_lr[2] // 2 : lr_feats.shape[-1] - padding_lr[2] // 2,
+            ]
+            lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
+            feats_path = save_path.joinpath("lr_feats.npy")
+            np.save(feats_path, lr_feats.cpu().numpy())
+            logger.info(f"Saved features to {feats_path}")
+
+    predict()
+
+    if rank == 0:
+        prog.close()  # type: ignore
+
+    dist.cleanup(distributed=config.distributed)
+
+
+if __name__ == "__main__":
+    main()
