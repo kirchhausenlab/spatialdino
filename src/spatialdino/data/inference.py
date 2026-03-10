@@ -53,6 +53,7 @@ class InferenceDataset(Dataset):
         )
         self.normalize_transform = MinMaxNormalize(channel_wise=False)
         self.crop_params = tuple(self.config.crop_params)
+        self.save_raw = bool(getattr(self.config, "save_raw", True))
 
     def __len__(self) -> int:
         return len(self.fnames)
@@ -61,11 +62,19 @@ class InferenceDataset(Dataset):
         file = self.fnames[idx]
         save_path = self.save_path.joinpath(file.stem)
         save_path.mkdir(parents=True, exist_ok=True)
-        raw_volume = io.imread(file).astype(np.float32)
+        raw_volume_original = io.imread(file)
+        raw_volume = raw_volume_original.astype(np.float32)
 
         assert raw_volume.ndim == 3, (
             f"raw_volume dim {raw_volume.ndim} != 3, expected [Z, Y, X] dims"
         )
+
+        if self.save_raw:
+            io.imsave(
+                save_path.joinpath("volume_unnorm.tif"),
+                raw_volume_original,
+                check_contrast=False,
+            )
 
         if self.crop_params != (0, 0, 0, 0, 0, 0):
             # Use provided crop parameters with existing logic
@@ -101,12 +110,6 @@ class InferenceDataset(Dataset):
             )
         else:
             volume = raw_volume.copy()
-
-        io.imsave(
-            save_path.joinpath("volume_unnorm.tif"),
-            volume.astype(np.float16),  # type: ignore
-            check_contrast=False,
-        )
 
         volume = self.normalize_transform(self.hist_normalize(volume))
 

@@ -98,8 +98,10 @@ This creates a single root `.venv` shared by the core `spatialdino` package and 
 #!/bin/bash
 
 folder_path="/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
-number_of_files=1                    # -1 for all timepoints, otherwise chose a number
+file_start=0
+file_end=1                           # exclusive; leave unset to process through the end
 save_path="/raid1/cme_tests/results/ablations/ap2_test"
+save_raw=true
 export OMP_NUM_THREADS=32
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export NUM_PROC_PER_NODE=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
@@ -108,15 +110,18 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
          --rdzv_endpoint=localhost:9999 ./scripts/inference/inference.py \
   file_path="$folder_path" \
   save_path="$save_path" \
-  number_of_files=$number_of_files \
+  file_start=$file_start \
+  file_end=$file_end \
+  save_raw=$save_raw \
   crop_params="[0,0,0,0,0,0]"
 ```
 
 ### Script Parameters
 
 - **`folder_path`**: Path to folder containing images
-- **`number_of_files`**: Number of files to process (-1 for all files)
+- **`file_start` / `file_end`**: File slice passed to `fnames[file_start:file_end]` (`file_end` is exclusive)
 - **`save_path`**: Path to save results
+- **`save_raw`**: Whether to save `volume_unnorm.tif` as a direct copy of the original input TIFF
 - **`OMP_NUM_THREADS`**: Number of threads to use
 - **`CUDA_VISIBLE_DEVICES`**: List of GPUs to use
 - **`NUM_PROC_PER_NODE`**: Number of processes/GPUs per node

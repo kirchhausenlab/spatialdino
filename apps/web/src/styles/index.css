@@ -556,6 +556,157 @@ button {
   gap: 8px;
 }
 
+.inferenceInputCard,
+.inferenceFormCard {
+  gap: 16px;
+}
+
+.inferencePathStack {
+  display: grid;
+  gap: 10px;
+}
+
+.inferencePathRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inferencePathAction {
+  flex: 0 0 auto;
+}
+
+.inferencePathLabel,
+.inferenceFieldLabel {
+  flex: 0 0 120px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.inferenceFieldLabel.isStrong {
+  font-weight: 700;
+}
+
+.inferenceFormRows {
+  display: grid;
+  gap: 10px;
+}
+
+.inferenceFormRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inferenceValidationState {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.inferenceValidationState.is-neutral {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+  color: var(--text);
+}
+
+.inferenceValidationState.is-success {
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  color: var(--text);
+}
+
+.inferenceValidationState.is-error {
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--text);
+}
+
+.inferenceInlineGroup,
+.inferenceCheckboxGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inferenceInlineLabel {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.inferenceInlineLabel.isStrong,
+.inferenceStrongText {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.inferenceSelect,
+.inferenceNumberInput {
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  color: var(--text);
+  font-size: 13px;
+}
+
+.inferenceSelect {
+  min-width: 220px;
+  max-width: 100%;
+  padding: 0 10px;
+}
+
+.inferenceCompactSelect {
+  min-width: 200px;
+}
+
+.inferenceNumberInput {
+  width: 88px;
+  padding: 0 8px;
+}
+
+.inferenceCheckboxOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.inferenceCheckboxOption input {
+  accent-color: var(--accent);
+}
+
+.inferenceCheckboxLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.inferenceCheckboxLabel input {
+  accent-color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .inferencePathLabel,
+  .inferenceFieldLabel {
+    flex-basis: 100%;
+  }
+}
+
 .datasetList {
   display: grid;
   gap: 12px;

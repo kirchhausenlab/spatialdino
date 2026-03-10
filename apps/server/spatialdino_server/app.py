@@ -6,11 +6,15 @@ import os
 import socket
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel, Field
+import tifffile
 
 from spatialdino_server.fs_api import router as fs_router
+from spatialdino_server.fs_roots import _configured_fs_roots_from_env
 from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 
@@ -106,6 +110,135 @@ def classify_client_session(client_host: str | None) -> str:
     return "Remote"
 
 
+def list_backbone_weights() -> list[dict[str, str]]:
+    repo_root = get_repo_root()
+    models_dir = (repo_root / "models").resolve()
+    if not models_dir.is_dir():
+        return []
+
+    files: set[Path] = set()
+    for pattern in ("*.pt", "*.pth"):
+        files.update(path.resolve() for path in models_dir.glob(pattern) if path.is_file())
+
+    return [
+        {
+            "label": path.name,
+            "value": str(path.relative_to(repo_root)),
+        }
+        for path in sorted(files, key=lambda item: (item.name.casefold(), item.name))
+    ]
+
+
+class ValidateInferenceInputRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_allowed_inference_path(raw_path: str) -> Path:
+    if "\x00" in raw_path:
+        raise HTTPException(status_code=400, detail="Invalid path.")
+
+    configured = Path(raw_path).expanduser()
+    if not configured.is_absolute():
+        raise HTTPException(status_code=400, detail="Path must be absolute.")
+
+    resolved = Path(os.path.realpath(configured))
+    roots = _configured_fs_roots_from_env().roots
+    if roots and not any(_is_relative_to(resolved, root) for root in roots):
+        raise HTTPException(status_code=403, detail="Path is outside configured filesystem roots.")
+    return resolved
+
+
+def _invalid_inference_input(reason_code: str, message: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "reasonCode": reason_code,
+        "message": message,
+    }
+
+
+def _shape_xyz(shape: tuple[int, ...]) -> dict[str, int]:
+    return {
+        "x": int(shape[2]),
+        "y": int(shape[1]),
+        "z": int(shape[0]),
+    }
+
+
+def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+
+    if not input_path.exists():
+        return _invalid_inference_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_inference_input("not_directory", "Input path is not a folder.")
+
+    tiff_paths: list[Path] = []
+    with os.scandir(input_path) as entries:
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            if not entry.name.lower().endswith((".tif", ".tiff")):
+                continue
+            tiff_paths.append(Path(entry.path))
+
+    tiff_paths.sort(key=lambda path: (path.name.casefold(), path.name))
+    if not tiff_paths:
+        return _invalid_inference_input("no_tiff_files", "Input folder contains no .tif or .tiff files.")
+
+    reference_shape: tuple[int, ...] | None = None
+    reference_shape_xyz: dict[str, int] | None = None
+
+    for tiff_path in tiff_paths:
+        try:
+            # Read TIFF metadata only; this validates shape without loading the volume into memory.
+            with tifffile.TiffFile(tiff_path) as tif:
+                if not tif.series:
+                    return _invalid_inference_input(
+                        "shape_mismatch",
+                        f"{tiff_path.name} does not contain a readable 3D TIFF volume.",
+                    )
+                shape = tuple(int(dim) for dim in tif.series[0].shape)
+        except Exception as exc:
+            return _invalid_inference_input(
+                "shape_mismatch",
+                f"Could not read TIFF metadata from {tiff_path.name}: {exc}",
+            )
+
+        if len(shape) != 3:
+            return _invalid_inference_input("shape_mismatch", f"{tiff_path.name} is not a 3D TIFF volume.")
+
+        current_shape_xyz = _shape_xyz(shape)
+        if reference_shape is None:
+            reference_shape = shape
+            reference_shape_xyz = current_shape_xyz
+            continue
+
+        if shape != reference_shape:
+            expected = reference_shape_xyz or _shape_xyz(reference_shape)
+            return _invalid_inference_input(
+                "shape_mismatch",
+                (
+                    "TIFF files do not all have the same 3D shape. "
+                    f"Expected x={expected['x']}, y={expected['y']}, z={expected['z']}."
+                ),
+            )
+
+    return {
+        "valid": True,
+        "message": "Valid dataset.",
+        "fileCount": len(tiff_paths),
+        "shape": reference_shape_xyz,
+    }
+
+
 def load_index_html(dist_dir: Path) -> str | None:
     index_path = dist_dir / "index.html"
     if not index_path.is_file():
@@ -140,6 +273,22 @@ def session_info(request: Request) -> dict[str, str]:
         "serverHostname": get_server_hostname(),
         "sessionLabel": classify_client_session(client_host),
     }
+
+
+@api.get("/inference/options")
+def inference_options() -> dict[str, object]:
+    gpu_status = get_nvidia_gpu_memory()
+    return {
+        "gpus": [{"index": gpu["index"], "name": gpu["name"]} for gpu in gpu_status.get("gpus", [])],
+        "gpuError": gpu_status.get("error"),
+        "nvidiaSmiAvailable": bool(gpu_status.get("nvidiaSmiAvailable")),
+        "backboneWeights": list_backbone_weights(),
+    }
+
+
+@api.post("/inference/validate-input")
+def validate_inference_input(payload: ValidateInferenceInputRequest) -> dict[str, Any]:
+    return validate_inference_input_folder(payload.path)
 
 
 @api.get("/status/cpu")
