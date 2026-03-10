@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -94,6 +96,47 @@ class JobsApiTests(unittest.TestCase):
             jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="missing"), "client-1234")
 
         self.assertEqual(context.exception.status_code, 404)
+
+    def test_job_log_returns_tail_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "job-1.log"
+            log_path.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+
+            with jobs_api._jobs_lock:
+                jobs_api._jobs["job-1"] = make_job(
+                    job_id="job-1",
+                    status="failed",
+                    error="line 3",
+                    exit_code=1,
+                    log_path=str(log_path),
+                    log_available=True,
+                    log_line_count=3,
+                    command="python demo.py",
+                    working_dir="/tmp/work",
+                )
+
+            payload = jobs_api.job_log("job-1", 2, "client-1234")
+
+        self.assertEqual(payload["jobId"], "job-1")
+        self.assertEqual(payload["exitCode"], 1)
+        self.assertEqual(payload["workingDirectory"], "/tmp/work")
+        self.assertEqual(payload["command"], "python demo.py")
+        self.assertEqual(payload["logLines"], ["line 2", "line 3"])
+        self.assertEqual(payload["totalLogLines"], 3)
+        self.assertTrue(payload["truncated"])
+
+    def test_remove_job_deletes_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "job-1.log"
+            log_path.write_text("boom\n", encoding="utf-8")
+
+            with jobs_api._jobs_lock:
+                jobs_api._jobs["job-1"] = make_job(job_id="job-1", log_path=str(log_path), log_available=True)
+
+            result = jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertFalse(log_path.exists())
 
 
 if __name__ == "__main__":

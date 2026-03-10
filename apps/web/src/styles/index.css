@@ -452,6 +452,50 @@ button {
   background: color-mix(in srgb, #ef4444 70%, #000);
 }
 
+.sidebarJobError {
+  border: 1px solid color-mix(in srgb, #ef4444 28%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, #ef4444 12%, var(--surface));
+  color: color-mix(in srgb, #ef4444 88%, var(--text));
+  padding: 8px 9px;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sidebarJobError.isExpanded {
+  font-size: 12px;
+}
+
+.sidebarJobFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.sidebarJobDetailButton {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebarJobDetailButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+.sidebarJobDetailButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .sidebarJobTooltip {
   position: absolute;
   left: calc(100% + 10px);
@@ -629,6 +673,26 @@ button {
   background: color-mix(in srgb, var(--danger) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
   color: var(--text);
+}
+
+.inferenceCommandMeta {
+  display: grid;
+  gap: 6px;
+}
+
+.inferenceCommandPreview {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 65%, var(--surface-2));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 .inferenceInlineGroup,
@@ -1760,6 +1824,89 @@ html[data-theme="dark"] .modalOverlay {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.jobLogModalPanel {
+  width: min(1080px, 100%);
+}
+
+.modalBody.jobLogModalBody {
+  gap: 12px;
+}
+
+.jobLogModalFooter {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.jobLogMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.jobLogMetaCard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.jobLogMetaLabel {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.jobLogMetaValue {
+  font-size: 13px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.jobLogSection {
+  display: grid;
+  gap: 6px;
+}
+
+.jobLogSectionTitle {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.jobLogPath {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 76%, var(--surface-2));
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.jobLogPre {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-2));
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: min(44vh, 420px);
+  overflow: auto;
 }
 
 .modalFooter {

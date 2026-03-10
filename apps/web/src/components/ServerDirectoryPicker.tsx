@@ -425,13 +425,13 @@ export default function ServerDirectoryPicker({
   }, [open, currentPath]);
 
   useEffect(() => {
-    if (newDirName === null) return;
+    if (!isCreatingDir) return;
     const t = window.setTimeout(() => {
       newDirInputRef.current?.focus();
       newDirInputRef.current?.select();
     }, 0);
     return () => window.clearTimeout(t);
-  }, [newDirName]);
+  }, [isCreatingDir]);
 
   const commitNewDir = useCallback(async () => {
     if (newDirName === null || newDirBusy) return;

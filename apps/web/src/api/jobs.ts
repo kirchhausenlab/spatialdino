@@ -25,6 +25,7 @@ export type JobSummary = {
   processed: number;
   total: number;
   error: string | null;
+  exitCode?: number | null;
   current: string | null;
   label?: string | null;
   saveDir?: string | null;
@@ -36,6 +37,25 @@ export type JobSummary = {
   copyMetadataRisky?: boolean | null;
   roundDownShapes?: boolean | null;
   overwrite?: boolean | null;
+  logPath?: string | null;
+  logAvailable?: boolean | null;
+};
+
+export type JobLogDetails = {
+  jobId: string;
+  type: string;
+  status: JobStatus;
+  current: string | null;
+  error: string | null;
+  exitCode: number | null;
+  logPath: string | null;
+  logAvailable: boolean;
+  workingDirectory: string | null;
+  command: string | null;
+  tailLines: number;
+  totalLogLines: number;
+  truncated: boolean;
+  logLines: string[];
 };
 
 export type ListJobsResponse = {
@@ -103,4 +123,21 @@ export async function removeJob(jobId: string, options?: { signal?: AbortSignal 
     const json = await safeJson(resp);
     throw new Error(`Remove job failed: ${resp.status} ${resp.statusText}${json ? `: ${JSON.stringify(json)}` : ""}`);
   }
+}
+
+export async function getJobLog(
+  jobId: string,
+  options?: { signal?: AbortSignal; tailLines?: number }
+): Promise<JobLogDetails> {
+  const tailLines = options?.tailLines ?? 200;
+  const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/log?tail_lines=${encodeURIComponent(String(tailLines))}`, {
+    method: "GET",
+    headers: { Accept: "application/json", ...clientHeaders() },
+    signal: options?.signal,
+  });
+  if (!resp.ok) {
+    const json = await safeJson(resp);
+    throw new Error(`Job log failed: ${resp.status} ${resp.statusText}${json ? `: ${JSON.stringify(json)}` : ""}`);
+  }
+  return (await resp.json()) as JobLogDetails;
 }

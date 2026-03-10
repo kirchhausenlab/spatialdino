@@ -5,13 +5,18 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/jobs")
+
+JOB_LOG_TAIL_MAX_LINES = 200
+JOB_LOG_ENDPOINT_MAX_LINES = 500
 
 
 def _now_ms() -> int:
@@ -50,6 +55,7 @@ class JobState:
     processed: int = 0
     total: int = 0
     error: str | None = None
+    exit_code: int | None = None
     current: str | None = None
     label: str | None = None
     save_dir: str | None = None
@@ -61,7 +67,17 @@ class JobState:
     copy_metadata_risky: bool | None = None
     round_down_shapes: bool | None = None
     overwrite: bool | None = None
+    log_path: str | None = None
+    log_available: bool = False
+    log_line_count: int = 0
+    command: str | None = None
+    working_dir: str | None = None
     stop_requested: bool = False
+    log_tail: deque[str] = field(
+        default_factory=lambda: deque(maxlen=JOB_LOG_TAIL_MAX_LINES),
+        repr=False,
+        compare=False,
+    )
     process: subprocess.Popen[str] | None = field(default=None, repr=False, compare=False)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -95,6 +111,43 @@ def terminate_job_process(job: JobState, *, force: bool = False) -> bool:
     return True
 
 
+def _get_owned_job(job_id: str, client_id: str) -> JobState:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job or job.owner_client_id != client_id:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    return job
+
+
+def _delete_job_artifacts(job: JobState) -> None:
+    with job.lock:
+        log_path = job.log_path
+
+    if not log_path:
+        return
+
+    try:
+        Path(log_path).unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _normalize_tail_lines(value: int) -> int:
+    return max(1, min(JOB_LOG_ENDPOINT_MAX_LINES, int(value)))
+
+
+def _read_log_tail(log_path: Path, *, tail_lines: int) -> tuple[list[str], int]:
+    tail: deque[str] = deque(maxlen=tail_lines)
+    total_lines = 0
+    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            total_lines += 1
+            tail.append(raw_line.rstrip("\r\n"))
+    return list(tail), total_lines
+
+
 def _serialize_job(job: JobState) -> dict[str, Any]:
     return {
         "jobId": job.job_id,
@@ -105,6 +158,7 @@ def _serialize_job(job: JobState) -> dict[str, Any]:
         "processed": job.processed,
         "total": job.total,
         "error": job.error,
+        "exitCode": job.exit_code,
         "current": job.current,
         "label": job.label,
         "saveDir": job.save_dir,
@@ -116,6 +170,8 @@ def _serialize_job(job: JobState) -> dict[str, Any]:
         "copyMetadataRisky": job.copy_metadata_risky,
         "roundDownShapes": job.round_down_shapes,
         "overwrite": job.overwrite,
+        "logPath": job.log_path,
+        "logAvailable": job.log_available,
     }
 
 
@@ -141,11 +197,7 @@ def list_jobs(x_spatialdino_clientid: str | None = Header(None)) -> dict[str, An
 @router.post("/cancel")
 def cancel_job(payload: CancelJobRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
-    with _jobs_lock:
-        job = _jobs.get(payload.job_id)
-    if not job or job.owner_client_id != client_id:
-        raise HTTPException(status_code=404, detail="Unknown job id.")
-
+    job = _get_owned_job(payload.job_id, client_id)
     with job.lock:
         if job.status != "running":
             return {"ok": True, "status": job.status}
@@ -160,6 +212,7 @@ def cancel_job(payload: CancelJobRequest, x_spatialdino_clientid: str | None = H
 def clear_jobs(payload: ClearJobsRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
     removed = 0
+    removed_jobs: list[JobState] = []
     with _jobs_lock:
         for job_id, job in list(_jobs.items()):
             if job.owner_client_id != client_id:
@@ -170,23 +223,63 @@ def clear_jobs(payload: ClearJobsRequest, x_spatialdino_clientid: str | None = H
                 continue
             if running:
                 continue
-            _jobs.pop(job_id, None)
-            removed += 1
+            removed_job = _jobs.pop(job_id, None)
+            if removed_job is not None:
+                removed_jobs.append(removed_job)
+                removed += 1
+    for job in removed_jobs:
+        _delete_job_artifacts(job)
     return {"ok": True, "removed": removed}
 
 
 @router.post("/remove")
 def remove_job(payload: RemoveJobRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
-    with _jobs_lock:
-        job = _jobs.get(payload.job_id)
-    if not job or job.owner_client_id != client_id:
-        raise HTTPException(status_code=404, detail="Unknown job id.")
-
+    job = _get_owned_job(payload.job_id, client_id)
     with job.lock:
         if job.status == "running":
             raise HTTPException(status_code=409, detail="Cannot remove a running job (stop it first).")
 
     with _jobs_lock:
-        _jobs.pop(payload.job_id, None)
+        removed_job = _jobs.pop(payload.job_id, None)
+    if removed_job is not None:
+        _delete_job_artifacts(removed_job)
     return {"ok": True}
+
+
+@router.get("/{job_id}/log")
+def job_log(job_id: str, tail_lines: int = 200, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
+    client_id = _require_client_id(x_spatialdino_clientid)
+    job = _get_owned_job(job_id, client_id)
+    line_limit = _normalize_tail_lines(tail_lines)
+
+    with job.lock:
+        log_path = job.log_path
+        log_lines = list(job.log_tail)[-line_limit:]
+        total_log_lines = job.log_line_count
+        payload = {
+            "jobId": job.job_id,
+            "type": job.type,
+            "status": job.status,
+            "current": job.current,
+            "error": job.error,
+            "exitCode": job.exit_code,
+            "logPath": job.log_path,
+            "logAvailable": job.log_available,
+            "workingDirectory": job.working_dir,
+            "command": job.command,
+        }
+
+    if log_path and Path(log_path).is_file():
+        try:
+            log_lines, total_log_lines = _read_log_tail(Path(log_path), tail_lines=line_limit)
+        except OSError:
+            pass
+
+    return {
+        **payload,
+        "tailLines": line_limit,
+        "totalLogLines": total_log_lines,
+        "truncated": total_log_lines > len(log_lines),
+        "logLines": log_lines,
+    }

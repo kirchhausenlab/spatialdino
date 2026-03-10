@@ -4,6 +4,7 @@ import html
 import ipaddress
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -11,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 import sys
 import threading
-from typing import Any
+from typing import Any, TextIO
 import uuid
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
@@ -24,6 +25,9 @@ from spatialdino_server.fs_roots import _configured_fs_roots_from_env
 from spatialdino_server import jobs_api
 from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
+
+
+JOB_LOGS_DIRNAME = ".spatialdino_job_logs"
 
 
 def get_repo_root() -> Path:
@@ -42,6 +46,13 @@ def get_dist_dir() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return (get_repo_root() / "apps" / "web" / "dist").resolve()
+
+
+def get_job_logs_dir() -> Path:
+    override = os.environ.get("SPATIALDINO_JOB_LOG_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (get_repo_root() / JOB_LOGS_DIRNAME).resolve()
 
 
 def get_server_hostname() -> str:
@@ -308,6 +319,7 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
 SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
+DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
 
 
 def _invalid_inference_run(reason_code: str, message: str) -> dict[str, Any]:
@@ -377,7 +389,11 @@ def _resolve_backbone_weight_path(raw_value: str) -> Path | None:
     return resolved
 
 
-def _build_inference_launch_config(payload: RunInferenceRequest) -> tuple[dict[str, Any], dict[str, Any] | None]:
+def _build_inference_launch_config(
+    payload: RunInferenceRequest,
+    *,
+    require_overwrite_confirmation: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     input_validation = validate_inference_input_folder(payload.input_path)
     if not input_validation["valid"]:
         return _invalid_inference_run(input_validation["reasonCode"], input_validation["message"]), None
@@ -467,9 +483,12 @@ def _build_inference_launch_config(payload: RunInferenceRequest) -> tuple[dict[s
         return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
     selected_stems = [path.stem for path in selected_input_paths]
 
+    overwrite_warning: dict[str, Any] | None = None
     output_entry_count, output_preview = _summarize_directory(output_path)
     if output_entry_count > 0 and not payload.overwrite:
-        return _overwrite_confirmation(output_path, output_entry_count, output_preview), None
+        overwrite_warning = _overwrite_confirmation(output_path, output_entry_count, output_preview)
+        if require_overwrite_confirmation:
+            return overwrite_warning, None
 
     return (
         {
@@ -505,6 +524,7 @@ def _build_inference_launch_config(payload: RunInferenceRequest) -> tuple[dict[s
             "selected_file_count": len(selected_stems),
             "selected_stems": selected_stems,
             "overwrite": bool(payload.overwrite),
+            "overwrite_warning": overwrite_warning,
         },
     )
 
@@ -535,9 +555,41 @@ def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
     return command
 
 
+def _build_inference_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
+    omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
+    raw_omp_num_threads = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if raw_omp_num_threads:
+        try:
+            omp_num_threads = max(DEFAULT_INFERENCE_OMP_NUM_THREADS, int(raw_omp_num_threads))
+        except ValueError:
+            omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
+
+    return {
+        "CUDA_VISIBLE_DEVICES": ",".join(str(index) for index in launch_config["gpu_indices"]),
+        "OMP_NUM_THREADS": str(omp_num_threads),
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _render_shell_command(
+    command: list[str],
+    *,
+    cwd: Path | str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    command_text = shlex.join(command)
+    env = env or {}
+    if env:
+        env_prefix = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+        command_text = f"{env_prefix} {command_text}"
+    if cwd is None:
+        return command_text
+    return f"cd {shlex.quote(os.fspath(cwd))} && {command_text}"
+
+
 def _clean_process_line(raw_line: str) -> str:
-    cleaned = ANSI_ESCAPE_RE.sub("", raw_line.replace("\r", "\n")).strip()
-    return cleaned
+    cleaned = ANSI_ESCAPE_RE.sub("", raw_line.replace("\r", "\n")).rstrip()
+    return cleaned if cleaned.strip() else ""
 
 
 def _canonicalize_runtime_path(path: Path | str) -> str:
@@ -557,6 +609,41 @@ def _mark_job_halted_locked(job: jobs_api.JobState) -> None:
     job.current = "Stopped"
     job.finished_at_ms = jobs_api._now_ms()
     job.process = None
+
+
+def _open_job_log(job: jobs_api.JobState) -> TextIO | None:
+    try:
+        log_dir = get_job_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = (log_dir / f"{job.job_id}.log").resolve()
+        handle = log_path.open("w", encoding="utf-8")
+    except OSError:
+        with job.lock:
+            job.log_path = None
+            job.log_available = False
+        return None
+
+    with job.lock:
+        job.log_path = str(log_path)
+    return handle
+
+
+def _append_job_log_line(job: jobs_api.JobState, line: str, log_handle: TextIO | None) -> None:
+    text = line.rstrip("\r\n")
+    if not text:
+        return
+
+    if log_handle is not None:
+        try:
+            log_handle.write(f"{text}\n")
+            log_handle.flush()
+        except OSError:
+            pass
+
+    with job.lock:
+        job.log_tail.append(text)
+        job.log_line_count += 1
+        job.log_available = True
 
 
 def _update_job_progress_from_output(
@@ -605,13 +692,30 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
     expected_feature_path_keys = {_canonicalize_runtime_path(path) for path in expected_feature_paths}
     expected_output_dir_keys = {_canonicalize_runtime_path(path.parent) for path in expected_feature_paths}
     saved_feature_paths: set[str] = set()
+    repo_root = get_repo_root()
+    command_env = _build_inference_command_env(launch_config)
+    command = _build_inference_command(launch_config)
+    command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
+    log_handle = _open_job_log(job)
+
+    with job.lock:
+        job.command = command_text
+        job.working_dir = str(repo_root)
+
+    _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
+    _append_job_log_line(job, f"[server] Command: {command_text}", log_handle)
 
     try:
         with job.lock:
             if job.stop_requested:
                 _mark_job_halted_locked(job)
-                return
-            job.current = "Preparing output folder"
+                stop_before_launch = True
+            else:
+                stop_before_launch = False
+                job.current = "Preparing output folder"
+        if stop_before_launch:
+            _append_job_log_line(job, "[server] Job stopped before launch.", log_handle)
+            return
 
         if launch_config["overwrite"]:
             output_path.mkdir(parents=True, exist_ok=True)
@@ -622,16 +726,20 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
         with job.lock:
             if job.stop_requested:
                 _mark_job_halted_locked(job)
-                return
-            job.current = "Starting"
+                stop_before_process = True
+            else:
+                stop_before_process = False
+                job.current = "Starting"
+        if stop_before_process:
+            _append_job_log_line(job, "[server] Job stopped before process start.", log_handle)
+            return
 
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(index) for index in launch_config["gpu_indices"])
-        env["PYTHONUNBUFFERED"] = "1"
-        command = _build_inference_command(launch_config)
+        env.update(command_env)
+        _append_job_log_line(job, "[server] Launching inference process.", log_handle)
         process = subprocess.Popen(
             command,
-            cwd=str(get_repo_root()),
+            cwd=str(repo_root),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -656,6 +764,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                     if not line:
                         continue
                     last_output_line = line
+                    _append_job_log_line(job, line, log_handle)
                     _update_job_progress_from_output(
                         job,
                         line,
@@ -667,36 +776,47 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
         return_code = process.wait()
         existing_feature_paths = _existing_expected_feature_paths(expected_feature_paths)
         saved_feature_count = len(existing_feature_paths)
+        final_log_line: str | None = None
         with job.lock:
             job.process = None
+            job.exit_code = return_code
             if job.stop_requested:
                 job.status = "halted"
                 job.current = "Stopped"
                 job.finished_at_ms = jobs_api._now_ms()
-                return
-            if return_code == 0 and saved_feature_count == job.total:
+                final_log_line = "[server] Job stopped by user."
+            elif return_code == 0 and saved_feature_count == job.total:
                 job.status = "completed"
                 if job.total > 0:
                     job.processed = saved_feature_count
                 job.current = "Done"
                 job.finished_at_ms = jobs_api._now_ms()
-                return
-            job.status = "failed"
-            job.current = "Failed"
-            if return_code == 0:
-                missing_stems = [
-                    path.parent.name for path in expected_feature_paths if not path.is_file()
-                ]
-                missing_preview = ", ".join(missing_stems[:3])
-                if len(missing_stems) > 3:
-                    missing_preview = f"{missing_preview}, ..."
-                missing_suffix = f" Missing outputs: {missing_preview}." if missing_preview else ""
-                job.error = f"Inference exited successfully but produced {saved_feature_count}/{job.total} expected lr_feats.npy files.{missing_suffix}"
-                job.processed = saved_feature_count
+                final_log_line = "[server] Inference completed successfully."
             else:
-                job.error = last_output_line or f"Inference exited with code {return_code}."
-            job.finished_at_ms = jobs_api._now_ms()
+                job.status = "failed"
+                job.current = "Failed"
+                if return_code == 0:
+                    missing_stems = [
+                        path.parent.name for path in expected_feature_paths if not path.is_file()
+                    ]
+                    missing_preview = ", ".join(missing_stems[:3])
+                    if len(missing_stems) > 3:
+                        missing_preview = f"{missing_preview}, ..."
+                    missing_suffix = f" Missing outputs: {missing_preview}." if missing_preview else ""
+                    job.error = (
+                        f"Inference exited successfully but produced {saved_feature_count}/{job.total} expected "
+                        f"lr_feats.npy files.{missing_suffix}"
+                    )
+                    job.processed = saved_feature_count
+                    final_log_line = f"[server] {job.error}"
+                else:
+                    job.error = last_output_line or f"Inference exited with code {return_code}."
+                    final_log_line = f"[server] Process exited with code {return_code}."
+                job.finished_at_ms = jobs_api._now_ms()
+        if final_log_line:
+            _append_job_log_line(job, final_log_line, log_handle)
     except Exception as exc:
+        _append_job_log_line(job, f"[server] Runner error: {exc}", log_handle)
         with job.lock:
             job.process = None
             if job.stop_requested:
@@ -707,6 +827,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                 job.current = "Failed"
                 job.error = str(exc)
             job.finished_at_ms = jobs_api._now_ms()
+    finally:
+        if log_handle is not None:
+            log_handle.close()
 
 
 def _launch_inference_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
@@ -818,6 +941,25 @@ def run_inference(
         }
 
     return {"submitted": True, "jobId": job.job_id, "message": "Inference job submitted."}
+
+
+@api.post("/inference/command-preview")
+def inference_command_preview(payload: RunInferenceRequest) -> dict[str, Any]:
+    validation, launch_config = _build_inference_launch_config(payload, require_overwrite_confirmation=False)
+    if launch_config is None:
+        return validation
+
+    repo_root = get_repo_root()
+    command = _build_inference_command(launch_config)
+    command_env = _build_inference_command_env(launch_config)
+    overwrite_warning = launch_config.get("overwrite_warning")
+    return {
+        "valid": True,
+        "workingDirectory": str(repo_root),
+        "command": _render_shell_command(command, cwd=repo_root, env=command_env),
+        "requiresOverwriteConfirmation": bool(overwrite_warning),
+        "overwriteMessage": overwrite_warning["message"] if overwrite_warning else None,
+    }
 
 
 @api.get("/status/cpu")

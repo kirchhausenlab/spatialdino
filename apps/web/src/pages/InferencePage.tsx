@@ -100,6 +100,22 @@ type InferenceRunOverwriteResponse = {
 
 type InferenceRunResponse = InferenceRunSubmittedResponse | InferenceRunInvalidResponse | InferenceRunOverwriteResponse;
 
+type InferenceCommandPreviewSuccess = {
+  valid: true;
+  workingDirectory: string;
+  command: string;
+  requiresOverwriteConfirmation: boolean;
+  overwriteMessage: string | null;
+};
+
+type InferenceCommandPreviewFailure = {
+  valid: false;
+  reasonCode: string;
+  message: string;
+};
+
+type InferenceCommandPreviewResponse = InferenceCommandPreviewSuccess | InferenceCommandPreviewFailure;
+
 type RunFeedback = {
   tone: "neutral" | "success" | "error";
   message: string;
@@ -149,6 +165,10 @@ export default function InferencePage() {
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
   const [overwritePrompt, setOverwritePrompt] = useState<OverwritePromptState | null>(null);
+  const [commandPreviewOpen, setCommandPreviewOpen] = useState(false);
+  const [commandPreviewLoading, setCommandPreviewLoading] = useState(false);
+  const [commandPreview, setCommandPreview] = useState<InferenceCommandPreviewSuccess | null>(null);
+  const [commandPreviewError, setCommandPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -367,6 +387,50 @@ export default function InferencePage() {
   async function handleConfirmOverwrite() {
     if (!overwritePrompt) return;
     await submitInference({ ...overwritePrompt.request, overwrite: true });
+  }
+
+  async function handleSeeCommand() {
+    setCommandPreviewOpen(true);
+    setCommandPreview(null);
+    setCommandPreviewError(null);
+
+    const request = buildRunRequest(false);
+    if (!request) {
+      setCommandPreviewError("Choose both an input folder and an output folder.");
+      return;
+    }
+
+    setCommandPreviewLoading(true);
+    try {
+      const resp = await fetch("/api/inference/command-preview", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(request),
+      });
+
+      if (!resp.ok) {
+        const json = await safeJson(resp);
+        const detail =
+          json && typeof json === "object" && "detail" in json && typeof json.detail === "string" ? json.detail : null;
+        throw new Error(detail ? detail : `Command preview failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      const json = (await resp.json()) as InferenceCommandPreviewResponse;
+      if (!json.valid) {
+        setCommandPreviewError(json.message);
+        return;
+      }
+
+      setCommandPreview(json);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setCommandPreviewError(message);
+    } finally {
+      setCommandPreviewLoading(false);
+    }
   }
 
   return (
@@ -594,8 +658,21 @@ export default function InferencePage() {
           </div>
 
           <div className="validationActions">
-            <button type="button" className="preprocessValidateButton" disabled={submitting} onClick={() => void handleRunInference()}>
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              disabled={submitting}
+              onClick={() => void handleRunInference()}
+            >
               {submitting ? "Submitting..." : "Run inference"}
+            </button>
+            <button
+              type="button"
+              className="pickerSecondaryButton"
+              disabled={submitting || commandPreviewLoading}
+              onClick={() => void handleSeeCommand()}
+            >
+              {commandPreviewLoading ? "Loading..." : "See command"}
             </button>
           </div>
 
@@ -617,6 +694,47 @@ export default function InferencePage() {
           setPickerTarget(null);
         }}
       />
+
+      <Modal
+        open={commandPreviewOpen}
+        title="Inference command"
+        onClose={() => {
+          if (commandPreviewLoading) return;
+          setCommandPreviewOpen(false);
+        }}
+        footer={
+          <button
+            type="button"
+            className="pickerSecondaryButton"
+            onClick={() => setCommandPreviewOpen(false)}
+            disabled={commandPreviewLoading}
+          >
+            Close
+          </button>
+        }
+      >
+        {commandPreviewLoading ? (
+          <div className="sidebarHint">Preparing the CLI command...</div>
+        ) : commandPreviewError ? (
+          <ValidationMessage tone="error">{commandPreviewError}</ValidationMessage>
+        ) : commandPreview ? (
+          <>
+            <div className="sidebarHint">This is the CLI command the server would launch from the repo root.</div>
+            {commandPreview.requiresOverwriteConfirmation && commandPreview.overwriteMessage ? (
+              <div className="sidebarWarning">{commandPreview.overwriteMessage}</div>
+            ) : null}
+            <div className="inferenceCommandMeta">
+              <div className="inferenceStrongText">Working directory</div>
+              <div className="datasetPath">
+                <div className="datasetPathValue">{commandPreview.workingDirectory}</div>
+              </div>
+            </div>
+            <pre className="inferenceCommandPreview">
+              <code>{commandPreview.command}</code>
+            </pre>
+          </>
+        ) : null}
+      </Modal>
 
       <Modal
         open={overwritePrompt !== null}

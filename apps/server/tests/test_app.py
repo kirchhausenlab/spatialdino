@@ -303,6 +303,118 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.total, 1)
             self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "output"}])
 
+    def test_inference_command_preview_returns_shell_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[1, 0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 2.0, "z": 3.0},
+                file_range={"start": 0, "end": 1},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}, {"index": 1, "name": "GPU-1"}],
+                    },
+                ),
+            ):
+                response = app_module.inference_command_preview(payload)
+
+        self.assertEqual(response["valid"], True)
+        self.assertEqual(response["workingDirectory"], str(root))
+        self.assertEqual(response["requiresOverwriteConfirmation"], False)
+        self.assertIn(f"cd {root}", response["command"])
+        self.assertIn("CUDA_VISIBLE_DEVICES=0,1", response["command"])
+        self.assertIn("PYTHONUNBUFFERED=1", response["command"])
+        self.assertIn(app_module.sys.executable, response["command"])
+        self.assertIn("--nproc_per_node=2", response["command"])
+        self.assertIn(f"file_path={input_dir}", response["command"])
+        self.assertIn(f"save_path={output_dir}", response["command"])
+        self.assertIn("isotropic_scale_factor=[3.0,2.0,1.0]", response["command"])
+        self.assertIn("inference_route=streaming", response["command"])
+        self.assertIn("dtype=bf16", response["command"])
+
+    def test_inference_command_preview_warns_when_output_is_nonempty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (output_dir / "existing.txt").write_text("x", encoding="utf-8")
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.inference_command_preview(payload)
+
+        self.assertEqual(response["valid"], True)
+        self.assertEqual(response["requiresOverwriteConfirmation"], True)
+        self.assertEqual(
+            response["overwriteMessage"],
+            "Output folder is not empty. Confirm overwrite to erase its contents and continue.",
+        )
+        self.assertIn("CUDA_VISIBLE_DEVICES=0", response["command"])
+        self.assertIn("PYTHONUNBUFFERED=1", response["command"])
+
+    def test_build_inference_command_env_preserves_higher_omp_setting(self) -> None:
+        with patch.dict(os.environ, {"OMP_NUM_THREADS": "16"}, clear=False):
+            env = app_module._build_inference_command_env({"gpu_indices": [2, 0]})
+
+        self.assertEqual(
+            env,
+            {
+                "CUDA_VISIBLE_DEVICES": "2,0",
+                "OMP_NUM_THREADS": "16",
+                "PYTHONUNBUFFERED": "1",
+            },
+        )
+
     def test_run_inference_rejects_empty_file_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -459,8 +571,86 @@ class AppTests(unittest.TestCase):
             ):
                 app_module._run_inference_job(job, launch_config)
 
-        with job.lock:
-            self.assertEqual(job.status, "failed")
-            self.assertEqual(job.current, "Failed")
-            self.assertIn("0/1 expected lr_feats.npy files", job.error)
-            self.assertIn("stack0001", job.error)
+            with job.lock:
+                self.assertEqual(job.status, "failed")
+                self.assertEqual(job.current, "Failed")
+                self.assertEqual(job.exit_code, 0)
+                self.assertIn("0/1 expected lr_feats.npy files", job.error)
+                self.assertIn("stack0001", job.error)
+                self.assertTrue(job.log_available)
+                self.assertIsNotNone(job.command)
+                self.assertIsNotNone(job.log_path)
+
+            self.assertTrue(Path(job.log_path).is_file())
+            log_text = Path(job.log_path).read_text(encoding="utf-8")
+            self.assertIn("[server] Command:", log_text)
+            self.assertIn("0/1 expected lr_feats.npy files", log_text)
+
+    def test_run_inference_job_persists_process_output_tail(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdout = iter(
+                    (
+                        "Traceback (most recent call last):\n",
+                        '  File "scripts/inference/inference.py", line 10, in <module>\n',
+                        "RuntimeError: boom\n",
+                    )
+                )
+                self.pid = 456
+
+            def wait(self) -> int:
+                return 1
+
+            def poll(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            job = jobs_api.JobState(
+                job_id="job-2",
+                owner_client_id="client-1234",
+                type="inference",
+                status="running",
+                total=1,
+            )
+            launch_config = {
+                "output_path": output_dir,
+                "selected_stems": ["stack0001"],
+                "overwrite": False,
+                "gpu_indices": [0],
+                "input_path": root / "input",
+                "backbone_path": root / "models" / "backbone.pth",
+                "file_start": 0,
+                "file_end": 1,
+                "crop_params": (0, 1, 0, 1, 0, 1),
+                "upsample_factor": 1.0,
+                "anisotropy_xyz": (1.0, 1.0, 1.0),
+                "inference_route": "streaming",
+                "dtype": "bf16",
+            }
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch("spatialdino_server.app.subprocess.Popen", return_value=FakeProcess()),
+            ):
+                app_module._run_inference_job(job, launch_config)
+
+            with job.lock:
+                self.assertEqual(job.status, "failed")
+                self.assertEqual(job.current, "Failed")
+                self.assertEqual(job.exit_code, 1)
+                self.assertEqual(job.error, "RuntimeError: boom")
+                self.assertTrue(job.log_available)
+                self.assertIn(
+                    '  File "scripts/inference/inference.py", line 10, in <module>',
+                    list(job.log_tail),
+                )
+                self.assertIn("RuntimeError: boom", list(job.log_tail))
+                self.assertIsNotNone(job.log_path)
+
+            log_text = Path(job.log_path).read_text(encoding="utf-8")
+            self.assertIn("Traceback (most recent call last):", log_text)
+            self.assertIn('  File "scripts/inference/inference.py", line 10, in <module>', log_text)
+            self.assertIn("RuntimeError: boom", log_text)
+            self.assertIn("[server] Process exited with code 1.", log_text)

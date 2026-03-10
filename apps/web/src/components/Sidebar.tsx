@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { getJobLog } from "../api/jobs";
+import type { JobLogDetails, JobSummary } from "../api/jobs";
+import Modal from "./Modal";
 import { useJobs } from "./JobsProvider";
 
 function getServerHostnameFromDom(): string | null {
@@ -58,6 +61,13 @@ export default function Sidebar() {
     data: GpuStatus | null;
     updatedAt: Date | null;
   }>({ loading: false, error: null, data: null, updatedAt: null });
+  const [jobLog, setJobLog] = useState<{
+    openJobId: string | null;
+    loading: boolean;
+    error: string | null;
+    data: JobLogDetails | null;
+  }>({ openJobId: null, loading: false, error: null, data: null });
+  const jobLogAbortRef = useRef<AbortController | null>(null);
 
   const refreshCpu = useCallback(async () => {
     setCpu((prev) => ({ ...prev, loading: true, error: null }));
@@ -121,6 +131,58 @@ export default function Sidebar() {
       cancelled = true;
     };
   }, [sessionLabel]);
+
+  const loadJobLog = useCallback(async (jobId: string, options?: { keepData?: boolean }) => {
+    jobLogAbortRef.current?.abort();
+    const controller = new AbortController();
+    jobLogAbortRef.current = controller;
+    setJobLog((prev) => ({
+      openJobId: jobId,
+      loading: true,
+      error: null,
+      data: options?.keepData === false || prev.openJobId !== jobId ? null : prev.data,
+    }));
+
+    try {
+      const data = await getJobLog(jobId, { signal: controller.signal, tailLines: 200 });
+      if (controller.signal.aborted) return;
+      setJobLog({ openJobId: jobId, loading: false, error: null, data });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setJobLog((prev) => ({
+        openJobId: jobId,
+        loading: false,
+        error: message,
+        data: prev.openJobId === jobId ? prev.data : null,
+      }));
+    }
+  }, []);
+
+  const closeJobLog = useCallback(() => {
+    jobLogAbortRef.current?.abort();
+    setJobLog({ openJobId: null, loading: false, error: null, data: null });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      jobLogAbortRef.current?.abort();
+    };
+  }, []);
+
+  const selectedJob = jobLog.openJobId ? jobs.jobs.find((job) => job.jobId === jobLog.openJobId) ?? null : null;
+  const selectedJobTitle =
+    selectedJob?.label?.trim() ||
+    (jobLog.data ? formatJobTitle(jobLog.data.type) : jobLog.openJobId ? "Job details" : "Job");
+
+  useEffect(() => {
+    if (!jobLog.openJobId || !selectedJob) return;
+    if (selectedJob.status !== "running" || jobLog.loading) return;
+    const timer = window.setTimeout(() => {
+      void loadJobLog(jobLog.openJobId as string);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [jobLog.loading, jobLog.openJobId, loadJobLog, selectedJob]);
 
   return (
     <aside className="appSidebar" aria-label="Sidebar">
@@ -232,6 +294,14 @@ export default function Sidebar() {
                 const remainingText = estimateRemaining(job.status, elapsedMs, job.processed, job.total);
                 const statusText = `${job.status}${job.current ? ` · ${job.current}` : ""}`;
                 const title = job.label?.trim() || formatJobTitle(job.type);
+                const failureSummary = formatFailureSummary(job);
+                const canInspect = job.type === "inference" || job.status === "failed" || Boolean(job.logAvailable);
+                const detailsButtonLabel =
+                  jobLog.openJobId === job.jobId && jobLog.loading
+                    ? "Loading..."
+                    : job.status === "running"
+                      ? "Live log"
+                      : "Details";
                 const datasetLines = (job.datasets ?? [])
                   .map((dataset) =>
                     job.saveDir ? `${dataset.source_dir} → ${job.saveDir}/${dataset.save_to}` : dataset.source_dir
@@ -242,7 +312,9 @@ export default function Sidebar() {
                   title,
                   `Status: ${statusText}`,
                   `Progress: ${doneText}${job.total > 0 ? ` (${pctValue}%)` : ""}`,
+                  typeof job.exitCode === "number" ? `Exit code: ${job.exitCode}` : null,
                   job.error ? `Error: ${job.error}` : null,
+                  job.logPath ? `Log: ${job.logPath}` : null,
                   job.roi
                     ? `ROI: x=${job.roi.x0}..${job.roi.x1}, y=${job.roi.y0}..${job.roi.y1}, z=${job.roi.z0}..${job.roi.z1}`
                     : null,
@@ -299,6 +371,19 @@ export default function Sidebar() {
                     <div className="sidebarJobBar" aria-hidden="true">
                       <div className="sidebarJobBarFill" style={{ width: `${Math.max(2, pctValue)}%` }} />
                     </div>
+                    {failureSummary ? <div className="sidebarJobError">{failureSummary}</div> : null}
+                    {canInspect ? (
+                      <div className="sidebarJobFooter">
+                        <button
+                          type="button"
+                          className="sidebarJobDetailButton"
+                          onClick={() => void loadJobLog(job.jobId, { keepData: false })}
+                          disabled={jobLog.openJobId === job.jobId && jobLog.loading}
+                        >
+                          {detailsButtonLabel}
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="sidebarJobTooltip" role="tooltip" aria-hidden="true">
                       <div className="sidebarJobTooltipInner">{tooltipLines.join("\n")}</div>
                     </div>
@@ -309,6 +394,90 @@ export default function Sidebar() {
           ) : null}
         </SidebarSection>
       </div>
+
+      <Modal
+        open={jobLog.openJobId !== null}
+        title={selectedJobTitle}
+        onClose={closeJobLog}
+        panelClassName="jobLogModalPanel"
+        bodyClassName="jobLogModalBody"
+        footer={
+          <div className="jobLogModalFooter">
+            <button
+              type="button"
+              className="sidebarActionButton"
+              onClick={() => {
+                if (jobLog.openJobId) void loadJobLog(jobLog.openJobId);
+              }}
+              disabled={!jobLog.openJobId || jobLog.loading}
+            >
+              {jobLog.loading ? "Refreshing..." : "Refresh log"}
+            </button>
+          </div>
+        }
+      >
+        {jobLog.error ? <div className="sidebarError">{jobLog.error}</div> : null}
+        {!jobLog.data && jobLog.loading ? <div className="sidebarHint">Loading job details...</div> : null}
+        {jobLog.data ? (
+          <>
+            <div className="jobLogMetaGrid">
+              <div className="jobLogMetaCard">
+                <div className="jobLogMetaLabel">Status</div>
+                <div className="jobLogMetaValue">
+                  {jobLog.data.status}
+                  {jobLog.data.current ? ` · ${jobLog.data.current}` : ""}
+                </div>
+              </div>
+              <div className="jobLogMetaCard">
+                <div className="jobLogMetaLabel">Exit code</div>
+                <div className="jobLogMetaValue">
+                  {typeof jobLog.data.exitCode === "number" ? jobLog.data.exitCode : "n/a"}
+                </div>
+              </div>
+              <div className="jobLogMetaCard">
+                <div className="jobLogMetaLabel">Log lines</div>
+                <div className="jobLogMetaValue">
+                  {jobLog.data.truncated
+                    ? `Showing last ${jobLog.data.logLines.length} of ${jobLog.data.totalLogLines}`
+                    : `${jobLog.data.totalLogLines} captured`}
+                </div>
+              </div>
+            </div>
+
+            {formatFailureSummary(jobLog.data) ? (
+              <div className="sidebarJobError isExpanded">{formatFailureSummary(jobLog.data)}</div>
+            ) : null}
+
+            <div className="jobLogSection">
+              <div className="jobLogSectionTitle">Working directory</div>
+              <div className="jobLogPath">{jobLog.data.workingDirectory ?? "Unavailable"}</div>
+            </div>
+
+            <div className="jobLogSection">
+              <div className="jobLogSectionTitle">Log file</div>
+              <div className="jobLogPath">{jobLog.data.logPath ?? "In-memory log only"}</div>
+            </div>
+
+            <div className="jobLogSection">
+              <div className="jobLogSectionTitle">Command</div>
+              {jobLog.data.command ? (
+                <pre className="jobLogPre">{jobLog.data.command}</pre>
+              ) : (
+                <div className="sidebarHint">Command metadata was not captured for this job.</div>
+              )}
+            </div>
+
+            <div className="jobLogSection">
+              <div className="jobLogSectionTitle">Log tail</div>
+              {jobLog.data.logLines.length > 0 ? (
+                <pre className="jobLogPre">{jobLog.data.logLines.join("\n")}</pre>
+              ) : (
+                <div className="sidebarHint">No process output was captured for this job.</div>
+              )}
+            </div>
+          </>
+        ) : null}
+      </Modal>
     </aside>
   );
 }
@@ -334,6 +503,21 @@ function estimateRemaining(status: string, elapsedMs: number, processed: number,
   const perItem = elapsedMs / processed;
   const remaining = Math.max(0, Math.round((total - processed) * perItem));
   return formatDurationMs(remaining);
+}
+
+function formatFailureSummary(job: Pick<JobSummary, "status" | "error" | "exitCode">): string | null {
+  if (job.status !== "failed") return null;
+  const errorText = job.error?.trim() ?? "";
+  if (errorText) {
+    if (typeof job.exitCode === "number" && job.exitCode !== 0) {
+      return `Exit ${job.exitCode}. ${errorText}`;
+    }
+    return errorText;
+  }
+  if (typeof job.exitCode === "number") {
+    return `Exit ${job.exitCode}.`;
+  }
+  return "Job failed.";
 }
 
 function SidebarSection({
