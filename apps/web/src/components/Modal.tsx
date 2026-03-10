@@ -39,6 +39,7 @@ export default function Modal({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -64,7 +65,14 @@ export default function Modal({
       >
         <div className="modalHeader">
           <div className="modalTitle">{title}</div>
-          <button type="button" className="sidebarActionButton" onClick={onClose} aria-label="Close" title="Close">
+          <button
+            type="button"
+            className="sidebarActionButton"
+            data-modal-close="true"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+          >
             ×
           </button>
         </div>

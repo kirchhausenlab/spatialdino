@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from spatialdino_server.fs_roots import _configured_fs_roots_from_env
 
@@ -15,6 +16,11 @@ router = APIRouter(prefix="/fs")
 
 SortKey = Literal["name", "mtime"]
 SortOrder = Literal["asc", "desc"]
+
+
+class CreateDirRequest(BaseModel):
+    parent_path: str = Field(..., min_length=1, alias="parentPath")
+    name: str = Field(..., min_length=0)
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:
@@ -109,6 +115,31 @@ def _require_allowed_dir(requested: str, roots: list[RootInfo]) -> tuple[Path, R
     return real, root
 
 
+def _validate_dir_name(name: str) -> str:
+    if "\x00" in name:
+        raise HTTPException(status_code=400, detail="Invalid folder name.")
+
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Folder name cannot be empty.")
+
+    if name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid folder name.")
+
+    separators = {"/"}
+    if os.sep:
+        separators.add(os.sep)
+    if os.altsep:
+        separators.add(os.altsep)
+
+    if any(separator in name for separator in separators if separator):
+        raise HTTPException(status_code=400, detail="Folder name must not contain path separators.")
+
+    if name.startswith("."):
+        raise HTTPException(status_code=400, detail="Hidden folder names are not supported here.")
+
+    return name
+
+
 @dataclass(frozen=True)
 class _CacheKey:
     path: str
@@ -149,6 +180,14 @@ def _cache_put(key: _CacheKey, value: _CacheValue) -> None:
             oldest_key = min(_CACHE.items(), key=lambda kv: kv[1].created_at)[0]
             _CACHE.pop(oldest_key, None)
         _CACHE[key] = value
+
+
+def _cache_invalidate_dir(dir_path: Path) -> None:
+    path_text = str(dir_path)
+    with _CACHE_LOCK:
+        keys_to_drop = [key for key in _CACHE if key.path == path_text]
+        for key in keys_to_drop:
+            _CACHE.pop(key, None)
 
 
 def _scan_children(
@@ -330,4 +369,40 @@ def fs_list(
         "includeHidden": include_hidden_b,
         "dirsOnly": dirs_only_b,
         "items": page_items,
+    }
+
+
+@router.post("/mkdir")
+def fs_mkdir(payload: CreateDirRequest) -> dict:
+    roots, _invalid = _get_configured_roots()
+    parent_dir, root = _require_allowed_dir(payload.parent_path, roots)
+    name = _validate_dir_name(payload.name)
+
+    target = parent_dir / name
+    try:
+        target.relative_to(root.real_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid folder name.") from exc
+
+    if target.exists():
+        raise HTTPException(status_code=409, detail="An entry with that name already exists.")
+
+    try:
+        target.mkdir()
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="An entry with that name already exists.") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Permission denied.") from exc
+    except OSError as exc:
+        message = exc.strerror.strip() if exc.strerror else "Unable to create folder."
+        raise HTTPException(status_code=400, detail=message) from exc
+
+    _cache_invalidate_dir(parent_dir)
+    _cache_invalidate_dir(target)
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "parentPath": str(parent_dir),
+        "name": name,
     }

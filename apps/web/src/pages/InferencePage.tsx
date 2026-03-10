@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import Modal from "../components/Modal";
 import ServerDirectoryPicker from "../components/ServerDirectoryPicker";
+import { useJobs } from "../components/JobsProvider";
+import { getClientId } from "../lib/clientId";
 
 type PickerTarget = "input" | "output";
 
@@ -43,10 +46,78 @@ type InferenceValidationFailure = {
 
 type InferenceValidationResponse = InferenceValidationSuccess | InferenceValidationFailure;
 
+type InferenceRunRequest = {
+  input_path: string;
+  output_path: string;
+  backbone_weight: string;
+  gpu_indices: number[];
+  upsample_factor: number | null;
+  route: string;
+  precision: string;
+  crop_bounds: {
+    x_start: number | null;
+    x_end: number | null;
+    y_start: number | null;
+    y_end: number | null;
+    z_start: number | null;
+    z_end: number | null;
+  };
+  anisotropy: {
+    x: number | null;
+    y: number | null;
+    z: number | null;
+  };
+  file_range: {
+    start: number | null;
+    end: number | null;
+  };
+  overwrite: boolean;
+};
+
+type InferenceRunSubmittedResponse = {
+  submitted: true;
+  jobId: string;
+  message: string;
+};
+
+type InferenceRunInvalidResponse = {
+  submitted: false;
+  valid: false;
+  reasonCode: string;
+  message: string;
+  requiresOverwriteConfirmation: false;
+};
+
+type InferenceRunOverwriteResponse = {
+  submitted: false;
+  valid: true;
+  message: string;
+  requiresOverwriteConfirmation: true;
+  outputPath: string;
+  outputEntryCount: number;
+  outputEntriesPreview: string[];
+};
+
+type InferenceRunResponse = InferenceRunSubmittedResponse | InferenceRunInvalidResponse | InferenceRunOverwriteResponse;
+
+type RunFeedback = {
+  tone: "neutral" | "success" | "error";
+  message: string;
+};
+
+type OverwritePromptState = {
+  request: InferenceRunRequest;
+  message: string;
+  outputPath: string;
+  outputEntryCount: number;
+  outputEntriesPreview: string[];
+};
+
 const DEFAULT_UPSAMPLE_FACTOR = "3";
 const DEFAULT_ANISOTROPY = { x: "1.0", y: "1.0", z: "1.0" };
 
 export default function InferencePage() {
+  const jobs = useJobs();
   const validationRequestIdRef = useRef(0);
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   const [inputPath, setInputPath] = useState<string | null>(null);
@@ -75,6 +146,9 @@ export default function InferencePage() {
   });
   const [anisotropy, setAnisotropy] = useState(DEFAULT_ANISOTROPY);
   const [fileRange, setFileRange] = useState({ start: "0", end: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
+  const [overwritePrompt, setOverwritePrompt] = useState<OverwritePromptState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,17 +207,22 @@ export default function InferencePage() {
 
     setUpsampleFactor(DEFAULT_UPSAMPLE_FACTOR);
     setAnisotropy(DEFAULT_ANISOTROPY);
-    setFileRange({ start: "0", end: String(Math.max(0, validationResult.fileCount - 1)) });
+    setFileRange({ start: "0", end: String(validationResult.fileCount) });
     setCropBounds({
       xStart: "0",
-      xEnd: String(Math.max(0, validationResult.shape.x - 1)),
+      xEnd: String(validationResult.shape.x),
       yStart: "0",
-      yEnd: String(Math.max(0, validationResult.shape.y - 1)),
+      yEnd: String(validationResult.shape.y),
       zStart: "0",
-      zEnd: String(Math.max(0, validationResult.shape.z - 1)),
+      zEnd: String(validationResult.shape.z),
     });
     setAppliedDefaultsKey(key);
   }, [appliedDefaultsKey, inputPath, validationResult]);
+
+  useEffect(() => {
+    setRunFeedback(null);
+    setOverwritePrompt(null);
+  }, [inputPath, outputPath, backboneWeight, upsampleFactor, route, precision, cropBounds, anisotropy, fileRange, selectedGpuIndices]);
 
   const pickerTitle = pickerTarget === "output" ? "Choose the output folder" : "Choose the input folder";
   const pickerInitialPath = pickerTarget === "output" ? outputPath : inputPath;
@@ -191,6 +270,103 @@ export default function InferencePage() {
         setValidationLoading(false);
       }
     }
+  }
+
+  function buildRunRequest(overwrite: boolean): InferenceRunRequest | null {
+    if (!inputPath || !outputPath) return null;
+
+    return {
+      input_path: inputPath,
+      output_path: outputPath,
+      backbone_weight: backboneWeight,
+      gpu_indices: selectedGpuIndices,
+      upsample_factor: parseNullableNumber(upsampleFactor),
+      route,
+      precision,
+      crop_bounds: {
+        x_start: parseNullableInteger(cropBounds.xStart),
+        x_end: parseNullableInteger(cropBounds.xEnd),
+        y_start: parseNullableInteger(cropBounds.yStart),
+        y_end: parseNullableInteger(cropBounds.yEnd),
+        z_start: parseNullableInteger(cropBounds.zStart),
+        z_end: parseNullableInteger(cropBounds.zEnd),
+      },
+      anisotropy: {
+        x: parseNullableNumber(anisotropy.x),
+        y: parseNullableNumber(anisotropy.y),
+        z: parseNullableNumber(anisotropy.z),
+      },
+      file_range: {
+        start: parseNullableInteger(fileRange.start),
+        end: parseNullableInteger(fileRange.end),
+      },
+      overwrite,
+    };
+  }
+
+  async function submitInference(request: InferenceRunRequest) {
+    setSubmitting(true);
+    setRunFeedback(null);
+
+    try {
+      const resp = await fetch("/api/inference/run", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-SpatialDINO-ClientId": getClientId(),
+        },
+        body: JSON.stringify(request),
+      });
+
+      if (!resp.ok) {
+        const json = await safeJson(resp);
+        const detail =
+          json && typeof json === "object" && "detail" in json && typeof json.detail === "string" ? json.detail : null;
+        throw new Error(detail ? detail : `Run inference failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      const json = (await resp.json()) as InferenceRunResponse;
+      if (json.submitted) {
+        setOverwritePrompt(null);
+        setRunFeedback({ tone: "success", message: json.message });
+        void jobs.refresh();
+        return;
+      }
+
+      if (json.requiresOverwriteConfirmation) {
+        setOverwritePrompt({
+          request,
+          message: json.message,
+          outputPath: json.outputPath,
+          outputEntryCount: json.outputEntryCount,
+          outputEntriesPreview: json.outputEntriesPreview,
+        });
+        return;
+      }
+
+      setOverwritePrompt(null);
+      setRunFeedback({ tone: "error", message: json.message });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setRunFeedback({ tone: "error", message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRunInference() {
+    const request = buildRunRequest(false);
+    if (!request) {
+      setRunFeedback({ tone: "error", message: "Choose both an input folder and an output folder." });
+      return;
+    }
+    await submitInference(request);
+  }
+
+  async function handleConfirmOverwrite() {
+    if (!overwritePrompt) return;
+    await submitInference({ ...overwritePrompt.request, overwrite: true });
   }
 
   return (
@@ -349,7 +525,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, xStart: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.x != null ? Math.max(0, validatedDataset.shape.x - 1) : undefined}
+                  max={validatedDataset?.shape.x}
                 />
                 <div className="inferenceInlineLabel">X end:</div>
                 <InferenceNumberInput
@@ -357,7 +533,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, xEnd: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.x != null ? Math.max(0, validatedDataset.shape.x - 1) : undefined}
+                  max={validatedDataset?.shape.x}
                 />
                 <div className="inferenceInlineLabel">Y start:</div>
                 <InferenceNumberInput
@@ -365,7 +541,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, yStart: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.y != null ? Math.max(0, validatedDataset.shape.y - 1) : undefined}
+                  max={validatedDataset?.shape.y}
                 />
                 <div className="inferenceInlineLabel">Y end:</div>
                 <InferenceNumberInput
@@ -373,7 +549,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, yEnd: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.y != null ? Math.max(0, validatedDataset.shape.y - 1) : undefined}
+                  max={validatedDataset?.shape.y}
                 />
                 <div className="inferenceInlineLabel">Z start:</div>
                 <InferenceNumberInput
@@ -381,7 +557,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, zStart: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.z != null ? Math.max(0, validatedDataset.shape.z - 1) : undefined}
+                  max={validatedDataset?.shape.z}
                 />
                 <div className="inferenceInlineLabel">Z end:</div>
                 <InferenceNumberInput
@@ -389,7 +565,7 @@ export default function InferencePage() {
                   onChange={(value) => setCropBounds((current) => ({ ...current, zEnd: value }))}
                   min={0}
                   step={1}
-                  max={validatedDataset?.shape.z != null ? Math.max(0, validatedDataset.shape.z - 1) : undefined}
+                  max={validatedDataset?.shape.z}
                 />
               </div>
             </div>
@@ -402,7 +578,7 @@ export default function InferencePage() {
                 onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
                 min={0}
                 step={1}
-                max={validatedDataset ? Math.max(0, validatedDataset.fileCount - 1) : undefined}
+                max={validatedDataset?.fileCount}
               />
               <div className="inferenceInlineLabel">End file:</div>
               <InferenceNumberInput
@@ -410,10 +586,20 @@ export default function InferencePage() {
                 onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
                 min={0}
                 step={1}
-                max={validatedDataset ? Math.max(0, validatedDataset.fileCount - 1) : undefined}
+                max={validatedDataset?.fileCount}
               />
             </div>
+
+            <div className="sidebarHint">Crop and file end values are exclusive, matching the inference script.</div>
           </div>
+
+          <div className="validationActions">
+            <button type="button" className="preprocessValidateButton" disabled={submitting} onClick={() => void handleRunInference()}>
+              {submitting ? "Submitting..." : "Run inference"}
+            </button>
+          </div>
+
+          {runFeedback ? <ValidationMessage tone={runFeedback.tone}>{runFeedback.message}</ValidationMessage> : null}
         </section>
       ) : null}
 
@@ -431,6 +617,61 @@ export default function InferencePage() {
           setPickerTarget(null);
         }}
       />
+
+      <Modal
+        open={overwritePrompt !== null}
+        title="Overwrite output folder?"
+        onClose={() => {
+          if (submitting) return;
+          setOverwritePrompt(null);
+        }}
+        footer={
+          <>
+            <button
+              type="button"
+              className="pickerSecondaryButton"
+              onClick={() => setOverwritePrompt(null)}
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              onClick={() => void handleConfirmOverwrite()}
+              disabled={submitting}
+            >
+              {submitting ? "Submitting..." : "Overwrite and run"}
+            </button>
+          </>
+        }
+      >
+        {overwritePrompt ? (
+          <div className="preprocessOverwriteBody">
+            <div className="preprocessOverwriteHint">{overwritePrompt.message}</div>
+            <div className="datasetPath">
+              <div className="datasetPathValue">{overwritePrompt.outputPath}</div>
+            </div>
+            <div className="sidebarHint">
+              {`${overwritePrompt.outputEntryCount} existing item${overwritePrompt.outputEntryCount === 1 ? "" : "s"} will be removed before the job starts.`}
+            </div>
+            {overwritePrompt.outputEntriesPreview.length > 0 ? (
+              <ul className="preprocessOverwriteList">
+                {overwritePrompt.outputEntriesPreview.map((entry) => (
+                  <li key={entry} className="preprocessOverwriteItem">
+                    {entry}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {overwritePrompt.outputEntryCount > overwritePrompt.outputEntriesPreview.length ? (
+              <div className="sidebarHint">
+                {`And ${overwritePrompt.outputEntryCount - overwritePrompt.outputEntriesPreview.length} more item(s).`}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
@@ -505,4 +746,18 @@ async function safeJson(resp: Response): Promise<any> {
   } catch {
     return null;
   }
+}
+
+function parseNullableInteger(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseNullableNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
 }

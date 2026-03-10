@@ -31,6 +31,13 @@ export type FsListResponse = {
   items: FsListItem[];
 };
 
+export type FsMkdirResponse = {
+  ok: boolean;
+  path: string;
+  parentPath: string;
+  name: string;
+};
+
 export async function fetchFsRoots(signal?: AbortSignal): Promise<FsRootsResponse> {
   const resp = await fetch("/api/fs/roots", { headers: { Accept: "application/json" }, signal });
   if (!resp.ok) {
@@ -68,6 +75,29 @@ export async function fetchFsList(
     throw new Error(`FS list failed: ${resp.status} ${resp.statusText}${detail ? `: ${detail}` : ""}`);
   }
   return (await resp.json()) as FsListResponse;
+}
+
+export async function fetchFsMkdir(
+  params: {
+    parentPath: string;
+    name: string;
+  },
+  signal?: AbortSignal
+): Promise<FsMkdirResponse> {
+  const resp = await fetch("/api/fs/mkdir", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(params),
+    signal
+  });
+  if (!resp.ok) {
+    const detail = await safeDetail(resp);
+    throw new Error(`FS mkdir failed: ${resp.status} ${resp.statusText}${detail ? `: ${detail}` : ""}`);
+  }
+  return (await resp.json()) as FsMkdirResponse;
 }
 
 async function safeDetail(resp: Response): Promise<string | null> {

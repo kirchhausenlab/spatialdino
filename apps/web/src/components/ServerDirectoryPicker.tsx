@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchFsList } from "../api/fs";
+import { fetchFsList, fetchFsMkdir } from "../api/fs";
 import type { FsListResponse } from "../api/fs";
 import Modal from "./Modal";
 
@@ -84,6 +84,21 @@ function isInvalidBookmarkedDirError(message: string): boolean {
   );
 }
 
+function extractErrorDetail(message: string): string {
+  const idx = message.lastIndexOf(": ");
+  return idx >= 0 ? message.slice(idx + 2) : message;
+}
+
+function isCreateWarningMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("already exists") ||
+    normalized.includes("folder name") ||
+    normalized.includes("hidden folder names") ||
+    normalized.includes("invalid folder name")
+  );
+}
+
 function StarIcon({ filled }: { filled: boolean }) {
   return (
     <svg
@@ -140,6 +155,9 @@ export default function ServerDirectoryPicker({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [bookmarkedDirs, setBookmarkedDirs] = useState<string[]>(() => readStoredBookmarkedDirs());
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [newDirName, setNewDirName] = useState<string | null>(null);
+  const [newDirBusy, setNewDirBusy] = useState(false);
+  const [newDirMessage, setNewDirMessage] = useState<{ tone: "warning" | "error"; text: string } | null>(null);
 
   const loadedPagesRef = useRef<Set<number>>(new Set());
   const loadMoreRef = useRef<{
@@ -147,6 +165,7 @@ export default function ServerDirectoryPicker({
     requestedAtMs: number;
   }>({ inFlight: false, requestedAtMs: 0 });
   const bookmarkMenuRef = useRef<HTMLDivElement | null>(null);
+  const newDirInputRef = useRef<HTMLInputElement | null>(null);
 
   const commitBookmarkedDirs = useCallback((updater: (prev: string[]) => string[]) => {
     setBookmarkedDirs((prev) => {
@@ -216,6 +235,12 @@ export default function ServerDirectoryPicker({
   const queryKeyBase = useMemo(() => {
     return cacheKey({ path, sort, order, includeHidden: false, dirsOnly: true });
   }, [path, sort, order]);
+
+  const clearListCache = useCallback(() => {
+    listCache.current.clear();
+    loadedPagesRef.current = new Set();
+    loadMoreRef.current = { inFlight: false, requestedAtMs: 0 };
+  }, []);
 
   const resetAndLoadFirstPage = useMemo(() => {
     return () => {
@@ -363,23 +388,23 @@ export default function ServerDirectoryPicker({
   const currentBookmarkPath = sanitizeBookmarkedPath(currentPath);
   const bookmarkTargetPath = currentBookmarkPath ?? sanitizeBookmarkedPath(pathInput);
   const isCurrentBookmarked = Boolean(bookmarkTargetPath && bookmarkedDirs.includes(bookmarkTargetPath));
+  const isCreatingDir = newDirName !== null;
   const selectedLabel = selectedPath ?? "";
-  const showEmptyRow = Boolean(listState.data && !listState.loading && !listState.error && listState.items.length === 0);
-  const placeholderCount = Math.max(
-    0,
-    VISIBLE_ROWS - Math.min(VISIBLE_ROWS, showEmptyRow ? 1 : listState.items.length)
-  );
+  const showEmptyRow = Boolean(listState.data && !listState.loading && !listState.error && !isCreatingDir && listState.items.length === 0);
+  const visibleRowCount = listState.items.length + (isCreatingDir ? 1 : 0) + (showEmptyRow ? 1 : 0);
+  const placeholderCount = Math.max(0, VISIBLE_ROWS - Math.min(VISIBLE_ROWS, visibleRowCount));
   const placeholders = useMemo(() => Array.from({ length: placeholderCount }), [placeholderCount]);
 
   const navigateToBookmarkedDir = useCallback(
     async (bookmarkedPath: string) => {
+      if (isCreatingDir) return;
       const result = await navigateTo(bookmarkedPath);
       setBookmarksOpen(false);
       if (!result.ok && isInvalidBookmarkedDirError(result.error)) {
         commitBookmarkedDirs((prev) => prev.filter((entry) => entry !== bookmarkedPath));
       }
     },
-    [commitBookmarkedDirs, navigateTo]
+    [commitBookmarkedDirs, isCreatingDir, navigateTo]
   );
 
   useEffect(() => {
@@ -387,11 +412,78 @@ export default function ServerDirectoryPicker({
     setBookmarksOpen(false);
   }, [open, currentPath]);
 
+  useEffect(() => {
+    if (!open) {
+      setNewDirName(null);
+      setNewDirBusy(false);
+      setNewDirMessage(null);
+      return;
+    }
+    setNewDirName(null);
+    setNewDirBusy(false);
+    setNewDirMessage(null);
+  }, [open, currentPath]);
+
+  useEffect(() => {
+    if (newDirName === null) return;
+    const t = window.setTimeout(() => {
+      newDirInputRef.current?.focus();
+      newDirInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [newDirName]);
+
+  const commitNewDir = useCallback(async () => {
+    if (newDirName === null || newDirBusy) return;
+    if (!listState.data) return;
+
+    if (!newDirName.trim()) {
+      setNewDirName(null);
+      setNewDirBusy(false);
+      setNewDirMessage(null);
+      return;
+    }
+
+    const parentPath = listState.data.path;
+    setNewDirBusy(true);
+    setNewDirMessage(null);
+
+    try {
+      const created = await fetchFsMkdir({ parentPath, name: newDirName });
+      clearListCache();
+      const result = await navigateTo(parentPath);
+      setSelectedPath(created.path);
+      setNewDirName(null);
+      setNewDirBusy(false);
+      if (!result.ok) {
+        setNewDirMessage({ tone: "error", text: result.error });
+      }
+    } catch (error) {
+      const text = extractErrorDetail(error instanceof Error ? error.message : "Unable to create folder.");
+      setNewDirBusy(false);
+      setNewDirMessage({ tone: isCreateWarningMessage(text) ? "warning" : "error", text });
+      window.setTimeout(() => {
+        newDirInputRef.current?.focus();
+        newDirInputRef.current?.select();
+      }, 0);
+    }
+  }, [clearListCache, listState.data, navigateTo, newDirBusy, newDirName]);
+
+  const cancelNewDir = useCallback(() => {
+    if (newDirBusy) return;
+    setNewDirName(null);
+    setNewDirMessage(null);
+  }, [newDirBusy]);
+  const handleClose = useCallback(() => {
+    if (newDirBusy) return;
+    onClose();
+  }, [newDirBusy, onClose]);
+
   return (
     <Modal
       open={open}
       title={title ?? "Choose a directory"}
-      onClose={onClose}
+      onClose={handleClose}
       panelClassName="pickerModalPanel"
       bodyClassName="pickerModalBody"
       footer={
@@ -403,7 +495,26 @@ export default function ServerDirectoryPicker({
             </span>
           </div>
           <div className="pickerFooterActions">
-            <button type="button" className="pickerSecondaryButton" onClick={onClose}>
+            <button
+              type="button"
+              className="pickerSecondaryButton"
+              disabled={!listState.data || isCreatingDir || newDirBusy}
+              onClick={() => {
+                if (!listState.data || isCreatingDir || newDirBusy) return;
+                setSelectedPath(null);
+                setNewDirName("");
+                setNewDirMessage(null);
+              }}
+            >
+              {newDirBusy ? "Creating..." : "New folder"}
+            </button>
+            <button
+              type="button"
+              className="pickerSecondaryButton"
+              data-picker-create-cancel="true"
+              onClick={handleClose}
+              disabled={newDirBusy}
+            >
               Cancel
             </button>
             <button
@@ -427,6 +538,7 @@ export default function ServerDirectoryPicker({
             className="sidebarActionButton"
             disabled={!listState.data?.parentPath}
             onClick={() => {
+              if (isCreatingDir) return;
               const parent = listState.data?.parentPath;
               if (!parent) return;
               void navigateTo(parent);
@@ -454,7 +566,10 @@ export default function ServerDirectoryPicker({
                 title={currentPath || ""}
                 placeholder="/path/to/directory"
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") setPathInput(currentPath || "/");
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setPathInput(currentPath || "/");
+                  }
                 }}
               />
               <button
@@ -464,7 +579,10 @@ export default function ServerDirectoryPicker({
                 aria-haspopup="menu"
                 aria-expanded={bookmarksOpen}
                 title="Bookmarked directories"
-                onClick={() => setBookmarksOpen((prev) => !prev)}
+                onClick={() => {
+                  if (isCreatingDir) return;
+                  setBookmarksOpen((prev) => !prev);
+                }}
               >
                 ▾
               </button>
@@ -494,6 +612,7 @@ export default function ServerDirectoryPicker({
                     className="pickerBookmarksMenuItem pickerBookmarksMenuClear"
                     title="Clear bookmarked directories"
                     onClick={() => {
+                      if (isCreatingDir) return;
                       commitBookmarkedDirs(() => []);
                       setBookmarksOpen(false);
                     }}
@@ -531,7 +650,10 @@ export default function ServerDirectoryPicker({
           <select
             className="pickerSelect"
             value={sort}
-            onChange={(e) => setSort(e.target.value as "name" | "mtime")}
+            onChange={(e) => {
+              if (isCreatingDir) return;
+              setSort(e.target.value as "name" | "mtime");
+            }}
             aria-label="Sort by"
           >
             <option value="name">Name</option>
@@ -541,13 +663,25 @@ export default function ServerDirectoryPicker({
             type="button"
             className="pickerOrderButton"
             aria-label="Toggle sort order"
-            onClick={() => setOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
+            onClick={() => {
+              if (isCreatingDir) return;
+              setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+            }}
           >
             {order === "asc" ? "↑↓" : "↓↑"}
           </button>
         </div>
       </div>
 
+      {newDirMessage ? (
+        <div
+          className={newDirMessage.tone === "warning" ? "sidebarWarning" : "sidebarError"}
+          role="alert"
+          aria-live="polite"
+        >
+          {newDirMessage.text}
+        </div>
+      ) : null}
       {listState.error ? <div className="sidebarError">{listState.error}</div> : null}
 
       {listState.data ? (
@@ -574,6 +708,52 @@ export default function ServerDirectoryPicker({
                 Modified
               </div>
             </div>
+            {isCreatingDir ? (
+              <div className="pickerRow pickerCreateRow" role="row">
+                <div className="pickerTd pickerNameCol" role="cell">
+                  <input
+                    ref={newDirInputRef}
+                    className="pickerInlineInput"
+                    value={newDirName ?? ""}
+                    onChange={(e) => {
+                      setNewDirName(e.target.value);
+                      if (newDirMessage) setNewDirMessage(null);
+                    }}
+                    spellCheck={false}
+                    inputMode="text"
+                    aria-label="New folder name"
+                    placeholder="New folder"
+                    disabled={newDirBusy}
+                    onBlur={(e) => {
+                      const nextFocused = e.relatedTarget;
+                      if (
+                        nextFocused instanceof HTMLElement &&
+                        (nextFocused.closest("[data-picker-create-cancel='true']") ||
+                          nextFocused.closest("[data-modal-close='true']"))
+                      ) {
+                        cancelNewDir();
+                        return;
+                      }
+                      void commitNewDir();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void commitNewDir();
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelNewDir();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="pickerTd pickerModifiedCol pickerCreateMeta" role="cell">
+                  {newDirBusy ? "Creating..." : "—"}
+                </div>
+              </div>
+            ) : null}
             {showEmptyRow ? (
               <div className="pickerRow isPlaceholder" role="row">
                 <div className="pickerTd pickerNameCol pickerEmptyCell" role="cell">
@@ -594,9 +774,11 @@ export default function ServerDirectoryPicker({
                     type="button"
                     className="pickerEntryButton"
                     onClick={() => {
+                      if (isCreatingDir) return;
                       setSelectedPath(item.path);
                     }}
                     onDoubleClick={() => {
+                      if (isCreatingDir) return;
                       void navigateTo(item.path);
                     }}
                   >

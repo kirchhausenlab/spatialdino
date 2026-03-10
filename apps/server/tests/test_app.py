@@ -11,6 +11,7 @@ from starlette.requests import Request
 import tifffile
 
 from spatialdino_server import app as app_module
+from spatialdino_server import jobs_api
 
 
 def make_request(client_host: str) -> Request:
@@ -30,6 +31,14 @@ def make_request(client_host: str) -> Request:
 
 
 class AppTests(unittest.TestCase):
+    def setUp(self) -> None:
+        with jobs_api._jobs_lock:
+            jobs_api._jobs.clear()
+
+    def tearDown(self) -> None:
+        with jobs_api._jobs_lock:
+            jobs_api._jobs.clear()
+
     def test_root_serves_built_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dist = Path(tmp)
@@ -199,3 +208,259 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "shape_mismatch")
         self.assertIn("TIFF files do not all have the same 3D shape.", payload["message"])
+
+    def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (output_dir / "existing.txt").write_text("x", encoding="utf-8")
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], True)
+        self.assertEqual(response["requiresOverwriteConfirmation"], True)
+        self.assertEqual(response["outputEntryCount"], 1)
+        self.assertEqual(response["outputEntriesPreview"], ["existing.txt"])
+        with jobs_api._jobs_lock:
+            self.assertEqual(jobs_api._jobs, {})
+
+    def test_run_inference_submits_job_when_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+                patch("spatialdino_server.app._launch_inference_job_thread") as launch_thread,
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        self.assertIn("jobId", response)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["selected_stems"], ["stack0001"])
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "inference")
+            self.assertEqual(job.total, 1)
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "output"}])
+
+    def test_run_inference_rejects_empty_file_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 1, "end": 1},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], False)
+        self.assertEqual(response["reasonCode"], "empty_file_selection")
+
+    def test_progress_updates_only_after_features_are_saved(self) -> None:
+        job = jobs_api.JobState(
+            job_id="job-1",
+            owner_client_id="client-1234",
+            type="inference",
+            status="running",
+            total=1,
+        )
+        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
+        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        saved_feature_paths: set[str] = set()
+
+        app_module._update_job_progress_from_output(
+            job,
+            "Saving to /tmp/out/stack0001",
+            expected_output_dirs,
+            expected_feature_paths,
+            saved_feature_paths,
+        )
+        with job.lock:
+            self.assertEqual(job.processed, 0)
+            self.assertEqual(job.current, "Processing stack0001")
+
+        app_module._update_job_progress_from_output(
+            job,
+            "Saved features to /tmp/out/stack0001/lr_feats.npy",
+            expected_output_dirs,
+            expected_feature_paths,
+            saved_feature_paths,
+        )
+        with job.lock:
+            self.assertEqual(job.processed, 1)
+            self.assertEqual(job.current, "stack0001")
+
+    def test_progress_ignores_unexpected_output_paths(self) -> None:
+        job = jobs_api.JobState(
+            job_id="job-1",
+            owner_client_id="client-1234",
+            type="inference",
+            status="running",
+            total=1,
+        )
+        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
+        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        saved_feature_paths: set[str] = set()
+
+        app_module._update_job_progress_from_output(
+            job,
+            "Saving to /tmp/out/stack0002",
+            expected_output_dirs,
+            expected_feature_paths,
+            saved_feature_paths,
+        )
+        app_module._update_job_progress_from_output(
+            job,
+            "Saved features to /tmp/out/stack0002/lr_feats.npy",
+            expected_output_dirs,
+            expected_feature_paths,
+            saved_feature_paths,
+        )
+
+        with job.lock:
+            self.assertEqual(job.processed, 0)
+            self.assertIsNone(job.current)
+
+    def test_existing_expected_feature_paths_ignore_unselected_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            (output_dir / "stack0001").mkdir(parents=True)
+            (output_dir / "stack0002").mkdir(parents=True)
+            (output_dir / "stack0002" / "lr_feats.npy").write_bytes(b"")
+
+            expected_paths = app_module._expected_feature_paths(output_dir, ["stack0001"])
+            existing_paths = app_module._existing_expected_feature_paths(expected_paths)
+
+        self.assertEqual(existing_paths, [])
+
+    def test_run_inference_job_fails_when_expected_features_are_missing(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdout = iter(())
+                self.pid = 123
+
+            def wait(self) -> int:
+                return 0
+
+            def poll(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            (output_dir / "other").mkdir(parents=True)
+            (output_dir / "other" / "lr_feats.npy").write_bytes(b"")
+            job = jobs_api.JobState(
+                job_id="job-1",
+                owner_client_id="client-1234",
+                type="inference",
+                status="running",
+                total=1,
+            )
+            launch_config = {
+                "output_path": output_dir,
+                "selected_stems": ["stack0001"],
+                "overwrite": False,
+                "gpu_indices": [0],
+            }
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch("spatialdino_server.app._build_inference_command", return_value=["python"]),
+                patch("spatialdino_server.app.subprocess.Popen", return_value=FakeProcess()),
+            ):
+                app_module._run_inference_job(job, launch_config)
+
+        with job.lock:
+            self.assertEqual(job.status, "failed")
+            self.assertEqual(job.current, "Failed")
+            self.assertIn("0/1 expected lr_feats.npy files", job.error)
+            self.assertIn("stack0001", job.error)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -59,11 +62,37 @@ class JobState:
     round_down_shapes: bool | None = None
     overwrite: bool | None = None
     stop_requested: bool = False
+    process: subprocess.Popen[str] | None = field(default=None, repr=False, compare=False)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _jobs_lock = threading.Lock()
 _jobs: dict[str, JobState] = {}
+
+
+def register_job(job: JobState) -> None:
+    with _jobs_lock:
+        _jobs[job.job_id] = job
+
+
+def unregister_job(job_id: str) -> None:
+    with _jobs_lock:
+        _jobs.pop(job_id, None)
+
+
+def terminate_job_process(job: JobState, *, force: bool = False) -> bool:
+    with job.lock:
+        process = job.process
+
+    if not process or process.poll() is not None:
+        return False
+
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _serialize_job(job: JobState) -> dict[str, Any]:
@@ -121,10 +150,10 @@ def cancel_job(payload: CancelJobRequest, x_spatialdino_clientid: str | None = H
         if job.status != "running":
             return {"ok": True, "status": job.status}
         job.stop_requested = True
-        job.status = "halted"
-        job.current = "Stopped"
-        job.finished_at_ms = _now_ms()
-    return {"ok": True, "status": "halted"}
+        job.current = "Stopping"
+
+    terminate_job_process(job, force=False)
+    return {"ok": True, "status": "stopping"}
 
 
 @router.post("/clear")

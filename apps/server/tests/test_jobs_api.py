@@ -65,19 +65,23 @@ class JobsApiTests(unittest.TestCase):
         with jobs_api._jobs_lock:
             self.assertEqual(set(jobs_api._jobs.keys()), {"running"})
 
-    def test_cancel_marks_running_job_halted_and_remove_deletes_it(self) -> None:
+    def test_cancel_requests_stop_and_remove_deletes_job_after_halt(self) -> None:
         with jobs_api._jobs_lock:
             jobs_api._jobs["job-1"] = make_job(job_id="job-1", status="running", finished_at_ms=None, current="Busy")
 
-        with patch("spatialdino_server.jobs_api.time.time", return_value=1.234):
+        with patch("spatialdino_server.jobs_api.terminate_job_process") as terminate_process:
             cancel_result = jobs_api.cancel_job(jobs_api.CancelJobRequest(job_id="job-1"), "client-1234")
 
-        self.assertEqual(cancel_result, {"ok": True, "status": "halted"})
+        self.assertEqual(cancel_result, {"ok": True, "status": "stopping"})
+        terminate_process.assert_called_once()
         with jobs_api._jobs_lock:
-            halted = jobs_api._jobs["job-1"]
-            self.assertEqual(halted.status, "halted")
-            self.assertEqual(halted.current, "Stopped")
-            self.assertEqual(halted.finished_at_ms, 1234)
+            job = jobs_api._jobs["job-1"]
+            self.assertEqual(job.status, "running")
+            self.assertEqual(job.current, "Stopping")
+            self.assertEqual(job.finished_at_ms, None)
+            job.status = "halted"
+            job.current = "Stopped"
+            job.finished_at_ms = 1234
 
         remove_result = jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234")
 

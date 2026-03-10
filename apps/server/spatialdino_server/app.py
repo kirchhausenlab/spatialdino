@@ -3,18 +3,25 @@ from __future__ import annotations
 import html
 import ipaddress
 import os
+import re
+import shutil
 import socket
+import subprocess
 from functools import lru_cache
 from pathlib import Path
+import sys
+import threading
 from typing import Any
+import uuid
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import tifffile
 
 from spatialdino_server.fs_api import router as fs_router
 from spatialdino_server.fs_roots import _configured_fs_roots_from_env
+from spatialdino_server import jobs_api
 from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 
@@ -133,6 +140,40 @@ class ValidateInferenceInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+class InferenceAxisRequest(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+
+
+class InferenceCropBoundsRequest(BaseModel):
+    x_start: int | None = None
+    x_end: int | None = None
+    y_start: int | None = None
+    y_end: int | None = None
+    z_start: int | None = None
+    z_end: int | None = None
+
+
+class InferenceFileRangeRequest(BaseModel):
+    start: int | None = None
+    end: int | None = None
+
+
+class RunInferenceRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    output_path: str = Field(..., min_length=1)
+    backbone_weight: str = Field("", min_length=0)
+    gpu_indices: list[int] = Field(default_factory=list)
+    upsample_factor: float | None = None
+    route: str = Field("full", min_length=1)
+    precision: str = Field("bfloat16", min_length=1)
+    crop_bounds: InferenceCropBoundsRequest = Field(default_factory=InferenceCropBoundsRequest)
+    anisotropy: InferenceAxisRequest = Field(default_factory=InferenceAxisRequest)
+    file_range: InferenceFileRangeRequest = Field(default_factory=InferenceFileRangeRequest)
+    overwrite: bool = False
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -172,14 +213,23 @@ def _shape_xyz(shape: tuple[int, ...]) -> dict[str, int]:
     }
 
 
-def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
-    input_path = _resolve_allowed_inference_path(raw_path)
+def _validate_inference_crop_params(
+    crop_params: tuple[int, int, int, int, int, int],
+    raw_volume_shape: tuple[int, int, int],
+) -> None:
+    start_z, end_z, start_y, end_y, start_x, end_x = crop_params
+    assert start_z < end_z, "start_z must be less than end_z"
+    assert start_y < end_y, "start_y must be less than end_y"
+    assert start_x < end_x, "start_x must be less than end_x"
+    assert start_z < raw_volume_shape[0], "start_z must be less than the number of z-stacks"
+    assert start_y < raw_volume_shape[1], "start_y must be less than the number of y-stacks"
+    assert start_x < raw_volume_shape[2], "start_x must be less than the number of x-stacks"
+    assert end_z <= raw_volume_shape[0], "end_z must be less than or equal to the number of z-stacks"
+    assert end_y <= raw_volume_shape[1], "end_y must be less than or equal to the number of y-stacks"
+    assert end_x <= raw_volume_shape[2], "end_x must be less than or equal to the number of x-stacks"
 
-    if not input_path.exists():
-        return _invalid_inference_input("missing", "Input folder does not exist.")
-    if not input_path.is_dir():
-        return _invalid_inference_input("not_directory", "Input path is not a folder.")
 
+def _list_inference_tiff_paths(input_path: Path) -> list[Path]:
     tiff_paths: list[Path] = []
     with os.scandir(input_path) as entries:
         for entry in entries:
@@ -190,6 +240,22 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
             tiff_paths.append(Path(entry.path))
 
     tiff_paths.sort(key=lambda path: (path.name.casefold(), path.name))
+    return tiff_paths
+
+
+def _selected_inference_tiff_paths(input_path: Path, file_start: int, file_end: int | None) -> list[Path]:
+    return _list_inference_tiff_paths(input_path)[file_start:file_end]
+
+
+def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+
+    if not input_path.exists():
+        return _invalid_inference_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_inference_input("not_directory", "Input path is not a folder.")
+
+    tiff_paths = _list_inference_tiff_paths(input_path)
     if not tiff_paths:
         return _invalid_inference_input("no_tiff_files", "Input folder contains no .tif or .tiff files.")
 
@@ -237,6 +303,420 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
         "fileCount": len(tiff_paths),
         "shape": reference_shape_xyz,
     }
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
+SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
+
+
+def _invalid_inference_run(reason_code: str, message: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "reasonCode": reason_code,
+        "message": message,
+        "requiresOverwriteConfirmation": False,
+    }
+
+
+def _overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -> dict[str, Any]:
+    message = "Output folder is not empty. Confirm overwrite to erase its contents and continue."
+    return {
+        "valid": True,
+        "message": message,
+        "requiresOverwriteConfirmation": True,
+        "outputPath": str(output_path),
+        "outputEntryCount": count,
+        "outputEntriesPreview": preview,
+    }
+
+
+def _coerce_start(value: int | None) -> int:
+    return 0 if value is None else value
+
+
+def _coerce_crop_end(value: int | None) -> int:
+    return 0 if value is None else value
+
+
+def _summarize_directory(path: Path) -> tuple[int, list[str]]:
+    if not path.exists() or not path.is_dir():
+        return 0, []
+
+    entries = sorted((entry.name for entry in path.iterdir()), key=lambda value: (value.casefold(), value))
+    return len(entries), entries[:8]
+
+
+def _clear_directory_contents(path: Path) -> None:
+    if not path.exists():
+        return
+
+    for child in path.iterdir():
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+
+
+def _resolve_backbone_weight_path(raw_value: str) -> Path | None:
+    selected = (raw_value or "").strip()
+    if not selected:
+        return None
+
+    repo_root = get_repo_root()
+    allowed = {item["value"] for item in list_backbone_weights()}
+    if selected not in allowed:
+        return None
+
+    resolved = (repo_root / selected).resolve()
+    if not _is_relative_to(resolved, repo_root):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
+def _build_inference_launch_config(payload: RunInferenceRequest) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    input_validation = validate_inference_input_folder(payload.input_path)
+    if not input_validation["valid"]:
+        return _invalid_inference_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_path = _resolve_allowed_inference_path(payload.output_path)
+    if output_path.exists() and not output_path.is_dir():
+        return _invalid_inference_run("output_not_directory", "Output path is not a folder."), None
+
+    if _is_relative_to(input_path, output_path):
+        return _invalid_inference_run(
+            "output_contains_input",
+            "Output folder cannot be the input folder, or a parent of it.",
+        ), None
+
+    backbone_path = _resolve_backbone_weight_path(payload.backbone_weight)
+    if backbone_path is None:
+        return _invalid_inference_run("missing_backbone_weight", "Select a backbone weights file."), None
+
+    requested_gpus = sorted(set(int(index) for index in payload.gpu_indices))
+    if not requested_gpus:
+        return _invalid_inference_run("missing_gpu_selection", "Select at least one GPU."), None
+
+    available_gpu_indices = {
+        int(gpu["index"]) for gpu in get_nvidia_gpu_memory().get("gpus", []) if "index" in gpu
+    }
+    if any(index not in available_gpu_indices for index in requested_gpus):
+        return _invalid_inference_run("invalid_gpu_selection", "Selected GPUs are not available on the server."), None
+
+    upsample_factor = payload.upsample_factor
+    if upsample_factor is None or upsample_factor < 1.0:
+        return _invalid_inference_run("invalid_upsample_factor", "Upsample factor must be greater than or equal to 1."), None
+
+    anisotropy_x = payload.anisotropy.x
+    anisotropy_y = payload.anisotropy.y
+    anisotropy_z = payload.anisotropy.z
+    if anisotropy_x is None or anisotropy_y is None or anisotropy_z is None:
+        return _invalid_inference_run("invalid_anisotropy", "Anisotropy correction values are required."), None
+    if anisotropy_x <= 0 or anisotropy_y <= 0 or anisotropy_z <= 0:
+        return _invalid_inference_run("invalid_anisotropy", "Anisotropy correction values must be greater than 0."), None
+
+    route_mapping = {"full": "default", "streaming": "streaming"}
+    inference_route = route_mapping.get(payload.route)
+    if inference_route is None:
+        return _invalid_inference_run("invalid_route", "Inference route is invalid."), None
+
+    dtype_mapping = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
+    dtype = dtype_mapping.get(payload.precision)
+    if dtype is None:
+        return _invalid_inference_run("invalid_precision", "Precision is invalid."), None
+
+    shape = input_validation["shape"]
+    raw_shape = (int(shape["z"]), int(shape["y"]), int(shape["x"]))
+    crop_start_x = _coerce_start(payload.crop_bounds.x_start)
+    crop_start_y = _coerce_start(payload.crop_bounds.y_start)
+    crop_start_z = _coerce_start(payload.crop_bounds.z_start)
+    crop_end_x = _coerce_crop_end(payload.crop_bounds.x_end)
+    crop_end_y = _coerce_crop_end(payload.crop_bounds.y_end)
+    crop_end_z = _coerce_crop_end(payload.crop_bounds.z_end)
+
+    effective_crop_params = (
+        crop_start_z,
+        crop_end_z if crop_end_z > 0 else raw_shape[0],
+        crop_start_y,
+        crop_end_y if crop_end_y > 0 else raw_shape[1],
+        crop_start_x,
+        crop_end_x if crop_end_x > 0 else raw_shape[2],
+    )
+    try:
+        _validate_inference_crop_params(effective_crop_params, raw_shape)
+    except AssertionError as exc:
+        return _invalid_inference_run("invalid_crop", f"Crop parameters are invalid: {exc}"), None
+
+    file_start = _coerce_start(payload.file_range.start)
+    file_end = payload.file_range.end
+    file_count = int(input_validation["fileCount"])
+    effective_file_end = file_count if file_end is None else file_end
+    if file_start < 0 or file_start > file_count:
+        return _invalid_inference_run("invalid_file_range", "Start file must be between 0 and the number of files."), None
+    if file_end is not None and (file_end < 0 or file_end > file_count):
+        return _invalid_inference_run("invalid_file_range", "End file must be between 0 and the number of files."), None
+    if effective_file_end <= file_start:
+        return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
+
+    selected_input_paths = _selected_inference_tiff_paths(input_path, file_start, file_end)
+    if not selected_input_paths:
+        return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
+    selected_stems = [path.stem for path in selected_input_paths]
+
+    output_entry_count, output_preview = _summarize_directory(output_path)
+    if output_entry_count > 0 and not payload.overwrite:
+        return _overwrite_confirmation(output_path, output_entry_count, output_preview), None
+
+    return (
+        {
+            "valid": True,
+            "message": "Validation passed.",
+            "requiresOverwriteConfirmation": False,
+            "selectedFileCount": len(selected_stems),
+        },
+        {
+            "input_path": input_path,
+            "output_path": output_path,
+            "backbone_path": backbone_path,
+            "gpu_indices": requested_gpus,
+            "upsample_factor": float(upsample_factor),
+            "anisotropy_xyz": (
+                float(anisotropy_x),
+                float(anisotropy_y),
+                float(anisotropy_z),
+            ),
+            "file_start": file_start,
+            "file_end": file_end,
+            "crop_params": [
+                crop_start_z,
+                crop_end_z,
+                crop_start_y,
+                crop_end_y,
+                crop_start_x,
+                crop_end_x,
+            ],
+            "effective_crop_params": effective_crop_params,
+            "inference_route": inference_route,
+            "dtype": dtype,
+            "selected_file_count": len(selected_stems),
+            "selected_stems": selected_stems,
+            "overwrite": bool(payload.overwrite),
+        },
+    )
+
+
+def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
+    anisotropy_x, anisotropy_y, anisotropy_z = launch_config["anisotropy_xyz"]
+    crop_params = launch_config["crop_params"]
+    command = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nnodes=1",
+        f"--nproc_per_node={len(launch_config['gpu_indices'])}",
+        "scripts/inference/inference.py",
+        f"file_path={launch_config['input_path']}",
+        f"save_path={launch_config['output_path']}",
+        f"backbone_path={launch_config['backbone_path']}",
+        f"file_start={launch_config['file_start']}",
+        f"crop_params=[{crop_params[0]},{crop_params[1]},{crop_params[2]},{crop_params[3]},{crop_params[4]},{crop_params[5]}]",
+        f"upsample_factor={launch_config['upsample_factor']}",
+        f"isotropic_scale_factor=[{anisotropy_z},{anisotropy_y},{anisotropy_x}]",
+        f"inference_route={launch_config['inference_route']}",
+        f"dtype={launch_config['dtype']}",
+    ]
+    if launch_config["file_end"] is not None:
+        command.append(f"file_end={launch_config['file_end']}")
+    return command
+
+
+def _clean_process_line(raw_line: str) -> str:
+    cleaned = ANSI_ESCAPE_RE.sub("", raw_line.replace("\r", "\n")).strip()
+    return cleaned
+
+
+def _canonicalize_runtime_path(path: Path | str) -> str:
+    return os.path.realpath(os.fspath(path))
+
+
+def _expected_feature_paths(output_path: Path, selected_stems: list[str]) -> list[Path]:
+    return [output_path / stem / "lr_feats.npy" for stem in selected_stems]
+
+
+def _existing_expected_feature_paths(expected_feature_paths: list[Path]) -> list[Path]:
+    return [path for path in expected_feature_paths if path.is_file()]
+
+
+def _mark_job_halted_locked(job: jobs_api.JobState) -> None:
+    job.status = "halted"
+    job.current = "Stopped"
+    job.finished_at_ms = jobs_api._now_ms()
+    job.process = None
+
+
+def _update_job_progress_from_output(
+    job: jobs_api.JobState,
+    line: str,
+    expected_output_dirs: set[str],
+    expected_feature_paths: set[str],
+    saved_feature_paths: set[str],
+) -> None:
+    saved_match = SAVED_FEATURES_RE.search(line)
+    if saved_match:
+        saved_path_text = saved_match.group(1).strip()
+        saved_feature_key = _canonicalize_runtime_path(saved_path_text)
+        if saved_feature_key not in expected_feature_paths:
+            return
+        save_name = Path(saved_path_text).parent.name or saved_path_text
+        with job.lock:
+            if job.status != "running" or job.stop_requested or saved_feature_key in saved_feature_paths:
+                return
+            saved_feature_paths.add(saved_feature_key)
+            job.processed = min(job.total, len(saved_feature_paths)) if job.total > 0 else len(saved_feature_paths)
+            job.current = save_name
+        return
+
+    saving_match = SAVE_PATH_RE.search(line)
+    if saving_match:
+        save_path_text = saving_match.group(1).strip()
+        save_path_key = _canonicalize_runtime_path(save_path_text)
+        if save_path_key not in expected_output_dirs:
+            return
+        save_name = Path(save_path_text).name or save_path_text
+        with job.lock:
+            if job.status == "running" and not job.stop_requested:
+                job.current = f"Processing {save_name}"
+        return
+
+    if "Processing " in line and " files" in line:
+        with job.lock:
+            if job.status == "running" and not job.stop_requested:
+                job.current = "Running"
+
+
+def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    output_path = Path(launch_config["output_path"])
+    expected_feature_paths = _expected_feature_paths(output_path, launch_config["selected_stems"])
+    expected_feature_path_keys = {_canonicalize_runtime_path(path) for path in expected_feature_paths}
+    expected_output_dir_keys = {_canonicalize_runtime_path(path.parent) for path in expected_feature_paths}
+    saved_feature_paths: set[str] = set()
+
+    try:
+        with job.lock:
+            if job.stop_requested:
+                _mark_job_halted_locked(job)
+                return
+            job.current = "Preparing output folder"
+
+        if launch_config["overwrite"]:
+            output_path.mkdir(parents=True, exist_ok=True)
+            _clear_directory_contents(output_path)
+
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        with job.lock:
+            if job.stop_requested:
+                _mark_job_halted_locked(job)
+                return
+            job.current = "Starting"
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(index) for index in launch_config["gpu_indices"])
+        env["PYTHONUNBUFFERED"] = "1"
+        command = _build_inference_command(launch_config)
+        process = subprocess.Popen(
+            command,
+            cwd=str(get_repo_root()),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+
+        with job.lock:
+            job.process = process
+            if job.stop_requested:
+                job.current = "Stopping"
+
+        if job.stop_requested:
+            jobs_api.terminate_job_process(job, force=False)
+
+        last_output_line: str | None = None
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                for part in raw_line.split("\r"):
+                    line = _clean_process_line(part)
+                    if not line:
+                        continue
+                    last_output_line = line
+                    _update_job_progress_from_output(
+                        job,
+                        line,
+                        expected_output_dir_keys,
+                        expected_feature_path_keys,
+                        saved_feature_paths,
+                    )
+
+        return_code = process.wait()
+        existing_feature_paths = _existing_expected_feature_paths(expected_feature_paths)
+        saved_feature_count = len(existing_feature_paths)
+        with job.lock:
+            job.process = None
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+                job.finished_at_ms = jobs_api._now_ms()
+                return
+            if return_code == 0 and saved_feature_count == job.total:
+                job.status = "completed"
+                if job.total > 0:
+                    job.processed = saved_feature_count
+                job.current = "Done"
+                job.finished_at_ms = jobs_api._now_ms()
+                return
+            job.status = "failed"
+            job.current = "Failed"
+            if return_code == 0:
+                missing_stems = [
+                    path.parent.name for path in expected_feature_paths if not path.is_file()
+                ]
+                missing_preview = ", ".join(missing_stems[:3])
+                if len(missing_stems) > 3:
+                    missing_preview = f"{missing_preview}, ..."
+                missing_suffix = f" Missing outputs: {missing_preview}." if missing_preview else ""
+                job.error = f"Inference exited successfully but produced {saved_feature_count}/{job.total} expected lr_feats.npy files.{missing_suffix}"
+                job.processed = saved_feature_count
+            else:
+                job.error = last_output_line or f"Inference exited with code {return_code}."
+            job.finished_at_ms = jobs_api._now_ms()
+    except Exception as exc:
+        with job.lock:
+            job.process = None
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+            else:
+                job.status = "failed"
+                job.current = "Failed"
+                job.error = str(exc)
+            job.finished_at_ms = jobs_api._now_ms()
+
+
+def _launch_inference_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_inference_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"inference-job-{job.job_id}",
+    )
+    thread.start()
 
 
 def load_index_html(dist_dir: Path) -> str | None:
@@ -289,6 +769,55 @@ def inference_options() -> dict[str, object]:
 @api.post("/inference/validate-input")
 def validate_inference_input(payload: ValidateInferenceInputRequest) -> dict[str, Any]:
     return validate_inference_input_folder(payload.path)
+
+
+@api.post("/inference/run")
+def run_inference(
+    payload: RunInferenceRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_inference_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    output_path = Path(launch_config["output_path"])
+    label = f"Inference {Path(launch_config['input_path']).name}".strip()
+    save_dir = str(output_path.parent)
+    save_to = output_path.name or str(output_path)
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="inference",
+        status="running",
+        processed=0,
+        total=int(launch_config["selected_file_count"]),
+        current="Queued",
+        label=label,
+        save_dir=save_dir,
+        datasets=[{"source_dir": str(launch_config["input_path"]), "save_to": save_to}],
+        roi={
+            "x0": int(launch_config["effective_crop_params"][4]),
+            "x1": int(launch_config["effective_crop_params"][5]),
+            "y0": int(launch_config["effective_crop_params"][2]),
+            "y1": int(launch_config["effective_crop_params"][3]),
+            "z0": int(launch_config["effective_crop_params"][0]),
+            "z1": int(launch_config["effective_crop_params"][1]),
+        },
+        overwrite=bool(payload.overwrite),
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_inference_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_inference_run("submit_failed", f"Could not start inference: {exc}"),
+        }
+
+    return {"submitted": True, "jobId": job.job_id, "message": "Inference job submitted."}
 
 
 @api.get("/status/cpu")
