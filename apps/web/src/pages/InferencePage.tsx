@@ -7,6 +7,7 @@ import { useJobs } from "../components/JobsProvider";
 import { getClientId } from "../lib/clientId";
 
 type PickerTarget = "input" | "output";
+type NormalizationMode = "per_volume" | "global_auto" | "global_manual";
 
 type GpuOption = {
   index: number;
@@ -71,6 +72,9 @@ type InferenceRunRequest = {
     start: number | null;
     end: number | null;
   };
+  normalization_mode: NormalizationMode;
+  global_hist_min: number | null;
+  global_hist_max: number | null;
   overwrite: boolean;
 };
 
@@ -162,6 +166,9 @@ export default function InferencePage() {
   });
   const [anisotropy, setAnisotropy] = useState(DEFAULT_ANISOTROPY);
   const [fileRange, setFileRange] = useState({ start: "0", end: "" });
+  const [normalizationMode, setNormalizationMode] = useState<NormalizationMode>("per_volume");
+  const [globalHistMin, setGlobalHistMin] = useState("");
+  const [globalHistMax, setGlobalHistMax] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
   const [overwritePrompt, setOverwritePrompt] = useState<OverwritePromptState | null>(null);
@@ -242,7 +249,21 @@ export default function InferencePage() {
   useEffect(() => {
     setRunFeedback(null);
     setOverwritePrompt(null);
-  }, [inputPath, outputPath, backboneWeight, upsampleFactor, route, precision, cropBounds, anisotropy, fileRange, selectedGpuIndices]);
+  }, [
+    inputPath,
+    outputPath,
+    backboneWeight,
+    upsampleFactor,
+    route,
+    precision,
+    cropBounds,
+    anisotropy,
+    fileRange,
+    selectedGpuIndices,
+    normalizationMode,
+    globalHistMin,
+    globalHistMax,
+  ]);
 
   const pickerTitle = pickerTarget === "output" ? "Choose the output folder" : "Choose the input folder";
   const pickerInitialPath = pickerTarget === "output" ? outputPath : inputPath;
@@ -320,6 +341,9 @@ export default function InferencePage() {
         start: parseNullableInteger(fileRange.start),
         end: parseNullableInteger(fileRange.end),
       },
+      normalization_mode: normalizationMode,
+      global_hist_min: normalizationMode === "global_manual" ? parseNullableNumber(globalHistMin) : null,
+      global_hist_max: normalizationMode === "global_manual" ? parseNullableNumber(globalHistMax) : null,
       overwrite,
     };
   }
@@ -552,6 +576,39 @@ export default function InferencePage() {
                 <option value="float32">float32</option>
               </select>
             </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Normalization:</div>
+              <select
+                className="inferenceSelect"
+                value={normalizationMode}
+                onChange={(event) => setNormalizationMode(event.target.value as NormalizationMode)}
+              >
+                <option value="per_volume">Per-volume (default)</option>
+                <option value="global_auto">Global, compute now</option>
+                <option value="global_manual">Global, manual values</option>
+              </select>
+              {normalizationMode === "global_manual" ? (
+                <>
+                  <div className="inferenceInlineLabel">Hist min</div>
+                  <InferenceNumberInput value={globalHistMin} onChange={setGlobalHistMin} min={0} step="any" />
+                  <div className="inferenceInlineLabel">Hist max</div>
+                  <InferenceNumberInput value={globalHistMax} onChange={setGlobalHistMax} min={0} step="any" />
+                </>
+              ) : null}
+            </div>
+
+            {normalizationMode === "global_auto" ? (
+              <div className="sidebarHint">
+                Auto mode runs a normalization prepass on the selected files, writes `norm_per_vol.txt` to the output
+                folder, and then launches inference with those shared values.
+              </div>
+            ) : null}
+            {normalizationMode === "global_manual" ? (
+              <div className="sidebarHint">
+                Enter the `Global hist min` and `Global hist max` values from `norm_per_vol.txt`.
+              </div>
+            ) : null}
 
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">Upsample factor:</div>

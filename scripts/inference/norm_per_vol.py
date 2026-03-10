@@ -5,11 +5,13 @@ import numpy as np
 import torch
 import torch.amp
 import torch.distributed
+import torch.nn.functional as F
 from natsort import natsorted
 from skimage import io
 
 from spatialdino.config import CONFIG_PATH, parse_config
-from spatialdino.data.utils import validate_crop_params
+from spatialdino.data.utils import median_fill, validate_crop_params
+from spatialdino.utils.misc import make_3tuple
 
 
 torch.backends.cuda.matmul.allow_tf32 = (
@@ -25,11 +27,18 @@ logger = logging.getLogger("inference_3d")
 def main() -> None:
     config = parse_config(CONFIG_PATH.joinpath("inference.yaml"))  # type: ignore
     fnames = natsorted(list(Path(config.file_path).glob("*.tif")))  # type: ignore
+    file_start = int(getattr(config, "file_start", 0) or 0)
+    file_end = getattr(config, "file_end", None)
+    fnames = fnames[file_start:file_end]
     print(f"running norm_per_vol for {len(fnames)} files for {config.file_path}")
     vols = []
-    start_z, end_z, start_y, end_y, start_x, end_x = config.crop_params
+    crop_start_z, crop_end_z, crop_start_y, crop_end_y, crop_start_x, crop_end_x = config.crop_params
+    isotropic_scale_factor = make_3tuple(config.isotropic_scale_factor)
     for fname in fnames:
         raw_volume = io.imread(fname).astype(np.float32)
+        start_z, end_z = crop_start_z, crop_end_z
+        start_y, end_y = crop_start_y, crop_end_y
+        start_x, end_x = crop_start_x, crop_end_x
 
         end_z = end_z if end_z > 0 else raw_volume.shape[0]
         end_y = end_y if end_y > 0 else raw_volume.shape[1]
@@ -44,6 +53,20 @@ def main() -> None:
             start_y:end_y,
             start_x:end_x,
         ]
+
+        raw_volume = median_fill(raw_volume)
+        if isotropic_scale_factor != (1.0, 1.0, 1.0):
+            raw_volume = (
+                F.interpolate(
+                    torch.from_numpy(raw_volume).unsqueeze(0).unsqueeze(0),
+                    scale_factor=isotropic_scale_factor,
+                    mode="trilinear",
+                    align_corners=False,
+                )
+                .squeeze(0)
+                .squeeze(0)
+                .numpy()
+            )
 
         vols.append(raw_volume)
 

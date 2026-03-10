@@ -182,6 +182,9 @@ class RunInferenceRequest(BaseModel):
     crop_bounds: InferenceCropBoundsRequest = Field(default_factory=InferenceCropBoundsRequest)
     anisotropy: InferenceAxisRequest = Field(default_factory=InferenceAxisRequest)
     file_range: InferenceFileRangeRequest = Field(default_factory=InferenceFileRangeRequest)
+    normalization_mode: str = Field("per_volume", min_length=1)
+    global_hist_min: float | None = None
+    global_hist_max: float | None = None
     overwrite: bool = False
 
 
@@ -320,6 +323,16 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
 SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
 DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
+NORM_PER_VOL_MIN_RE = re.compile(r"^Global hist min:\s*(.+?)\s*$", re.MULTILINE)
+NORM_PER_VOL_MAX_RE = re.compile(r"^Global hist max:\s*(.+?)\s*$", re.MULTILINE)
+NORMALIZATION_MODE_PER_VOLUME = "per_volume"
+NORMALIZATION_MODE_GLOBAL_AUTO = "global_auto"
+NORMALIZATION_MODE_GLOBAL_MANUAL = "global_manual"
+NORMALIZATION_MODE_OPTIONS = {
+    NORMALIZATION_MODE_PER_VOLUME,
+    NORMALIZATION_MODE_GLOBAL_AUTO,
+    NORMALIZATION_MODE_GLOBAL_MANUAL,
+}
 
 
 def _invalid_inference_run(reason_code: str, message: str) -> dict[str, Any]:
@@ -349,6 +362,84 @@ def _coerce_start(value: int | None) -> int:
 
 def _coerce_crop_end(value: int | None) -> int:
     return 0 if value is None else value
+
+
+def _resolve_omp_num_threads() -> str:
+    omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
+    raw_omp_num_threads = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if raw_omp_num_threads:
+        try:
+            omp_num_threads = max(DEFAULT_INFERENCE_OMP_NUM_THREADS, int(raw_omp_num_threads))
+        except ValueError:
+            omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
+    return str(omp_num_threads)
+
+
+def _validate_normalization_payload(
+    payload: RunInferenceRequest,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    normalization_mode = payload.normalization_mode.strip() or NORMALIZATION_MODE_PER_VOLUME
+    if normalization_mode not in NORMALIZATION_MODE_OPTIONS:
+        return (
+            _invalid_inference_run("invalid_normalization_mode", "Normalization mode is invalid."),
+            None,
+        )
+
+    global_hist_min = payload.global_hist_min
+    global_hist_max = payload.global_hist_max
+
+    if normalization_mode == NORMALIZATION_MODE_PER_VOLUME:
+        if global_hist_min is not None or global_hist_max is not None:
+            return (
+                _invalid_inference_run(
+                    "unexpected_global_hist_values",
+                    "Global histogram values are only valid for manual global normalization.",
+                ),
+                None,
+            )
+        return None, {
+            "normalization_mode": normalization_mode,
+            "global_hist_min": None,
+            "global_hist_max": None,
+        }
+
+    if normalization_mode == NORMALIZATION_MODE_GLOBAL_AUTO:
+        if global_hist_min is not None or global_hist_max is not None:
+            return (
+                _invalid_inference_run(
+                    "unexpected_global_hist_values",
+                    "Do not provide manual global histogram values when auto-compute is selected.",
+                ),
+                None,
+            )
+        return None, {
+            "normalization_mode": normalization_mode,
+            "global_hist_min": None,
+            "global_hist_max": None,
+        }
+
+    if global_hist_min is None or global_hist_max is None:
+        return (
+            _invalid_inference_run(
+                "missing_global_hist_values",
+                "Manual global normalization requires both global histogram values.",
+            ),
+            None,
+        )
+    if global_hist_max <= global_hist_min:
+        return (
+            _invalid_inference_run(
+                "invalid_global_hist_values",
+                "Global histogram max must be greater than global histogram min.",
+            ),
+            None,
+        )
+
+    return None, {
+        "normalization_mode": normalization_mode,
+        "global_hist_min": float(global_hist_min),
+        "global_hist_max": float(global_hist_max),
+    }
 
 
 def _summarize_directory(path: Path) -> tuple[int, list[str]]:
@@ -445,6 +536,10 @@ def _build_inference_launch_config(
     if dtype is None:
         return _invalid_inference_run("invalid_precision", "Precision is invalid."), None
 
+    normalization_error, normalization_config = _validate_normalization_payload(payload)
+    if normalization_error is not None or normalization_config is None:
+        return normalization_error, None
+
     shape = input_validation["shape"]
     raw_shape = (int(shape["z"]), int(shape["y"]), int(shape["x"]))
     crop_start_x = _coerce_start(payload.crop_bounds.x_start)
@@ -521,6 +616,9 @@ def _build_inference_launch_config(
             "effective_crop_params": effective_crop_params,
             "inference_route": inference_route,
             "dtype": dtype,
+            "normalization_mode": normalization_config["normalization_mode"],
+            "global_hist_min": normalization_config["global_hist_min"],
+            "global_hist_max": normalization_config["global_hist_max"],
             "selected_file_count": len(selected_stems),
             "selected_stems": selected_stems,
             "overwrite": bool(payload.overwrite),
@@ -550,25 +648,64 @@ def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
         f"inference_route={launch_config['inference_route']}",
         f"dtype={launch_config['dtype']}",
     ]
+    global_hist_min = launch_config.get("global_hist_min")
+    global_hist_max = launch_config.get("global_hist_max")
+    if global_hist_min is not None and global_hist_max is not None:
+        command.append(f"global_hist_min={global_hist_min}")
+        command.append(f"global_hist_max={global_hist_max}")
+    if launch_config["file_end"] is not None:
+        command.append(f"file_end={launch_config['file_end']}")
+    return command
+
+
+def _build_norm_per_vol_command(launch_config: dict[str, Any]) -> list[str]:
+    anisotropy_x, anisotropy_y, anisotropy_z = launch_config["anisotropy_xyz"]
+    crop_params = launch_config["crop_params"]
+    command = [
+        sys.executable,
+        "scripts/inference/norm_per_vol.py",
+        f"file_path={launch_config['input_path']}",
+        f"save_path={launch_config['output_path']}",
+        f"file_start={launch_config['file_start']}",
+        f"crop_params=[{crop_params[0]},{crop_params[1]},{crop_params[2]},{crop_params[3]},{crop_params[4]},{crop_params[5]}]",
+        f"isotropic_scale_factor=[{anisotropy_z},{anisotropy_y},{anisotropy_x}]",
+    ]
     if launch_config["file_end"] is not None:
         command.append(f"file_end={launch_config['file_end']}")
     return command
 
 
 def _build_inference_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
-    omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
-    raw_omp_num_threads = os.environ.get("OMP_NUM_THREADS", "").strip()
-    if raw_omp_num_threads:
-        try:
-            omp_num_threads = max(DEFAULT_INFERENCE_OMP_NUM_THREADS, int(raw_omp_num_threads))
-        except ValueError:
-            omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
-
     return {
         "CUDA_VISIBLE_DEVICES": ",".join(str(index) for index in launch_config["gpu_indices"]),
-        "OMP_NUM_THREADS": str(omp_num_threads),
+        "OMP_NUM_THREADS": _resolve_omp_num_threads(),
         "PYTHONUNBUFFERED": "1",
     }
+
+
+def _build_norm_per_vol_command_env() -> dict[str, str]:
+    return {
+        "OMP_NUM_THREADS": _resolve_omp_num_threads(),
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _render_inference_preview_command(launch_config: dict[str, Any], *, cwd: Path) -> str:
+    normalization_mode = launch_config.get("normalization_mode")
+    inference_env = _build_inference_command_env(launch_config)
+
+    if normalization_mode != NORMALIZATION_MODE_GLOBAL_AUTO:
+        return _render_shell_command(_build_inference_command(launch_config), cwd=cwd, env=inference_env)
+
+    norm_command = _build_norm_per_vol_command(launch_config)
+    norm_env = _build_norm_per_vol_command_env()
+    norm_text = _render_shell_command(norm_command, env=norm_env)
+
+    preview_launch = dict(launch_config)
+    preview_launch["global_hist_min"] = "<computed-from-norm_per_vol>"
+    preview_launch["global_hist_max"] = "<computed-from-norm_per_vol>"
+    inference_text = _render_shell_command(_build_inference_command(preview_launch), env=inference_env)
+    return f"cd {shlex.quote(os.fspath(cwd))} && {norm_text} && \\\n{inference_text}"
 
 
 def _render_shell_command(
@@ -587,6 +724,27 @@ def _render_shell_command(
     return f"cd {shlex.quote(os.fspath(cwd))} && {command_text}"
 
 
+def _norm_per_vol_stats_path(output_path: Path) -> Path:
+    return output_path / "norm_per_vol.txt"
+
+
+def _parse_norm_per_vol_stats_text(text: str) -> tuple[float, float]:
+    min_match = NORM_PER_VOL_MIN_RE.search(text)
+    max_match = NORM_PER_VOL_MAX_RE.search(text)
+    if min_match is None or max_match is None:
+        raise ValueError("norm_per_vol.txt is missing global histogram values.")
+
+    global_hist_min = float(min_match.group(1))
+    global_hist_max = float(max_match.group(1))
+    if global_hist_max <= global_hist_min:
+        raise ValueError("norm_per_vol.txt contains invalid global histogram bounds.")
+    return global_hist_min, global_hist_max
+
+
+def _read_norm_per_vol_stats(path: Path) -> tuple[float, float]:
+    return _parse_norm_per_vol_stats_text(path.read_text(encoding="utf-8"))
+
+
 def _clean_process_line(raw_line: str) -> str:
     cleaned = ANSI_ESCAPE_RE.sub("", raw_line.replace("\r", "\n")).rstrip()
     return cleaned if cleaned.strip() else ""
@@ -602,6 +760,83 @@ def _expected_feature_paths(output_path: Path, selected_stems: list[str]) -> lis
 
 def _existing_expected_feature_paths(expected_feature_paths: list[Path]) -> list[Path]:
     return [path for path in expected_feature_paths if path.is_file()]
+
+
+def _run_norm_per_vol_prepass(
+    job: jobs_api.JobState,
+    launch_config: dict[str, Any],
+    *,
+    repo_root: Path,
+    log_handle: TextIO | None,
+) -> tuple[float, float] | None:
+    output_path = Path(launch_config["output_path"])
+    stats_path = _norm_per_vol_stats_path(output_path)
+    command = _build_norm_per_vol_command(launch_config)
+    command_env = _build_norm_per_vol_command_env()
+    command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
+
+    _append_job_log_line(job, f"[server] Global normalization prepass command: {command_text}", log_handle)
+
+    with job.lock:
+        if job.stop_requested:
+            _mark_job_halted_locked(job)
+            return None
+        job.current = "Computing normalization stats"
+
+    env = os.environ.copy()
+    env.update(command_env)
+    _append_job_log_line(job, "[server] Launching normalization prepass.", log_handle)
+    process = subprocess.Popen(
+        command,
+        cwd=str(repo_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+    with job.lock:
+        job.process = process
+        if job.stop_requested:
+            job.current = "Stopping"
+
+    if job.stop_requested:
+        jobs_api.terminate_job_process(job, force=False)
+
+    last_output_line: str | None = None
+    if process.stdout is not None:
+        for raw_line in process.stdout:
+            for part in raw_line.split("\r"):
+                line = _clean_process_line(part)
+                if not line:
+                    continue
+                last_output_line = line
+                _append_job_log_line(job, line, log_handle)
+
+    return_code = process.wait()
+    with job.lock:
+        job.process = None
+        if job.stop_requested:
+            _mark_job_halted_locked(job)
+            return None
+
+    if return_code != 0:
+        raise RuntimeError(last_output_line or f"norm_per_vol.py exited with code {return_code}.")
+    if not stats_path.is_file():
+        raise RuntimeError("Normalization prepass did not produce norm_per_vol.txt.")
+
+    global_hist_min, global_hist_max = _read_norm_per_vol_stats(stats_path)
+    _append_job_log_line(
+        job,
+        (
+            "[server] Parsed global normalization stats: "
+            f"global_hist_min={global_hist_min}, global_hist_max={global_hist_max}"
+        ),
+        log_handle,
+    )
+    return global_hist_min, global_hist_max
 
 
 def _mark_job_halted_locked(job: jobs_api.JobState) -> None:
@@ -693,17 +928,15 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
     expected_output_dir_keys = {_canonicalize_runtime_path(path.parent) for path in expected_feature_paths}
     saved_feature_paths: set[str] = set()
     repo_root = get_repo_root()
-    command_env = _build_inference_command_env(launch_config)
-    command = _build_inference_command(launch_config)
-    command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
     log_handle = _open_job_log(job)
+    preview_command_text = _render_inference_preview_command(launch_config, cwd=repo_root)
 
     with job.lock:
-        job.command = command_text
+        job.command = preview_command_text
         job.working_dir = str(repo_root)
 
     _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
-    _append_job_log_line(job, f"[server] Command: {command_text}", log_handle)
+    _append_job_log_line(job, f"[server] Planned command: {preview_command_text}", log_handle)
 
     try:
         with job.lock:
@@ -723,6 +956,24 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
 
         output_path.mkdir(parents=True, exist_ok=True)
 
+        if launch_config.get("normalization_mode") == NORMALIZATION_MODE_GLOBAL_AUTO:
+            prepass_result = _run_norm_per_vol_prepass(
+                job,
+                launch_config,
+                repo_root=repo_root,
+                log_handle=log_handle,
+            )
+            if prepass_result is None:
+                _append_job_log_line(job, "[server] Job stopped during normalization prepass.", log_handle)
+                return
+
+            global_hist_min, global_hist_max = prepass_result
+            launch_config["global_hist_min"] = global_hist_min
+            launch_config["global_hist_max"] = global_hist_max
+            launch_config["normalization_mode"] = NORMALIZATION_MODE_GLOBAL_MANUAL
+            with job.lock:
+                job.command = _render_inference_preview_command(launch_config, cwd=repo_root)
+
         with job.lock:
             if job.stop_requested:
                 _mark_job_halted_locked(job)
@@ -734,8 +985,15 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
             _append_job_log_line(job, "[server] Job stopped before process start.", log_handle)
             return
 
+        command_env = _build_inference_command_env(launch_config)
+        command = _build_inference_command(launch_config)
+        command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
+        with job.lock:
+            job.command = command_text
+
         env = os.environ.copy()
         env.update(command_env)
+        _append_job_log_line(job, f"[server] Command: {command_text}", log_handle)
         _append_job_log_line(job, "[server] Launching inference process.", log_handle)
         process = subprocess.Popen(
             command,
@@ -950,13 +1208,11 @@ def inference_command_preview(payload: RunInferenceRequest) -> dict[str, Any]:
         return validation
 
     repo_root = get_repo_root()
-    command = _build_inference_command(launch_config)
-    command_env = _build_inference_command_env(launch_config)
     overwrite_warning = launch_config.get("overwrite_warning")
     return {
         "valid": True,
         "workingDirectory": str(repo_root),
-        "command": _render_shell_command(command, cwd=repo_root, env=command_env),
+        "command": _render_inference_preview_command(launch_config, cwd=repo_root),
         "requiresOverwriteConfirmation": bool(overwrite_warning),
         "overwriteMessage": overwrite_warning["message"] if overwrite_warning else None,
     }

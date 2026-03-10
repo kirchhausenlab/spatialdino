@@ -1,6 +1,6 @@
 from skimage import io
 from functools import partial
-from typing import Any, Dict, Final, Iterable, List, Tuple, Union
+from typing import Any, Dict, Final, Iterable, List, Optional, Tuple, Union
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -18,6 +18,27 @@ from spatialdino.data.utils import (
 )
 from spatialdino.utils.misc import make_3tuple
 import torch.nn.functional as F
+
+
+def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
+    global_hist_min = getattr(config, "global_hist_min", None)
+    global_hist_max = getattr(config, "global_hist_max", None)
+
+    if global_hist_min is None and global_hist_max is None:
+        return None
+    if global_hist_min is None or global_hist_max is None:
+        raise ValueError(
+            "Both global_hist_min and global_hist_max must be provided together."
+        )
+
+    global_hist_min = float(global_hist_min)
+    global_hist_max = float(global_hist_max)
+    if global_hist_max <= global_hist_min:
+        raise ValueError(
+            "global_hist_max must be greater than global_hist_min."
+        )
+
+    return global_hist_min, global_hist_max
 
 
 class InferenceDataset(Dataset):
@@ -40,23 +61,44 @@ class InferenceDataset(Dataset):
         self.patch_size = make_3tuple(self.config.patch_size)
         self.stride = make_3tuple(self.config.stride)
         self.config.patch_size = self.patch_size
+        self.global_hist_bounds = get_global_hist_bounds(self.config)
         assert len(self.config.crop_params) == 6, (
             "crop_params must be a tuple of 6 elements in the form (z_start, z_end, y_start, y_end, x_start, x_end)"
         )
-        self.hist_normalize = HistogramNormalize(
-            b_min=None,
-            b_max=None,
-            clip=False,
-            max_val=65535,
-            threshold_divisor=1.0 / 5000,
-            channel_wise=False,
-        )
-        self.normalize_transform = MinMaxNormalize(channel_wise=False)
+        if self.global_hist_bounds is None:
+            self.hist_normalize = HistogramNormalize(
+                b_min=None,
+                b_max=None,
+                clip=False,
+                max_val=65535,
+                threshold_divisor=1.0 / 5000,
+                channel_wise=False,
+            )
+            self.normalize_transform = MinMaxNormalize(channel_wise=False)
+        else:
+            global_hist_min, global_hist_max = self.global_hist_bounds
+            self.hist_normalize = HistogramNormalize(
+                b_min=0.0,
+                b_max=1.0,
+                global_min=global_hist_min,
+                global_max=global_hist_max,
+                clip=True,
+                max_val=65535,
+                threshold_divisor=1.0 / 5000,
+                channel_wise=False,
+            )
+            self.normalize_transform = None
         self.crop_params = tuple(self.config.crop_params)
         self.save_raw = bool(getattr(self.config, "save_raw", True))
 
     def __len__(self) -> int:
         return len(self.fnames)
+
+    def _normalize_volume(self, volume: np.ndarray) -> np.ndarray:
+        volume = self.hist_normalize(volume)
+        if self.normalize_transform is not None:
+            volume = self.normalize_transform(volume)
+        return volume
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         file = self.fnames[idx]
@@ -111,7 +153,7 @@ class InferenceDataset(Dataset):
         else:
             volume = raw_volume.copy()
 
-        volume = self.normalize_transform(self.hist_normalize(volume))
+        volume = self._normalize_volume(volume)
 
         # Store original dimensions before inference padding
         original_dims = volume.shape[-3:]
@@ -196,6 +238,7 @@ class InferenceTransform:
         self.patch_size = make_3tuple(self.config.patch_size)
         self.stride = make_3tuple(self.config.stride)
         self.config.patch_size = self.patch_size
+        self.global_hist_bounds = get_global_hist_bounds(self.config)
         # Convert to float tuples for type compatibility
         upsample_factor_float = (
             float(self.upsample_factor[0]),
@@ -210,8 +253,6 @@ class InferenceTransform:
 
         self.transform_fn = partial(
             make_inference_transform,
-            # global_hist_max=self.global_hist_max,  # 495, # type: ignore
-            # global_hist_min=self.global_hist_min,  # 98, # type: ignore
             upsample_factor=upsample_factor_float,
             isotropic_scale_factor=isotropic_scale_factor_float,
             chunk_interpolate=True,
@@ -222,6 +263,7 @@ class InferenceTransform:
             mean=self.config.mean,
             std=self.config.std,
             dtype=self.config.dtype,
+            normalize=self.global_hist_bounds is None,
         )
 
     def __call__(

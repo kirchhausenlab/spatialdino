@@ -62,6 +62,16 @@ def main() -> None:
     fnames = fnames[file_start:file_end]
 
     logger.info(f"Processing {len(fnames)} files")
+    global_hist_min = getattr(config, "global_hist_min", None)
+    global_hist_max = getattr(config, "global_hist_max", None)
+    if global_hist_min is None and global_hist_max is None:
+        logger.info("Using default per-volume normalization")
+    else:
+        logger.info(
+            "Using global histogram normalization with global_hist_min=%s and global_hist_max=%s",
+            global_hist_min,
+            global_hist_max,
+        )
     dataset = InferenceDataset(config=config, fnames=fnames)
     inference_transform = InferenceTransform(config=config)
     dataloader = DataLoader(

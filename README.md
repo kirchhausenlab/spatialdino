@@ -113,6 +113,8 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
   file_start=$file_start \
   file_end=$file_end \
   save_raw=$save_raw \
+  global_hist_min=null \
+  global_hist_max=null \
   crop_params="[0,0,0,0,0,0]"
 ```
 
@@ -122,6 +124,7 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
 - **`file_start` / `file_end`**: File slice passed to `fnames[file_start:file_end]` (`file_end` is exclusive)
 - **`save_path`**: Path to save results
 - **`save_raw`**: Whether to save `volume_unnorm.tif` as a direct copy of the original input TIFF
+- **`global_hist_min` / `global_hist_max`**: Optional global histogram bounds. If both are provided, inference uses those shared values for all volumes instead of the default per-volume normalization. These correspond to the values written by `scripts/inference/norm_per_vol.py`.
 - **`OMP_NUM_THREADS`**: Number of threads to use
 - **`CUDA_VISIBLE_DEVICES`**: List of GPUs to use
 - **`NUM_PROC_PER_NODE`**: Number of processes/GPUs per node

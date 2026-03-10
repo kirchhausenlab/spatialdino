@@ -356,6 +356,91 @@ class AppTests(unittest.TestCase):
         self.assertIn("inference_route=streaming", response["command"])
         self.assertIn("dtype=bf16", response["command"])
 
+    def test_inference_command_preview_includes_manual_global_norm_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                normalization_mode="global_manual",
+                global_hist_min=12.5,
+                global_hist_max=98.5,
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.inference_command_preview(payload)
+
+        self.assertEqual(response["valid"], True)
+        self.assertIn("global_hist_min=12.5", response["command"])
+        self.assertIn("global_hist_max=98.5", response["command"])
+
+    def test_inference_command_preview_for_auto_global_norm_shows_two_stage_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                normalization_mode="global_auto",
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.inference_command_preview(payload)
+
+        self.assertEqual(response["valid"], True)
+        self.assertIn("scripts/inference/norm_per_vol.py", response["command"])
+        self.assertIn("global_hist_min=<computed-from-norm_per_vol>", response["command"])
+        self.assertIn("global_hist_max=<computed-from-norm_per_vol>", response["command"])
+
     def test_inference_command_preview_warns_when_output_is_nonempty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -401,6 +486,48 @@ class AppTests(unittest.TestCase):
         )
         self.assertIn("CUDA_VISIBLE_DEVICES=0", response["command"])
         self.assertIn("PYTHONUNBUFFERED=1", response["command"])
+
+    def test_run_inference_rejects_manual_global_norm_without_both_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 1},
+                normalization_mode="global_manual",
+                global_hist_min=12.5,
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], False)
+        self.assertEqual(response["reasonCode"], "missing_global_hist_values")
 
     def test_build_inference_command_env_preserves_higher_omp_setting(self) -> None:
         with patch.dict(os.environ, {"OMP_NUM_THREADS": "16"}, clear=False):
@@ -585,6 +712,111 @@ class AppTests(unittest.TestCase):
             log_text = Path(job.log_path).read_text(encoding="utf-8")
             self.assertIn("[server] Command:", log_text)
             self.assertIn("0/1 expected lr_feats.npy files", log_text)
+
+    def test_run_inference_job_auto_global_norm_runs_prepass_then_inference(self) -> None:
+        class FakeProcess:
+            def __init__(self, stdout_lines: tuple[str, ...], return_code: int, on_wait=None) -> None:
+                self.stdout = iter(stdout_lines)
+                self.pid = 789
+                self._return_code = return_code
+                self._on_wait = on_wait
+
+            def wait(self) -> int:
+                if self._on_wait is not None:
+                    self._on_wait()
+                return self._return_code
+
+            def poll(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+
+            job = jobs_api.JobState(
+                job_id="job-auto-global",
+                owner_client_id="client-1234",
+                type="inference",
+                status="running",
+                total=1,
+            )
+            launch_config = {
+                "input_path": input_dir,
+                "output_path": output_dir,
+                "backbone_path": root / "models" / "backbone.pth",
+                "selected_stems": ["stack0001"],
+                "selected_file_count": 1,
+                "overwrite": False,
+                "gpu_indices": [0],
+                "file_start": 0,
+                "file_end": 1,
+                "crop_params": (0, 2, 0, 3, 0, 4),
+                "effective_crop_params": (0, 2, 0, 3, 0, 4),
+                "upsample_factor": 1.0,
+                "anisotropy_xyz": (1.0, 1.0, 1.0),
+                "inference_route": "streaming",
+                "dtype": "bf16",
+                "normalization_mode": "global_auto",
+                "global_hist_min": None,
+                "global_hist_max": None,
+            }
+            popen_calls: list[list[str]] = []
+
+            def write_norm_stats() -> None:
+                (output_dir / "norm_per_vol.txt").write_text(
+                    "Global hist min: 12.0\nGlobal hist max: 34.0",
+                    encoding="utf-8",
+                )
+
+            def write_inference_output() -> None:
+                feats_path = output_dir / "stack0001" / "lr_feats.npy"
+                feats_path.parent.mkdir(parents=True, exist_ok=True)
+                feats_path.write_bytes(b"")
+
+            def popen_side_effect(command, **kwargs):
+                popen_calls.append(list(command))
+                if len(popen_calls) == 1:
+                    return FakeProcess(
+                        ("running norm_per_vol for 1 files\n", "saved norm_per_vol to output/norm_per_vol.txt\n"),
+                        0,
+                        on_wait=write_norm_stats,
+                    )
+                return FakeProcess(
+                    (
+                        f"Saving to {output_dir / 'stack0001'}\n",
+                        f"Saved features to {output_dir / 'stack0001' / 'lr_feats.npy'}\n",
+                    ),
+                    0,
+                    on_wait=write_inference_output,
+                )
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch("spatialdino_server.app.subprocess.Popen", side_effect=popen_side_effect),
+            ):
+                app_module._run_inference_job(job, launch_config)
+
+            self.assertEqual(len(popen_calls), 2)
+            self.assertIn("scripts/inference/norm_per_vol.py", popen_calls[0])
+            self.assertIn("global_hist_min=12.0", popen_calls[1])
+            self.assertIn("global_hist_max=34.0", popen_calls[1])
+
+            with job.lock:
+                self.assertEqual(job.status, "completed")
+                self.assertEqual(job.current, "Done")
+                self.assertEqual(job.processed, 1)
+                self.assertIsNotNone(job.command)
+                self.assertIn("global_hist_min=12.0", job.command)
+                self.assertIn("global_hist_max=34.0", job.command)
+
+            log_text = Path(job.log_path).read_text(encoding="utf-8")
+            self.assertIn("Global normalization prepass command", log_text)
+            self.assertIn("Parsed global normalization stats: global_hist_min=12.0, global_hist_max=34.0", log_text)
+            self.assertIn("[server] Inference completed successfully.", log_text)
 
     def test_run_inference_job_persists_process_output_tail(self) -> None:
         class FakeProcess:
