@@ -120,9 +120,32 @@ type InferenceCommandPreviewFailure = {
 
 type InferenceCommandPreviewResponse = InferenceCommandPreviewSuccess | InferenceCommandPreviewFailure;
 
+type DownloadBackboneSuccessResponse = {
+  downloaded: true;
+  message: string;
+  targetPath: string;
+  backboneWeight: string;
+  alreadyExisted: boolean;
+};
+
+type DownloadBackboneOverwriteResponse = {
+  downloaded: false;
+  requiresOverwriteConfirmation: true;
+  message: string;
+  targetPath: string;
+  backboneWeight: string;
+};
+
+type DownloadBackboneResponse = DownloadBackboneSuccessResponse | DownloadBackboneOverwriteResponse;
+
 type RunFeedback = {
   tone: "neutral" | "success" | "error";
   message: string;
+};
+
+type DownloadBackboneOverwritePromptState = {
+  message: string;
+  targetPath: string;
 };
 
 type OverwritePromptState = {
@@ -138,6 +161,7 @@ const DEFAULT_ANISOTROPY = { x: "1.0", y: "1.0", z: "1.0" };
 
 export default function InferencePage() {
   const jobs = useJobs();
+  const optionsRequestIdRef = useRef(0);
   const validationRequestIdRef = useRef(0);
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
   const [inputPath, setInputPath] = useState<string | null>(null);
@@ -172,43 +196,57 @@ export default function InferencePage() {
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
   const [overwritePrompt, setOverwritePrompt] = useState<OverwritePromptState | null>(null);
+  const [downloadingWeights, setDownloadingWeights] = useState(false);
+  const [downloadWeightsFeedback, setDownloadWeightsFeedback] = useState<RunFeedback | null>(null);
+  const [downloadWeightsOverwritePrompt, setDownloadWeightsOverwritePrompt] =
+    useState<DownloadBackboneOverwritePromptState | null>(null);
   const [commandPreviewOpen, setCommandPreviewOpen] = useState(false);
   const [commandPreviewLoading, setCommandPreviewLoading] = useState(false);
   const [commandPreview, setCommandPreview] = useState<InferenceCommandPreviewSuccess | null>(null);
   const [commandPreviewError, setCommandPreviewError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  async function loadOptions(preferredBackboneWeight?: string) {
+    const requestId = optionsRequestIdRef.current + 1;
+    optionsRequestIdRef.current = requestId;
+    setOptionsLoading(true);
+    setOptionsError(null);
 
-    async function loadOptions() {
-      setOptionsLoading(true);
-      setOptionsError(null);
-      try {
-        const resp = await fetch("/api/inference/options", { headers: { Accept: "application/json" } });
-        if (!resp.ok) {
-          throw new Error(`Inference options failed: ${resp.status} ${resp.statusText}`);
+    try {
+      const resp = await fetch("/api/inference/options", { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error(`Inference options failed: ${resp.status} ${resp.statusText}`);
+      }
+      const json = (await resp.json()) as InferenceOptionsResponse;
+      if (requestId !== optionsRequestIdRef.current) return;
+
+      setAvailableGpus(json.gpus);
+      setGpuError(json.gpuError?.trim() || null);
+      setWeights(json.backboneWeights);
+      setBackboneWeight((current) => {
+        if (preferredBackboneWeight && json.backboneWeights.some((weight) => weight.value === preferredBackboneWeight)) {
+          return preferredBackboneWeight;
         }
-        const json = (await resp.json()) as InferenceOptionsResponse;
-        if (cancelled) return;
-        setAvailableGpus(json.gpus);
-        setGpuError(json.gpuError?.trim() || null);
-        setWeights(json.backboneWeights);
-        setBackboneWeight((current) => current || json.backboneWeights[0]?.value || "");
-      } catch (error) {
-        if (cancelled) return;
-        const message = error instanceof Error ? error.message : "Unknown error";
-        setOptionsError(message);
-      } finally {
-        if (!cancelled) {
-          setOptionsLoading(false);
+        if (current && json.backboneWeights.some((weight) => weight.value === current)) {
+          return current;
         }
+        return json.backboneWeights[0]?.value || "";
+      });
+    } catch (error) {
+      if (requestId !== optionsRequestIdRef.current) return;
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setOptionsError(message);
+    } finally {
+      if (requestId === optionsRequestIdRef.current) {
+        setOptionsLoading(false);
       }
     }
+  }
 
+  useEffect(() => {
     void loadOptions();
 
     return () => {
-      cancelled = true;
+      optionsRequestIdRef.current += 1;
     };
   }, []);
 
@@ -457,6 +495,57 @@ export default function InferencePage() {
     }
   }
 
+  async function downloadBackboneWeights(overwrite: boolean) {
+    setDownloadingWeights(true);
+    setDownloadWeightsFeedback(null);
+
+    try {
+      const resp = await fetch("/api/inference/download-backbone", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ overwrite }),
+      });
+
+      if (!resp.ok) {
+        const json = await safeJson(resp);
+        const detail =
+          json && typeof json === "object" && "detail" in json && typeof json.detail === "string" ? json.detail : null;
+        throw new Error(detail ? detail : `Download weights failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      const json = (await resp.json()) as DownloadBackboneResponse;
+      if (json.downloaded) {
+        setDownloadWeightsOverwritePrompt(null);
+        setDownloadWeightsFeedback({ tone: "success", message: json.message });
+        await loadOptions(json.backboneWeight);
+        return;
+      }
+
+      setDownloadWeightsOverwritePrompt({
+        message: json.message,
+        targetPath: json.targetPath,
+      });
+      setBackboneWeight((current) => current || json.backboneWeight);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setDownloadWeightsFeedback({ tone: "error", message });
+    } finally {
+      setDownloadingWeights(false);
+    }
+  }
+
+  async function handleDownloadWeights() {
+    await downloadBackboneWeights(false);
+  }
+
+  async function handleConfirmDownloadWeightsOverwrite() {
+    if (!downloadWeightsOverwritePrompt) return;
+    await downloadBackboneWeights(true);
+  }
+
   return (
     <div className="preprocessPage">
       <section className="validationCard inferenceIntroCard" aria-label="Inference overview">
@@ -551,8 +640,13 @@ export default function InferencePage() {
                   ))
                 )}
               </select>
-              <button type="button" className="pickerSecondaryButton" onClick={() => {}}>
-                Download weights
+              <button
+                type="button"
+                className="pickerSecondaryButton"
+                onClick={() => void handleDownloadWeights()}
+                disabled={downloadingWeights}
+              >
+                {downloadingWeights ? "Downloading..." : "Download weights"}
               </button>
               <div className="inferenceInlineLabel isStrong">Route:</div>
               <select
@@ -574,6 +668,10 @@ export default function InferencePage() {
                 <option value="float32">float32</option>
               </select>
             </div>
+
+            {downloadWeightsFeedback ? (
+              <ValidationMessage tone={downloadWeightsFeedback.tone}>{downloadWeightsFeedback.message}</ValidationMessage>
+            ) : null}
 
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">Normalization:</div>
@@ -788,6 +886,47 @@ export default function InferencePage() {
               <code>{commandPreview.command}</code>
             </pre>
           </>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={downloadWeightsOverwritePrompt !== null}
+        title="Overwrite weights file?"
+        onClose={() => {
+          if (downloadingWeights) return;
+          setDownloadWeightsOverwritePrompt(null);
+        }}
+        footer={
+          <>
+            <button
+              type="button"
+              className="pickerSecondaryButton"
+              onClick={() => setDownloadWeightsOverwritePrompt(null)}
+              disabled={downloadingWeights}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              onClick={() => void handleConfirmDownloadWeightsOverwrite()}
+              disabled={downloadingWeights}
+            >
+              {downloadingWeights ? "Downloading..." : "Overwrite and download"}
+            </button>
+          </>
+        }
+      >
+        {downloadWeightsOverwritePrompt ? (
+          <div className="preprocessOverwriteBody">
+            <div className="preprocessOverwriteHint">{downloadWeightsOverwritePrompt.message}</div>
+            <div className="datasetPath">
+              <div className="datasetPathValue">{downloadWeightsOverwritePrompt.targetPath}</div>
+            </div>
+            <div className="sidebarHint">
+              Overwriting will replace the current `backbone.pth` in the weights folder.
+            </div>
+          </div>
         ) : null}
       </Modal>
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import unittest
@@ -28,6 +29,15 @@ def make_request(client_host: str) -> Request:
             "http_version": "1.1",
         }
     )
+
+
+class FakeUrlopenResponse(io.BytesIO):
+    def __enter__(self) -> FakeUrlopenResponse:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
 
 
 class AppTests(unittest.TestCase):
@@ -134,6 +144,71 @@ class AppTests(unittest.TestCase):
         )
         self.assertIsNone(payload["gpuError"])
         self.assertEqual(payload["nvidiaSmiAvailable"], True)
+
+    def test_download_inference_backbone_creates_file_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            target_path = repo_root / "models" / "backbone.pth"
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app.urllib.request.urlopen",
+                    return_value=FakeUrlopenResponse(b"downloaded-weights"),
+                ) as urlopen,
+            ):
+                response = app_module.download_inference_backbone(app_module.DownloadBackboneWeightsRequest())
+
+            self.assertEqual(response["downloaded"], True)
+            self.assertEqual(response["backboneWeight"], "models/backbone.pth")
+            self.assertEqual(response["targetPath"], str(target_path))
+            self.assertEqual(response["alreadyExisted"], False)
+            self.assertEqual(target_path.read_bytes(), b"downloaded-weights")
+            urlopen.assert_called_once_with(app_module.DEFAULT_INFERENCE_BACKBONE_URL, timeout=60)
+
+    def test_download_inference_backbone_requests_overwrite_when_file_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            models_dir = repo_root / "models"
+            models_dir.mkdir()
+            target_path = models_dir / "backbone.pth"
+            target_path.write_bytes(b"existing-weights")
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch("spatialdino_server.app.urllib.request.urlopen") as urlopen,
+            ):
+                response = app_module.download_inference_backbone(app_module.DownloadBackboneWeightsRequest())
+
+            self.assertEqual(response["downloaded"], False)
+            self.assertEqual(response["requiresOverwriteConfirmation"], True)
+            self.assertEqual(response["targetPath"], str(target_path))
+            self.assertEqual(response["backboneWeight"], "models/backbone.pth")
+            self.assertEqual(target_path.read_bytes(), b"existing-weights")
+            urlopen.assert_not_called()
+
+    def test_download_inference_backbone_overwrites_existing_file_when_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            models_dir = repo_root / "models"
+            models_dir.mkdir()
+            target_path = models_dir / "backbone.pth"
+            target_path.write_bytes(b"existing-weights")
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app.urllib.request.urlopen",
+                    return_value=FakeUrlopenResponse(b"replacement-weights"),
+                ),
+            ):
+                response = app_module.download_inference_backbone(
+                    app_module.DownloadBackboneWeightsRequest(overwrite=True)
+                )
+
+            self.assertEqual(response["downloaded"], True)
+            self.assertEqual(response["alreadyExisted"], True)
+            self.assertEqual(target_path.read_bytes(), b"replacement-weights")
 
     def test_validate_inference_input_folder_accepts_uniform_3d_tiffs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

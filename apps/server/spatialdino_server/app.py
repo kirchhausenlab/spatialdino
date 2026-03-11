@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import threading
 from typing import Any, TextIO
+import urllib.request
 import uuid
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
@@ -28,6 +29,12 @@ from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 
 
 JOB_LOGS_DIRNAME = ".spatialdino_job_logs"
+DEFAULT_INFERENCE_BACKBONE_FILENAME = "backbone.pth"
+DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH = f"models/{DEFAULT_INFERENCE_BACKBONE_FILENAME}"
+DEFAULT_INFERENCE_BACKBONE_URL = (
+    "https://spatialdino.s3.us-east-1.amazonaws.com/models/spatial_dino/step%3D244999/backbone.pth"
+)
+_default_inference_backbone_download_lock = threading.Lock()
 
 
 def get_repo_root() -> Path:
@@ -130,7 +137,7 @@ def classify_client_session(client_host: str | None) -> str:
 
 def list_backbone_weights() -> list[dict[str, str]]:
     repo_root = get_repo_root()
-    models_dir = (repo_root / "models").resolve()
+    models_dir = get_backbone_weights_dir()
     if not models_dir.is_dir():
         return []
 
@@ -147,12 +154,35 @@ def list_backbone_weights() -> list[dict[str, str]]:
     ]
 
 
+def get_backbone_weights_dir() -> Path:
+    return (get_repo_root() / "models").resolve()
+
+
+def get_default_inference_backbone_path() -> Path:
+    return (get_backbone_weights_dir() / DEFAULT_INFERENCE_BACKBONE_FILENAME).resolve()
+
+
+def _download_url_to_file(url: str, target_path: Path) -> None:
+    temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, temp_path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        os.replace(temp_path, target_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 class ValidateInferenceInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
 class ValidateProcessFeaturesInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
+
+
+class DownloadBackboneWeightsRequest(BaseModel):
+    overwrite: bool = False
 
 
 class InferenceAxisRequest(BaseModel):
@@ -1552,6 +1582,51 @@ def inference_options() -> dict[str, object]:
         "gpuError": gpu_status.get("error"),
         "nvidiaSmiAvailable": bool(gpu_status.get("nvidiaSmiAvailable")),
         "backboneWeights": list_backbone_weights(),
+    }
+
+
+@api.post("/inference/download-backbone")
+def download_inference_backbone(payload: DownloadBackboneWeightsRequest) -> dict[str, Any]:
+    repo_root = get_repo_root()
+    models_dir = get_backbone_weights_dir()
+    target_path = get_default_inference_backbone_path()
+
+    if not _is_relative_to(models_dir, repo_root) or not _is_relative_to(target_path, repo_root):
+        raise HTTPException(status_code=500, detail="Backbone weights path must stay inside the repo root.")
+
+    with _default_inference_backbone_download_lock:
+        if models_dir.exists() and not models_dir.is_dir():
+            raise HTTPException(status_code=500, detail="Backbone weights directory is not a folder.")
+
+        already_exists = target_path.exists()
+        if already_exists:
+            if not target_path.is_file():
+                raise HTTPException(status_code=500, detail="Backbone weights target exists but is not a file.")
+            if not payload.overwrite:
+                return {
+                    "downloaded": False,
+                    "requiresOverwriteConfirmation": True,
+                    "message": "backbone.pth already exists. Do you want to overwrite it?",
+                    "targetPath": str(target_path),
+                    "backboneWeight": DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH,
+                }
+
+        try:
+            models_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create the weights directory: {exc}") from exc
+
+        try:
+            _download_url_to_file(DEFAULT_INFERENCE_BACKBONE_URL, target_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not download backbone weights: {exc}") from exc
+
+    return {
+        "downloaded": True,
+        "message": f"Saved backbone weights to {target_path}.",
+        "targetPath": str(target_path),
+        "backboneWeight": DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH,
+        "alreadyExisted": already_exists,
     }
 
 
