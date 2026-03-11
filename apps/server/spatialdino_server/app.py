@@ -480,8 +480,21 @@ def _coerce_start(value: int | None) -> int:
     return 0 if value is None else value
 
 
-def _coerce_crop_end(value: int | None) -> int:
-    return 0 if value is None else value
+def _coerce_script_crop_end(value: int | None) -> int:
+    return 0 if value is None else value + 1
+
+
+def _coerce_script_file_end(value: int | None) -> int | None:
+    return None if value is None else value + 1
+
+
+def _validate_inclusive_axis_bounds(start: int, end: int | None, *, size: int, axis_label: str) -> str | None:
+    last_index = size - 1
+    if start < 0 or start > last_index:
+        return f"{axis_label} start must be between 0 and {last_index}."
+    if end is not None and (end < 0 or end > last_index):
+        return f"{axis_label} end must be between 0 and {last_index}."
+    return None
 
 
 def _build_process_features_launch_config(
@@ -758,9 +771,30 @@ def _build_inference_launch_config(
     crop_start_x = _coerce_start(payload.crop_bounds.x_start)
     crop_start_y = _coerce_start(payload.crop_bounds.y_start)
     crop_start_z = _coerce_start(payload.crop_bounds.z_start)
-    crop_end_x = _coerce_crop_end(payload.crop_bounds.x_end)
-    crop_end_y = _coerce_crop_end(payload.crop_bounds.y_end)
-    crop_end_z = _coerce_crop_end(payload.crop_bounds.z_end)
+    crop_end_x_inclusive = payload.crop_bounds.x_end
+    crop_end_y_inclusive = payload.crop_bounds.y_end
+    crop_end_z_inclusive = payload.crop_bounds.z_end
+    crop_error = _validate_inclusive_axis_bounds(crop_start_x, crop_end_x_inclusive, size=raw_shape[2], axis_label="X")
+    if crop_error is None:
+        crop_error = _validate_inclusive_axis_bounds(
+            crop_start_y,
+            crop_end_y_inclusive,
+            size=raw_shape[1],
+            axis_label="Y",
+        )
+    if crop_error is None:
+        crop_error = _validate_inclusive_axis_bounds(
+            crop_start_z,
+            crop_end_z_inclusive,
+            size=raw_shape[0],
+            axis_label="Z",
+        )
+    if crop_error is not None:
+        return _invalid_inference_run("invalid_crop", f"Crop parameters are invalid: {crop_error}"), None
+
+    crop_end_x = _coerce_script_crop_end(crop_end_x_inclusive)
+    crop_end_y = _coerce_script_crop_end(crop_end_y_inclusive)
+    crop_end_z = _coerce_script_crop_end(crop_end_z_inclusive)
 
     effective_crop_params = (
         crop_start_z,
@@ -776,17 +810,24 @@ def _build_inference_launch_config(
         return _invalid_inference_run("invalid_crop", f"Crop parameters are invalid: {exc}"), None
 
     file_start = _coerce_start(payload.file_range.start)
-    file_end = payload.file_range.end
     file_count = int(input_validation["fileCount"])
+    file_end_inclusive = payload.file_range.end
+    if file_start < 0 or file_start >= file_count:
+        return _invalid_inference_run(
+            "invalid_file_range",
+            f"Start file must be between 0 and {file_count - 1}.",
+        ), None
+    if file_end_inclusive is not None and (file_end_inclusive < 0 or file_end_inclusive >= file_count):
+        return _invalid_inference_run(
+            "invalid_file_range",
+            f"End file must be between 0 and {file_count - 1}.",
+        ), None
+    file_end = _coerce_script_file_end(file_end_inclusive)
     effective_file_end = file_count if file_end is None else file_end
-    if file_start < 0 or file_start > file_count:
-        return _invalid_inference_run("invalid_file_range", "Start file must be between 0 and the number of files."), None
-    if file_end is not None and (file_end < 0 or file_end > file_count):
-        return _invalid_inference_run("invalid_file_range", "End file must be between 0 and the number of files."), None
     if effective_file_end <= file_start:
         return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
 
-    selected_input_paths = _selected_inference_tiff_paths(input_path, file_start, file_end)
+    selected_input_paths = _selected_inference_tiff_paths(input_path, file_start, effective_file_end)
     if not selected_input_paths:
         return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
     selected_stems = [path.stem for path in selected_input_paths]

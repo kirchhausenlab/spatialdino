@@ -557,9 +557,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
@@ -601,9 +601,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
@@ -630,6 +630,51 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.total, 1)
             self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "output"}])
 
+    def test_build_inference_launch_config_converts_inclusive_ui_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 1, "x_end": 2, "y_start": 0, "y_end": 1, "z_start": 0, "z_end": 0},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 0},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_inference_launch_config(
+                    payload,
+                    require_overwrite_confirmation=False,
+                )
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        self.assertEqual(launch_config["file_end"], 1)
+        self.assertEqual(launch_config["crop_params"], [0, 1, 0, 2, 1, 3])
+        self.assertEqual(launch_config["effective_crop_params"], (0, 1, 0, 2, 1, 3))
+
     def test_inference_command_preview_returns_shell_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -650,9 +695,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 2.0, "z": 3.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
@@ -703,9 +748,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 normalization_mode="global_manual",
                 global_hist_min=12.5,
                 global_hist_max=98.5,
@@ -746,9 +791,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 normalization_mode="global_auto",
                 overwrite=False,
             )
@@ -789,9 +834,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
@@ -834,9 +879,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 0, "end": 1},
+                file_range={"start": 0, "end": 0},
                 normalization_mode="global_manual",
                 global_hist_min=12.5,
                 overwrite=False,
@@ -879,6 +924,7 @@ class AppTests(unittest.TestCase):
             output_dir.mkdir()
             models_dir.mkdir()
             tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(input_dir / "stack0002.tif", np.zeros((2, 3, 4), dtype=np.uint8))
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -889,9 +935,9 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 4, "y_start": 0, "y_end": 3, "z_start": 0, "z_end": 2},
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
-                file_range={"start": 1, "end": 1},
+                file_range={"start": 1, "end": 0},
                 overwrite=False,
             )
 

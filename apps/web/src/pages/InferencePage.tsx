@@ -272,14 +272,14 @@ export default function InferencePage() {
 
     setUpsampleFactor(DEFAULT_UPSAMPLE_FACTOR);
     setAnisotropy(DEFAULT_ANISOTROPY);
-    setFileRange({ start: "0", end: String(validationResult.fileCount) });
+    setFileRange({ start: "0", end: formatInclusiveEndDefault(validationResult.fileCount) });
     setCropBounds({
       xStart: "0",
-      xEnd: String(validationResult.shape.x),
+      xEnd: formatInclusiveEndDefault(validationResult.shape.x),
       yStart: "0",
-      yEnd: String(validationResult.shape.y),
+      yEnd: formatInclusiveEndDefault(validationResult.shape.y),
       zStart: "0",
-      zEnd: String(validationResult.shape.z),
+      zEnd: formatInclusiveEndDefault(validationResult.shape.z),
     });
     setAppliedDefaultsKey(key);
   }, [appliedDefaultsKey, inputPath, validationResult]);
@@ -307,6 +307,92 @@ export default function InferencePage() {
   const pickerInitialPath = pickerTarget === "output" ? outputPath : inputPath;
   const validatedDataset = validationResult?.valid ? validationResult : null;
   const parametersVisible = validatedDataset !== null;
+  const maxFileIndex = validatedDataset ? Math.max(validatedDataset.fileCount - 1, 0) : undefined;
+  const maxCropBounds = validatedDataset
+    ? {
+        x: Math.max(validatedDataset.shape.x - 1, 0),
+        y: Math.max(validatedDataset.shape.y - 1, 0),
+        z: Math.max(validatedDataset.shape.z - 1, 0),
+      }
+    : null;
+  const parameterMessages: ReactNode[] = [];
+
+  if (optionsError) {
+    parameterMessages.push(
+      <ValidationMessage key="options-error" tone="error">
+        {optionsError}
+      </ValidationMessage>,
+    );
+  } else if (optionsLoading) {
+    parameterMessages.push(
+      <div key="options-loading" className="sidebarHint">
+        Loading inference options...
+      </div>,
+    );
+  }
+
+  if (!optionsLoading && availableGpus.length === 0 && !gpuError) {
+    parameterMessages.push(
+      <div key="gpu-empty" className="sidebarHint">
+        No NVIDIA GPUs detected.
+      </div>,
+    );
+  }
+
+  if (gpuError) {
+    parameterMessages.push(
+      <div key="gpu-error" className="sidebarError">
+        {gpuError}
+      </div>,
+    );
+  }
+
+  if (downloadWeightsFeedback) {
+    parameterMessages.push(
+      <ValidationMessage key="download-feedback" tone={downloadWeightsFeedback.tone}>
+        {downloadWeightsFeedback.message}
+      </ValidationMessage>,
+    );
+  }
+
+  if (route === "streaming") {
+    parameterMessages.push(
+      <div key="route-warning" className="sidebarWarning">
+        Streaming attention only works on modern GPUs.
+      </div>,
+    );
+  }
+
+  if (precision === "bfloat16") {
+    parameterMessages.push(
+      <div key="precision-warning" className="sidebarWarning">
+        bfloat16 only works on modern GPUs.
+      </div>,
+    );
+  }
+
+  if (normalizationMode === "global_auto") {
+    parameterMessages.push(
+      <div key="normalization-auto" className="sidebarHint">
+        Auto mode runs a normalization prepass on the selected files, writes <code>norm_per_vol.txt</code> to the
+        output folder, and then launches inference with those shared values.
+      </div>,
+    );
+  }
+
+  if (normalizationMode === "global_manual") {
+    parameterMessages.push(
+      <div key="normalization-manual" className="sidebarHint">
+        Enter the <code>Global hist min</code> and <code>Global hist max</code> values from <code>norm_per_vol.txt</code>.
+      </div>,
+    );
+  }
+
+  parameterMessages.push(
+    <div key="inclusive-note" className="sidebarHint">
+      Crop and file end values are inclusive.
+    </div>,
+  );
 
   async function validateInputFolder() {
     if (!inputPath) return;
@@ -588,8 +674,6 @@ export default function InferencePage() {
 
       {parametersVisible ? (
         <section className="datasetCard inferenceFormCard" aria-label="Inference parameters">
-          {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
-
           <div className="inferencePathStack">
             <DirectoryFieldRow label="Output folder" path={outputPath} onChoose={() => setPickerTarget("output")} />
           </div>
@@ -598,10 +682,6 @@ export default function InferencePage() {
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">Select GPUs:</div>
               <div className="inferenceCheckboxGroup">
-                {optionsLoading ? <div className="sidebarHint">Loading GPUs...</div> : null}
-                {!optionsLoading && availableGpus.length === 0 && !gpuError ? (
-                  <div className="sidebarHint">No NVIDIA GPUs detected.</div>
-                ) : null}
                 {availableGpus.map((gpu) => (
                   <label key={gpu.index} className="inferenceCheckboxLabel">
                     <input
@@ -618,7 +698,6 @@ export default function InferencePage() {
                     <span>{`GPU ${gpu.index}`}</span>
                   </label>
                 ))}
-                {gpuError ? <div className="sidebarError">{gpuError}</div> : null}
               </div>
             </div>
 
@@ -668,11 +747,6 @@ export default function InferencePage() {
                 <option value="float32">float32</option>
               </select>
             </div>
-
-            {downloadWeightsFeedback ? (
-              <ValidationMessage tone={downloadWeightsFeedback.tone}>{downloadWeightsFeedback.message}</ValidationMessage>
-            ) : null}
-
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">Normalization:</div>
               <select
@@ -693,18 +767,6 @@ export default function InferencePage() {
                 </>
               ) : null}
             </div>
-
-            {normalizationMode === "global_auto" ? (
-              <div className="sidebarHint">
-                Auto mode runs a normalization prepass on the selected files, writes `norm_per_vol.txt` to the output
-                folder, and then launches inference with those shared values.
-              </div>
-            ) : null}
-            {normalizationMode === "global_manual" ? (
-              <div className="sidebarHint">
-                Enter the `Global hist min` and `Global hist max` values from `norm_per_vol.txt`.
-              </div>
-            ) : null}
 
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">Upsample factor:</div>
@@ -736,54 +798,69 @@ export default function InferencePage() {
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel isStrong">Crop:</div>
               <div className="inferenceInlineGroup">
-                <div className="inferenceInlineLabel">X start:</div>
-                <InferenceNumberInput
-                  value={cropBounds.xStart}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, xStart: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.x}
-                />
-                <div className="inferenceInlineLabel">X end:</div>
-                <InferenceNumberInput
-                  value={cropBounds.xEnd}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, xEnd: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.x}
-                />
-                <div className="inferenceInlineLabel">Y start:</div>
-                <InferenceNumberInput
-                  value={cropBounds.yStart}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, yStart: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.y}
-                />
-                <div className="inferenceInlineLabel">Y end:</div>
-                <InferenceNumberInput
-                  value={cropBounds.yEnd}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, yEnd: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.y}
-                />
-                <div className="inferenceInlineLabel">Z start:</div>
-                <InferenceNumberInput
-                  value={cropBounds.zStart}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, zStart: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.z}
-                />
-                <div className="inferenceInlineLabel">Z end:</div>
-                <InferenceNumberInput
-                  value={cropBounds.zEnd}
-                  onChange={(value) => setCropBounds((current) => ({ ...current, zEnd: value }))}
-                  min={0}
-                  step={1}
-                  max={validatedDataset?.shape.z}
-                />
+                <div className="inferenceAxisGroup">
+                  <div className="inferenceInlineLabel">X</div>
+                  <InferenceNumberInput
+                    value={cropBounds.xStart}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, xStart: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.x}
+                    placeholder="start"
+                    ariaLabel="Crop X start"
+                  />
+                  <InferenceNumberInput
+                    value={cropBounds.xEnd}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, xEnd: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.x}
+                    placeholder="end"
+                    ariaLabel="Crop X end"
+                  />
+                </div>
+                <div className="inferenceAxisGroup">
+                  <div className="inferenceInlineLabel">Y</div>
+                  <InferenceNumberInput
+                    value={cropBounds.yStart}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, yStart: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.y}
+                    placeholder="start"
+                    ariaLabel="Crop Y start"
+                  />
+                  <InferenceNumberInput
+                    value={cropBounds.yEnd}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, yEnd: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.y}
+                    placeholder="end"
+                    ariaLabel="Crop Y end"
+                  />
+                </div>
+                <div className="inferenceAxisGroup">
+                  <div className="inferenceInlineLabel">Z</div>
+                  <InferenceNumberInput
+                    value={cropBounds.zStart}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, zStart: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.z}
+                    placeholder="start"
+                    ariaLabel="Crop Z start"
+                  />
+                  <InferenceNumberInput
+                    value={cropBounds.zEnd}
+                    onChange={(value) => setCropBounds((current) => ({ ...current, zEnd: value }))}
+                    min={0}
+                    step={1}
+                    max={maxCropBounds?.z}
+                    placeholder="end"
+                    ariaLabel="Crop Z end"
+                  />
+                </div>
               </div>
             </div>
 
@@ -795,7 +872,8 @@ export default function InferencePage() {
                 onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
                 min={0}
                 step={1}
-                max={validatedDataset?.fileCount}
+                max={maxFileIndex}
+                ariaLabel="Start file"
               />
               <div className="inferenceInlineLabel">End file:</div>
               <InferenceNumberInput
@@ -803,12 +881,13 @@ export default function InferencePage() {
                 onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
                 min={0}
                 step={1}
-                max={validatedDataset?.fileCount}
+                max={maxFileIndex}
+                ariaLabel="End file"
               />
             </div>
-
-            <div className="sidebarHint">Crop and file end values are exclusive, matching the inference script.</div>
           </div>
+
+          <div className="inferenceMessages">{parameterMessages}</div>
 
           <div className="validationActions">
             <button
@@ -1020,6 +1099,8 @@ function InferenceNumberInput({
   step,
   disabled = false,
   max,
+  placeholder,
+  ariaLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -1027,6 +1108,8 @@ function InferenceNumberInput({
   step: number | "any";
   disabled?: boolean;
   max?: number;
+  placeholder?: string;
+  ariaLabel?: string;
 }) {
   return (
     <input
@@ -1038,6 +1121,8 @@ function InferenceNumberInput({
       step={step}
       disabled={disabled}
       max={max}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
     />
   );
 }
@@ -1072,4 +1157,8 @@ function parseNullableNumber(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatInclusiveEndDefault(size: number): string {
+  return size > 0 ? String(size - 1) : "";
 }

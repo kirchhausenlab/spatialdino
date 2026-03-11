@@ -688,6 +688,13 @@ button {
   gap: 10px;
 }
 
+.inferenceMessages {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
 .inferenceFormRow {
   display: flex;
   align-items: center;
@@ -746,6 +753,12 @@ button {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.inferenceAxisGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .inferenceInlineLabel {
