@@ -345,6 +345,122 @@ class AppTests(unittest.TestCase):
         self.assertEqual(validation["reasonCode"], "no_outputs_selected")
         self.assertIsNone(launch_config)
 
+    def test_build_segmentation_launch_config_accepts_valid_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                enable_voronoi_otsu=True,
+                gaussian_blur_sigma=3,
+                rolling_ball_radius=10.0,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderCount"], 1)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["gpu_index"], 0)
+        self.assertEqual(launch_config["subfolder_count"], 1)
+        self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
+        self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
+        self.assertTrue(launch_config["enable_voronoi_otsu"])
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertIn("scripts/post_processing/segmentation.py", command)
+        self.assertIn("--enable-voronoi-otsu", command)
+        self.assertIn("--gaussian-blur-sigma", command)
+        self.assertIn("--rolling-ball-radius", command)
+
+    def test_build_segmentation_launch_config_rejects_disabled_segmentation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                enable_voronoi_otsu=False,
+                gaussian_blur_sigma=3,
+                rolling_ball_radius=10.0,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "segmentation_disabled")
+        self.assertIsNone(launch_config)
+
+    def test_run_segmentation_submits_job_when_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                enable_voronoi_otsu=True,
+                gaussian_blur_sigma=3,
+                rolling_ball_radius=10.0,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+                patch("spatialdino_server.app._launch_segmentation_job_thread") as launch_thread,
+            ):
+                response = app_module.run_segmentation(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        self.assertIn("jobId", response)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
+        self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
+        self.assertTrue(launch_config["enable_voronoi_otsu"])
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "segmentation")
+            self.assertEqual(job.total, 1)
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+
     def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

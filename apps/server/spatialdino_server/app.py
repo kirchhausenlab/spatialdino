@@ -202,6 +202,14 @@ class RunProcessFeaturesRequest(BaseModel):
     pca_save_format: str = Field(".tif", min_length=1)
 
 
+class RunSegmentationRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = None
+    enable_voronoi_otsu: bool = False
+    gaussian_blur_sigma: int = Field(3, ge=0)
+    rolling_ball_radius: float = Field(10.0, ge=0.0)
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -393,8 +401,8 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
 SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
-PROCESS_FEATURES_PROCESSING_RE = re.compile(r"^\[process-features\] Processing (.+?) \((\d+)/(\d+)\)$")
-PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[process-features\] Completed (.+)$")
+PROCESS_FEATURES_PROCESSING_RE = re.compile(r"^\[(?:process-features|segmentation)\] Processing (.+?) \((\d+)/(\d+)\)$")
+PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[(?:process-features|segmentation)\] Completed (.+)$")
 DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
 NORM_PER_VOL_MIN_RE = re.compile(r"^Global hist min:\s*(.+?)\s*$", re.MULTILINE)
 NORM_PER_VOL_MAX_RE = re.compile(r"^Global hist max:\s*(.+?)\s*$", re.MULTILINE)
@@ -493,6 +501,47 @@ def _build_process_features_launch_config(
             "pca_save_format": payload.pca_save_format,
             "save_high_resolution_features": bool(payload.save_high_resolution_features),
             "high_resolution_save_format": payload.high_resolution_save_format,
+            "subfolder_count": subfolder_count,
+        },
+    )
+
+
+def _build_segmentation_launch_config(
+    payload: RunSegmentationRequest,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    input_validation = validate_process_features_input_folder(payload.input_path)
+    if not input_validation["valid"]:
+        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    if not payload.enable_voronoi_otsu:
+        return _invalid_process_features_run(
+            "segmentation_disabled",
+            "Enable Voronoi-Otsu segmentation.",
+        ), None
+
+    if payload.gpu_index is None:
+        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+    requested_gpu = int(payload.gpu_index)
+    gpu_status = get_nvidia_gpu_memory()
+    available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
+    if requested_gpu not in available_gpus:
+        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    subfolder_count = int(input_validation["subfolderCount"])
+    return (
+        {
+            "valid": True,
+            "message": "Validation passed.",
+            "subfolderCount": subfolder_count,
+        },
+        {
+            "input_path": input_path,
+            "gpu_index": requested_gpu,
+            "enable_voronoi_otsu": bool(payload.enable_voronoi_otsu),
+            "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
+            "rolling_ball_radius": float(payload.rolling_ball_radius),
             "subfolder_count": subfolder_count,
         },
     )
@@ -809,6 +858,22 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         command.append("--save-pca")
     if launch_config["save_high_resolution_features"]:
         command.append("--save-high-resolution-features")
+    return command
+
+
+def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/post_processing/segmentation.py",
+        "--input-path",
+        str(launch_config["input_path"]),
+        "--gaussian-blur-sigma",
+        str(launch_config["gaussian_blur_sigma"]),
+        "--rolling-ball-radius",
+        str(launch_config["rolling_ball_radius"]),
+    ]
+    if launch_config["enable_voronoi_otsu"]:
+        command.append("--enable-voronoi-otsu")
     return command
 
 
@@ -1279,10 +1344,41 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
 
 
 def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    _run_single_gpu_post_processing_job(
+        job,
+        launch_config,
+        command=_build_process_features_command(launch_config),
+        command_env=_build_process_features_command_env(launch_config),
+        launch_log_line="[server] Launching process-features job.",
+        success_log_line="[server] Process-features job completed successfully.",
+        job_name="Process-features",
+    )
+
+
+def _run_segmentation_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    _run_single_gpu_post_processing_job(
+        job,
+        launch_config,
+        command=_build_segmentation_command(launch_config),
+        command_env=_build_process_features_command_env(launch_config),
+        launch_log_line="[server] Launching segmentation job.",
+        success_log_line="[server] Segmentation job completed successfully.",
+        job_name="Segmentation",
+    )
+
+
+def _run_single_gpu_post_processing_job(
+    job: jobs_api.JobState,
+    launch_config: dict[str, Any],
+    *,
+    command: list[str],
+    command_env: dict[str, str],
+    launch_log_line: str,
+    success_log_line: str,
+    job_name: str,
+) -> None:
     repo_root = get_repo_root()
     log_handle = _open_job_log(job)
-    command_env = _build_process_features_command_env(launch_config)
-    command = _build_process_features_command(launch_config)
     command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
     completed_subfolders: set[str] = set()
 
@@ -1307,7 +1403,7 @@ def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, A
 
         env = os.environ.copy()
         env.update(command_env)
-        _append_job_log_line(job, "[server] Launching process-features job.", log_handle)
+        _append_job_log_line(job, launch_log_line, log_handle)
         process = subprocess.Popen(
             command,
             cwd=str(repo_root),
@@ -1353,17 +1449,14 @@ def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, A
                 job.processed = len(completed_subfolders)
                 job.current = "Done"
                 job.finished_at_ms = jobs_api._now_ms()
-                final_log_line = "[server] Process-features job completed successfully."
+                final_log_line = success_log_line
             else:
                 job.status = "failed"
                 job.current = "Failed"
                 if return_code == 0:
-                    job.error = (
-                        f"Process-features job exited successfully but only completed "
-                        f"{len(completed_subfolders)}/{job.total} subfolders."
-                    )
+                    job.error = f"{job_name} job exited successfully but only completed {len(completed_subfolders)}/{job.total} subfolders."
                 else:
-                    job.error = last_output_line or f"Process-features job exited with code {return_code}."
+                    job.error = last_output_line or f"{job_name} job exited with code {return_code}."
                 job.finished_at_ms = jobs_api._now_ms()
                 final_log_line = f"[server] {job.error}"
         if final_log_line:
@@ -1401,6 +1494,16 @@ def _launch_process_features_job_thread(job: jobs_api.JobState, launch_config: d
         args=(job, launch_config),
         daemon=True,
         name=f"process-features-job-{job.job_id}",
+    )
+    thread.start()
+
+
+def _launch_segmentation_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_segmentation_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"segmentation-job-{job.job_id}",
     )
     thread.start()
 
@@ -1498,6 +1601,44 @@ def run_process_features(
         }
 
     return {"submitted": True, "jobId": job.job_id, "message": "Process-features job submitted."}
+
+
+@api.post("/post-processing/segmentation/run")
+def run_segmentation(
+    payload: RunSegmentationRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_segmentation_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    input_path = Path(launch_config["input_path"])
+    label = f"Segmentation {input_path.name}".strip()
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="segmentation",
+        status="running",
+        processed=0,
+        total=int(launch_config["subfolder_count"]),
+        current="Queued",
+        label=label,
+        save_dir=str(input_path),
+        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_segmentation_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_process_features_run("submit_failed", f"Could not start segmentation job: {exc}"),
+        }
+
+    return {"submitted": True, "jobId": job.job_id, "message": "Segmentation job submitted."}
 
 
 @api.post("/inference/run")

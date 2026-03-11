@@ -18,19 +18,19 @@ type PostProcessingOptionsResponse = {
   gpuError?: string | null;
 };
 
-type ProcessFeaturesValidationSuccess = {
+type PostProcessingValidationSuccess = {
   valid: true;
   message: string;
   subfolderCount: number;
 };
 
-type ProcessFeaturesValidationFailure = {
+type PostProcessingValidationFailure = {
   valid: false;
   reasonCode: string;
   message: string;
 };
 
-type ProcessFeaturesValidationResult = ProcessFeaturesValidationSuccess | ProcessFeaturesValidationFailure;
+type PostProcessingValidationResult = PostProcessingValidationSuccess | PostProcessingValidationFailure;
 
 type ProcessFeaturesRunRequest = {
   input_path: string;
@@ -42,20 +42,28 @@ type ProcessFeaturesRunRequest = {
   pca_save_format: SaveFormat;
 };
 
-type ProcessFeaturesRunSubmittedResponse = {
+type SegmentationRunRequest = {
+  input_path: string;
+  gpu_index: number | null;
+  enable_voronoi_otsu: boolean;
+  gaussian_blur_sigma: number;
+  rolling_ball_radius: number;
+};
+
+type RunSubmittedResponse = {
   submitted: true;
   jobId: string;
   message: string;
 };
 
-type ProcessFeaturesRunInvalidResponse = {
+type RunInvalidResponse = {
   submitted: false;
   valid: false;
   reasonCode: string;
   message: string;
 };
 
-type ProcessFeaturesRunResponse = ProcessFeaturesRunSubmittedResponse | ProcessFeaturesRunInvalidResponse;
+type RunResponse = RunSubmittedResponse | RunInvalidResponse;
 
 type RunFeedback = {
   tone: "success" | "error";
@@ -68,17 +76,22 @@ const WORKFLOW_OPTIONS: Array<{
 }> = [
   {
     value: "process_features",
-    label: "Process features"
+    label: "Process features",
   },
   {
     value: "segmentation",
-    label: "Segmentation"
+    label: "Segmentation",
   },
   {
     value: "tracking",
-    label: "Tracking"
-  }
+    label: "Tracking",
+  },
 ];
+
+function getWorkflowLabel(workflow: WorkflowOption | null): string {
+  if (!workflow) return "Post-processing";
+  return WORKFLOW_OPTIONS.find((option) => option.value === workflow)?.label ?? "Post-processing";
+}
 
 export default function PostProcessingPage() {
   const jobs = useJobs();
@@ -88,7 +101,7 @@ export default function PostProcessingPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [validationLoading, setValidationLoading] = useState(false);
-  const [validationResult, setValidationResult] = useState<ProcessFeaturesValidationResult | null>(null);
+  const [validationResult, setValidationResult] = useState<PostProcessingValidationResult | null>(null);
   const [availableGpus, setAvailableGpus] = useState<GpuOption[]>([]);
   const [gpuError, setGpuError] = useState<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(true);
@@ -99,6 +112,9 @@ export default function PostProcessingPage() {
   const [savePca, setSavePca] = useState(false);
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
+  const [enableVoronoiOtsu, setEnableVoronoiOtsu] = useState(true);
+  const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
+  const [rollingBallRadius, setRollingBallRadius] = useState("10");
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
 
@@ -153,11 +169,18 @@ export default function PostProcessingPage() {
     highResolutionSaveFormat,
     savePca,
     pcaComponents,
-    pcaSaveFormat
+    pcaSaveFormat,
+    enableVoronoiOtsu,
+    gaussianBlurSigma,
+    rollingBallRadius,
   ]);
 
+  const workflowLabel = getWorkflowLabel(selectedWorkflow);
+  const inputStepVisible = selectedWorkflow !== null;
   const processFeaturesSelected = selectedWorkflow === "process_features";
-  const parametersVisible = processFeaturesSelected && validationResult?.valid === true;
+  const segmentationSelected = selectedWorkflow === "segmentation";
+  const trackingSelected = selectedWorkflow === "tracking";
+  const parametersVisible = validationResult?.valid === true;
 
   async function validateInputFolder() {
     if (!inputPath) return;
@@ -172,9 +195,9 @@ export default function PostProcessingPage() {
         method: "POST",
         headers: {
           Accept: "application/json",
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ path: inputPath })
+        body: JSON.stringify({ path: inputPath }),
       });
 
       if (!resp.ok) {
@@ -186,7 +209,7 @@ export default function PostProcessingPage() {
         );
       }
 
-      const json = (await resp.json()) as ProcessFeaturesValidationResult;
+      const json = (await resp.json()) as PostProcessingValidationResult;
 
       if (requestId !== validationRequestIdRef.current) return;
       setValidationResult(json);
@@ -201,7 +224,7 @@ export default function PostProcessingPage() {
     }
   }
 
-  function buildRunRequest(): ProcessFeaturesRunRequest | null {
+  function buildProcessFeaturesRunRequest(): ProcessFeaturesRunRequest | null {
     if (!inputPath) return null;
 
     const parsedPcaComponents = Number.parseInt(pcaComponents.trim(), 10);
@@ -216,40 +239,23 @@ export default function PostProcessingPage() {
       high_resolution_save_format: highResolutionSaveFormat,
       save_pca: savePca,
       pca_components: Number.isFinite(parsedPcaComponents) && parsedPcaComponents > 0 ? parsedPcaComponents : 3,
-      pca_save_format: pcaSaveFormat
+      pca_save_format: pcaSaveFormat,
     };
   }
 
-  async function handleRun() {
-    const request = buildRunRequest();
-    if (!request) {
-      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for the number of PCA components." });
-      return;
-    }
-    if (selectedGpuIndex === null) {
-      setRunFeedback({ tone: "error", message: "Select one GPU." });
-      return;
-    }
-    if (!saveHighResolutionFeatures && !savePca) {
-      setRunFeedback({
-        tone: "error",
-        message: "Choose at least one output: Save high-resolution features and/or Save PCA."
-      });
-      return;
-    }
-
+  async function submitRun(url: string, request: ProcessFeaturesRunRequest | SegmentationRunRequest) {
     setSubmitting(true);
     setRunFeedback(null);
 
     try {
-      const resp = await fetch("/api/post-processing/process-features/run", {
+      const resp = await fetch(url, {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
-          "X-SpatialDINO-ClientId": getClientId()
+          "X-SpatialDINO-ClientId": getClientId(),
         },
-        body: JSON.stringify(request)
+        body: JSON.stringify(request),
       });
 
       if (!resp.ok) {
@@ -259,7 +265,7 @@ export default function PostProcessingPage() {
         throw new Error(detail ? detail : `Run failed: ${resp.status} ${resp.statusText}`);
       }
 
-      const json = (await resp.json()) as ProcessFeaturesRunResponse;
+      const json = (await resp.json()) as RunResponse;
       if (json.submitted) {
         setRunFeedback({ tone: "success", message: json.message });
         void jobs.refresh();
@@ -273,6 +279,62 @@ export default function PostProcessingPage() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleProcessFeaturesRun() {
+    const request = buildProcessFeaturesRunRequest();
+    if (!request) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for the number of PCA components." });
+      return;
+    }
+    if (selectedGpuIndex === null) {
+      setRunFeedback({ tone: "error", message: "Select one GPU." });
+      return;
+    }
+    if (!saveHighResolutionFeatures && !savePca) {
+      setRunFeedback({
+        tone: "error",
+        message: "Choose at least one output: Save high-resolution features and/or Save PCA.",
+      });
+      return;
+    }
+
+    await submitRun("/api/post-processing/process-features/run", request);
+  }
+
+  async function handleSegmentationRun() {
+    if (!inputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an input folder." });
+      return;
+    }
+    if (selectedGpuIndex === null) {
+      setRunFeedback({ tone: "error", message: "Select one GPU." });
+      return;
+    }
+    if (!enableVoronoiOtsu) {
+      setRunFeedback({ tone: "error", message: "Enable Voronoi-Otsu segmentation." });
+      return;
+    }
+
+    const parsedGaussianBlurSigma = Number.parseInt(gaussianBlurSigma.trim(), 10);
+    if (!Number.isFinite(parsedGaussianBlurSigma) || parsedGaussianBlurSigma < 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid nonnegative integer for Gaussian blur sigma." });
+      return;
+    }
+
+    const parsedRollingBallRadius = Number.parseFloat(rollingBallRadius.trim());
+    if (!Number.isFinite(parsedRollingBallRadius) || parsedRollingBallRadius < 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid nonnegative number for Rolling ball radius." });
+      return;
+    }
+
+    await submitRun("/api/post-processing/segmentation/run", {
+      input_path: inputPath,
+      gpu_index: selectedGpuIndex,
+      enable_voronoi_otsu: enableVoronoiOtsu,
+      gaussian_blur_sigma: parsedGaussianBlurSigma,
+      rolling_ball_radius: parsedRollingBallRadius,
+    });
   }
 
   return (
@@ -304,137 +366,176 @@ export default function PostProcessingPage() {
         </div>
       </section>
 
-      {processFeaturesSelected ? (
-        <>
-          <section className="datasetCard inferenceInputCard" aria-label="Process features input folder">
-            <DirectoryFieldRow
-              label="Input folder"
-              path={inputPath}
-              onChoose={() => setPickerOpen(true)}
-              action={
-                <button
-                  type="button"
-                  className="preprocessValidateButton"
-                  disabled={!inputPath || validationLoading}
-                  onClick={() => void validateInputFolder()}
-                >
-                  {validationLoading ? "Validating..." : "Validate"}
-                </button>
-              }
-            />
+      {inputStepVisible ? (
+        <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} input folder`}>
+          <DirectoryFieldRow
+            label="Input folder"
+            path={inputPath}
+            onChoose={() => setPickerOpen(true)}
+            action={
+              <button
+                type="button"
+                className="preprocessValidateButton"
+                disabled={!inputPath || validationLoading}
+                onClick={() => void validateInputFolder()}
+              >
+                {validationLoading ? "Validating..." : "Validate"}
+              </button>
+            }
+          />
 
-            {validationLoading ? (
-              <ValidationMessage tone="neutral">Validating input folder...</ValidationMessage>
-            ) : validationResult ? (
-              <ValidationMessage tone={validationResult.valid ? "success" : "error"}>
-                {validationResult.message}
-              </ValidationMessage>
-            ) : null}
-          </section>
-
-          {parametersVisible ? (
-            <section className="datasetCard inferenceFormCard" aria-label="Process features parameters">
-              {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
-
-              <div className="inferenceFormRows">
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Select GPU:</div>
-                  <div className="inferenceCheckboxGroup">
-                    {optionsLoading ? <div className="sidebarHint">Loading GPUs...</div> : null}
-                    {!optionsLoading && availableGpus.length === 0 && !gpuError ? (
-                      <div className="sidebarHint">No NVIDIA GPUs detected.</div>
-                    ) : null}
-                    {availableGpus.map((gpu) => (
-                      <label key={gpu.index} className="inferenceCheckboxLabel">
-                        <input
-                          type="checkbox"
-                          checked={selectedGpuIndex === gpu.index}
-                          onChange={() => {
-                            setSelectedGpuIndex((current) => (current === gpu.index ? null : gpu.index));
-                          }}
-                        />
-                        <span>{`GPU ${gpu.index}`}</span>
-                      </label>
-                    ))}
-                    {gpuError ? <div className="sidebarError">{gpuError}</div> : null}
-                  </div>
-                </div>
-
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Save high-resolution features:</div>
-                  <label className="inferenceCheckboxLabel">
-                    <input
-                      type="checkbox"
-                      checked={saveHighResolutionFeatures}
-                      onChange={(event) => setSaveHighResolutionFeatures(event.target.checked)}
-                    />
-                    <span>Enabled</span>
-                  </label>
-                  {saveHighResolutionFeatures ? (
-                    <>
-                      <div className="inferenceInlineLabel isStrong">Save format:</div>
-                      <select
-                        className="inferenceSelect inferenceCompactSelect"
-                        value={highResolutionSaveFormat}
-                        onChange={(event) => setHighResolutionSaveFormat(event.target.value as SaveFormat)}
-                      >
-                        <option value=".npy">.npy</option>
-                        <option value=".tif">.tif</option>
-                      </select>
-                    </>
-                  ) : null}
-                </div>
-
-                {saveHighResolutionFeatures ? (
-                  <div className="sidebarWarning">
-                    Saving high-resolution features writes one full 3D file per feature, typically 390 files per
-                    subfolder, and can consume a huge amount of disk space.
-                  </div>
-                ) : null}
-
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Save PCA:</div>
-                  <label className="inferenceCheckboxLabel">
-                    <input type="checkbox" checked={savePca} onChange={(event) => setSavePca(event.target.checked)} />
-                    <span>Enabled</span>
-                  </label>
-                  {savePca ? (
-                    <>
-                      <div className="inferenceInlineLabel isStrong">Components:</div>
-                      <PostProcessingNumberInput value={pcaComponents} onChange={setPcaComponents} min={1} step={1} />
-                      <div className="inferenceInlineLabel isStrong">Save format:</div>
-                      <select
-                        className="inferenceSelect inferenceCompactSelect"
-                        value={pcaSaveFormat}
-                        onChange={(event) => setPcaSaveFormat(event.target.value as SaveFormat)}
-                      >
-                        <option value=".npy">.npy</option>
-                        <option value=".tif">.tif</option>
-                      </select>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="validationActions">
-                <button type="button" className="preprocessValidateButton" onClick={() => void handleRun()} disabled={submitting}>
-                  {submitting ? "Submitting..." : "Run"}
-                </button>
-              </div>
-
-              {runFeedback ? <ValidationMessage tone={runFeedback.tone}>{runFeedback.message}</ValidationMessage> : null}
-            </section>
+          {validationLoading ? (
+            <ValidationMessage tone="neutral">Validating input folder...</ValidationMessage>
+          ) : validationResult ? (
+            <ValidationMessage tone={validationResult.valid ? "success" : "error"}>{validationResult.message}</ValidationMessage>
           ) : null}
-        </>
-      ) : null}
-
-      {selectedWorkflow === "segmentation" ? (
-        <section className="datasetCard postProcessingPlaceholderCard" aria-label="Segmentation post-processing">
-          <div className="postProcessingPlaceholderTitle">Segmentation</div>
         </section>
       ) : null}
 
-      {selectedWorkflow === "tracking" ? (
+      {parametersVisible && processFeaturesSelected ? (
+        <section className="datasetCard inferenceFormCard" aria-label="Process features parameters">
+          {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
+
+          <div className="inferenceFormRows">
+            <GpuSelectionRow
+              optionsLoading={optionsLoading}
+              availableGpus={availableGpus}
+              gpuError={gpuError}
+              selectedGpuIndex={selectedGpuIndex}
+              onSelectGpu={setSelectedGpuIndex}
+            />
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Save high-resolution features:</div>
+              <label className="inferenceCheckboxLabel">
+                <input
+                  type="checkbox"
+                  checked={saveHighResolutionFeatures}
+                  onChange={(event) => setSaveHighResolutionFeatures(event.target.checked)}
+                />
+                <span>Enabled</span>
+              </label>
+              {saveHighResolutionFeatures ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Save format:</div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={highResolutionSaveFormat}
+                    onChange={(event) => setHighResolutionSaveFormat(event.target.value as SaveFormat)}
+                  >
+                    <option value=".npy">.npy</option>
+                    <option value=".tif">.tif</option>
+                  </select>
+                </>
+              ) : null}
+            </div>
+
+            {saveHighResolutionFeatures ? (
+              <div className="sidebarWarning">
+                Saving high-resolution features writes one full 3D file per feature, typically 390 files per
+                subfolder, and can consume a huge amount of disk space.
+              </div>
+            ) : null}
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Save PCA:</div>
+              <label className="inferenceCheckboxLabel">
+                <input type="checkbox" checked={savePca} onChange={(event) => setSavePca(event.target.checked)} />
+                <span>Enabled</span>
+              </label>
+              {savePca ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Components:</div>
+                  <PostProcessingNumberInput value={pcaComponents} onChange={setPcaComponents} min={1} step={1} />
+                  <div className="inferenceInlineLabel isStrong">Save format:</div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={pcaSaveFormat}
+                    onChange={(event) => setPcaSaveFormat(event.target.value as SaveFormat)}
+                  >
+                    <option value=".npy">.npy</option>
+                    <option value=".tif">.tif</option>
+                  </select>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="validationActions">
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              onClick={() => void handleProcessFeaturesRun()}
+              disabled={submitting}
+            >
+              {submitting ? "Submitting..." : "Run"}
+            </button>
+          </div>
+
+          {runFeedback ? <ValidationMessage tone={runFeedback.tone}>{runFeedback.message}</ValidationMessage> : null}
+        </section>
+      ) : null}
+
+      {parametersVisible && segmentationSelected ? (
+        <section className="datasetCard inferenceFormCard" aria-label="Segmentation parameters">
+          {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
+
+          <div className="inferenceFormRows">
+            <GpuSelectionRow
+              optionsLoading={optionsLoading}
+              availableGpus={availableGpus}
+              gpuError={gpuError}
+              selectedGpuIndex={selectedGpuIndex}
+              onSelectGpu={setSelectedGpuIndex}
+            />
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Voronoi-Otsu segmentation:</div>
+              <label className="inferenceCheckboxLabel">
+                <input
+                  type="checkbox"
+                  checked={enableVoronoiOtsu}
+                  onChange={(event) => setEnableVoronoiOtsu(event.target.checked)}
+                />
+                <span>Enabled</span>
+              </label>
+              {enableVoronoiOtsu ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Gaussian blur sigma:</div>
+                  <PostProcessingNumberInput
+                    value={gaussianBlurSigma}
+                    onChange={setGaussianBlurSigma}
+                    min={0}
+                    step={1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Rolling ball radius:</div>
+                  <PostProcessingNumberInput
+                    value={rollingBallRadius}
+                    onChange={setRollingBallRadius}
+                    min={0}
+                    step={0.1}
+                  />
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="validationActions">
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              onClick={() => void handleSegmentationRun()}
+              disabled={submitting}
+            >
+              {submitting ? "Submitting..." : "Run"}
+            </button>
+          </div>
+
+          {runFeedback ? <ValidationMessage tone={runFeedback.tone}>{runFeedback.message}</ValidationMessage> : null}
+        </section>
+      ) : null}
+
+      {parametersVisible && trackingSelected ? (
         <section className="datasetCard postProcessingPlaceholderCard" aria-label="Tracking post-processing">
           <div className="postProcessingPlaceholderTitle">Tracking</div>
         </section>
@@ -458,7 +559,7 @@ function DirectoryFieldRow({
   label,
   path,
   onChoose,
-  action
+  action,
 }: {
   label: string;
   path: string | null;
@@ -479,11 +580,48 @@ function DirectoryFieldRow({
   );
 }
 
+function GpuSelectionRow({
+  optionsLoading,
+  availableGpus,
+  gpuError,
+  selectedGpuIndex,
+  onSelectGpu,
+}: {
+  optionsLoading: boolean;
+  availableGpus: GpuOption[];
+  gpuError: string | null;
+  selectedGpuIndex: number | null;
+  onSelectGpu: (gpuIndex: number | null) => void;
+}) {
+  return (
+    <div className="inferenceFormRow">
+      <div className="inferenceFieldLabel">Select GPU:</div>
+      <div className="inferenceCheckboxGroup">
+        {optionsLoading ? <div className="sidebarHint">Loading GPUs...</div> : null}
+        {!optionsLoading && availableGpus.length === 0 && !gpuError ? (
+          <div className="sidebarHint">No NVIDIA GPUs detected.</div>
+        ) : null}
+        {availableGpus.map((gpu) => (
+          <label key={gpu.index} className="inferenceCheckboxLabel">
+            <input
+              type="checkbox"
+              checked={selectedGpuIndex === gpu.index}
+              onChange={() => onSelectGpu(selectedGpuIndex === gpu.index ? null : gpu.index)}
+            />
+            <span>{`GPU ${gpu.index}`}</span>
+          </label>
+        ))}
+        {gpuError ? <div className="sidebarError">{gpuError}</div> : null}
+      </div>
+    </div>
+  );
+}
+
 function PostProcessingNumberInput({
   value,
   onChange,
   min,
-  step
+  step,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -504,7 +642,7 @@ function PostProcessingNumberInput({
 
 function ValidationMessage({
   tone,
-  children
+  children,
 }: {
   tone: "neutral" | "success" | "error";
   children: string;
