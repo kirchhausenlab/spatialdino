@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import InferencePage from "../pages/InferencePage";
+import PostProcessingPage from "../pages/PostProcessingPage";
 import PlaceholderPage from "../pages/PlaceholderPage";
 
 type PageDefinition = {
@@ -14,33 +15,20 @@ const pageDefinitions: PageDefinition[] = [
     path: "/training",
     render: () => (
       <PlaceholderPage
-        title="Training"
-        description="Training controls will be added here once the spatialDINO workflows are wired into the backend."
+        title="Training (WIP)"
+        description="To be implemented"
       />
     ),
   },
   { path: "/inference", render: () => <InferencePage /> },
-  {
-    path: "/segmentation",
-    render: () => (
-      <PlaceholderPage
-        title="Segmentation"
-        description="Segmentation tools are reserved here and will be connected in a later pass."
-      />
-    ),
-  },
-  {
-    path: "/tracking",
-    render: () => (
-      <PlaceholderPage
-        title="Tracking"
-        description="Tracking workflows are reserved here and will be connected in a later pass."
-      />
-    ),
-  },
+  { path: "/post-processing", render: () => <PostProcessingPage /> },
 ];
 
 const knownPaths = new Set(pageDefinitions.map((page) => page.path));
+const legacyRedirects = new Map<string, string>([
+  ["/segmentation", "/post-processing"],
+  ["/tracking", "/post-processing"],
+]);
 const defaultPath = "/inference";
 
 function normalizePathname(pathname: string): string {
@@ -52,25 +40,31 @@ function normalizePathname(pathname: string): string {
 export default function PersistentPageOutlet() {
   const location = useLocation();
   const activePath = normalizePathname(location.pathname);
-  const isKnownPath = knownPaths.has(activePath);
+  const redirectedPath = legacyRedirects.get(activePath);
+  const resolvedActivePath = redirectedPath ?? activePath;
+  const isKnownPath = knownPaths.has(resolvedActivePath);
   const [visitedPaths, setVisitedPaths] = useState<Set<string>>(() =>
-    new Set<string>(isKnownPath ? [activePath] : [defaultPath]),
+    new Set<string>(isKnownPath ? [resolvedActivePath] : [defaultPath]),
   );
 
   useEffect(() => {
     if (!isKnownPath) return;
     setVisitedPaths((prev) => {
-      if (prev.has(activePath)) return prev;
+      if (prev.has(resolvedActivePath)) return prev;
       const next = new Set(prev);
-      next.add(activePath);
+      next.add(resolvedActivePath);
       return next;
     });
-  }, [activePath, isKnownPath]);
+  }, [isKnownPath, resolvedActivePath]);
 
   const pagesToRender = useMemo(
     () => pageDefinitions.filter((definition) => visitedPaths.has(definition.path)),
     [visitedPaths],
   );
+
+  if (redirectedPath) {
+    return <Navigate to={redirectedPath} replace />;
+  }
 
   if (!isKnownPath) {
     return <Navigate to={defaultPath} replace />;
@@ -79,7 +73,7 @@ export default function PersistentPageOutlet() {
   return (
     <>
       {pagesToRender.map((page) => {
-        const active = page.path === activePath;
+        const active = page.path === resolvedActivePath;
         return (
           <div
             key={page.path}

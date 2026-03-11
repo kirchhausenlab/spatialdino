@@ -5,7 +5,6 @@ file_path: null
 save_path: null
 file_start: 0
 file_end: null
-save_raw: true
 global_hist_min: null
 global_hist_max: null
 model: vits8

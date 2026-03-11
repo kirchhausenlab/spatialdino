@@ -13,7 +13,7 @@
         try {
           stored = window.localStorage.getItem(key);
         } catch (e) {
-          console.warn("[spatialDINO] Unable to read theme from localStorage:", e);
+          console.warn("[SpatialDINO] Unable to read theme from localStorage:", e);
         }
         var valid = stored === "light" || stored === "dark";
         var theme = valid
@@ -24,7 +24,7 @@
         document.documentElement.dataset.theme = theme;
       })();
     </script>
-    <title>spatialDINO</title>
+    <title>SpatialDINO</title>
   </head>
   <body>
     <div id="root"></div>

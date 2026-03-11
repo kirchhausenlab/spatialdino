@@ -462,11 +462,9 @@ export default function InferencePage() {
       <section className="validationCard inferenceIntroCard" aria-label="Inference overview">
         <header className="validationHeader">
           <div>
-            <div className="inferenceEyebrow">Inference</div>
-            <h1 className="inferenceTitle">Configure an inference run on the server.</h1>
+            <h1 className="inferenceTitle">Inference</h1>
           </div>
         </header>
-        <div className="sidebarHint">Choose and validate the input folder, then configure the inference parameters.</div>
       </section>
 
       <section className="datasetCard inferenceInputCard" aria-label="Input folder">

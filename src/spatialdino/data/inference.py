@@ -89,7 +89,6 @@ class InferenceDataset(Dataset):
             )
             self.normalize_transform = None
         self.crop_params = tuple(self.config.crop_params)
-        self.save_raw = bool(getattr(self.config, "save_raw", True))
 
     def __len__(self) -> int:
         return len(self.fnames)
@@ -111,12 +110,11 @@ class InferenceDataset(Dataset):
             f"raw_volume dim {raw_volume.ndim} != 3, expected [Z, Y, X] dims"
         )
 
-        if self.save_raw:
-            io.imsave(
-                save_path.joinpath("volume_unnorm.tif"),
-                raw_volume_original,
-                check_contrast=False,
-            )
+        io.imsave(
+            save_path.joinpath("volume_unnorm.tif"),
+            raw_volume_original,
+            check_contrast=False,
+        )
 
         if self.crop_params != (0, 0, 0, 0, 0, 0):
             # Use provided crop parameters with existing logic

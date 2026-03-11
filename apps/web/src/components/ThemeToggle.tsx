@@ -18,7 +18,7 @@ function readStoredTheme(): Theme | null {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     return stored === "light" || stored === "dark" ? stored : null;
   } catch (error) {
-    console.warn("[spatialDINO] Unable to read theme from localStorage:", error);
+    console.warn("[SpatialDINO] Unable to read theme from localStorage:", error);
     return null;
   }
 }
@@ -27,7 +27,7 @@ function writeStoredTheme(theme: Theme) {
   try {
     window.localStorage.setItem(STORAGE_KEY, theme);
   } catch (error) {
-    console.warn("[spatialDINO] Unable to persist theme to localStorage:", error);
+    console.warn("[SpatialDINO] Unable to persist theme to localStorage:", error);
   }
 }
 

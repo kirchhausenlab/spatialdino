@@ -151,6 +151,10 @@ class ValidateInferenceInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+class ValidateProcessFeaturesInputRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
 class InferenceAxisRequest(BaseModel):
     x: float | None = None
     y: float | None = None
@@ -186,6 +190,16 @@ class RunInferenceRequest(BaseModel):
     global_hist_min: float | None = None
     global_hist_max: float | None = None
     overwrite: bool = False
+
+
+class RunProcessFeaturesRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = None
+    save_high_resolution_features: bool = False
+    high_resolution_save_format: str = Field(".tif", min_length=1)
+    save_pca: bool = False
+    pca_components: int = Field(3, ge=1)
+    pca_save_format: str = Field(".tif", min_length=1)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -261,6 +275,63 @@ def _selected_inference_tiff_paths(input_path: Path, file_start: int, file_end: 
     return _list_inference_tiff_paths(input_path)[file_start:file_end]
 
 
+def _list_child_directories(input_path: Path) -> list[Path]:
+    child_dirs: list[Path] = []
+    with os.scandir(input_path) as entries:
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            child_dirs.append(Path(entry.path))
+
+    child_dirs.sort(key=lambda path: (path.name.casefold(), path.name))
+    return child_dirs
+
+
+def _invalid_process_features_input(reason_code: str, message: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "reasonCode": reason_code,
+        "message": message,
+    }
+
+
+def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+
+    if not input_path.exists():
+        return _invalid_process_features_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+
+    subfolders = _list_child_directories(input_path)
+    if not subfolders:
+        return _invalid_process_features_input("no_subfolders", "Input folder contains no subfolders.")
+
+    for subfolder in subfolders:
+        missing_files: list[str] = []
+        if not subfolder.joinpath("lr_feats.npy").is_file():
+            missing_files.append("lr_feats.npy")
+        if not subfolder.joinpath("volume_unnorm.tif").is_file():
+            missing_files.append("volume_unnorm.tif")
+
+        if missing_files:
+            if len(missing_files) == 1:
+                missing_text = missing_files[0]
+            else:
+                missing_text = ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
+            return _invalid_process_features_input(
+                "missing_required_files",
+                f"Subfolder {subfolder.name} is missing {missing_text}.",
+            )
+
+    subfolder_count = len(subfolders)
+    return {
+        "valid": True,
+        "message": f"Valid feature folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
+        "subfolderCount": subfolder_count,
+    }
+
+
 def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
 
@@ -322,12 +393,15 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
 SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
+PROCESS_FEATURES_PROCESSING_RE = re.compile(r"^\[process-features\] Processing (.+?) \((\d+)/(\d+)\)$")
+PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[process-features\] Completed (.+)$")
 DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
 NORM_PER_VOL_MIN_RE = re.compile(r"^Global hist min:\s*(.+?)\s*$", re.MULTILINE)
 NORM_PER_VOL_MAX_RE = re.compile(r"^Global hist max:\s*(.+?)\s*$", re.MULTILINE)
 NORMALIZATION_MODE_PER_VOLUME = "per_volume"
 NORMALIZATION_MODE_GLOBAL_AUTO = "global_auto"
 NORMALIZATION_MODE_GLOBAL_MANUAL = "global_manual"
+PROCESS_FEATURES_SAVE_FORMATS = {".npy", ".tif"}
 NORMALIZATION_MODE_OPTIONS = {
     NORMALIZATION_MODE_PER_VOLUME,
     NORMALIZATION_MODE_GLOBAL_AUTO,
@@ -341,6 +415,14 @@ def _invalid_inference_run(reason_code: str, message: str) -> dict[str, Any]:
         "reasonCode": reason_code,
         "message": message,
         "requiresOverwriteConfirmation": False,
+    }
+
+
+def _invalid_process_features_run(reason_code: str, message: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "reasonCode": reason_code,
+        "message": message,
     }
 
 
@@ -362,6 +444,58 @@ def _coerce_start(value: int | None) -> int:
 
 def _coerce_crop_end(value: int | None) -> int:
     return 0 if value is None else value
+
+
+def _build_process_features_launch_config(
+    payload: RunProcessFeaturesRequest,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    input_validation = validate_process_features_input_folder(payload.input_path)
+    if not input_validation["valid"]:
+        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    if not payload.save_pca and not payload.save_high_resolution_features:
+        return _invalid_process_features_run(
+            "no_outputs_selected",
+            "Choose at least one output: Save PCA and/or Save high-resolution features.",
+        ), None
+
+    if payload.gpu_index is None:
+        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+    requested_gpu = int(payload.gpu_index)
+    gpu_status = get_nvidia_gpu_memory()
+    available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
+    if requested_gpu not in available_gpus:
+        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
+
+    if payload.high_resolution_save_format not in PROCESS_FEATURES_SAVE_FORMATS:
+        return _invalid_process_features_run(
+            "invalid_high_resolution_format",
+            "High-resolution feature save format must be one of: .npy, .tif.",
+        ), None
+
+    if payload.pca_save_format not in PROCESS_FEATURES_SAVE_FORMATS:
+        return _invalid_process_features_run("invalid_pca_format", "PCA save format must be one of: .npy, .tif."), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    subfolder_count = int(input_validation["subfolderCount"])
+    return (
+        {
+            "valid": True,
+            "message": "Validation passed.",
+            "subfolderCount": subfolder_count,
+        },
+        {
+            "input_path": input_path,
+            "gpu_index": requested_gpu,
+            "save_pca": bool(payload.save_pca),
+            "pca_components": int(payload.pca_components),
+            "pca_save_format": payload.pca_save_format,
+            "save_high_resolution_features": bool(payload.save_high_resolution_features),
+            "high_resolution_save_format": payload.high_resolution_save_format,
+            "subfolder_count": subfolder_count,
+        },
+    )
 
 
 def _resolve_omp_num_threads() -> str:
@@ -658,6 +792,26 @@ def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
     return command
 
 
+def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/post_processing/process_features.py",
+        "--input-path",
+        str(launch_config["input_path"]),
+        "--pca-components",
+        str(launch_config["pca_components"]),
+        "--pca-format",
+        launch_config["pca_save_format"],
+        "--high-resolution-format",
+        launch_config["high_resolution_save_format"],
+    ]
+    if launch_config["save_pca"]:
+        command.append("--save-pca")
+    if launch_config["save_high_resolution_features"]:
+        command.append("--save-high-resolution-features")
+    return command
+
+
 def _build_norm_per_vol_command(launch_config: dict[str, Any]) -> list[str]:
     anisotropy_x, anisotropy_y, anisotropy_z = launch_config["anisotropy_xyz"]
     crop_params = launch_config["crop_params"]
@@ -678,6 +832,14 @@ def _build_norm_per_vol_command(launch_config: dict[str, Any]) -> list[str]:
 def _build_inference_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
     return {
         "CUDA_VISIBLE_DEVICES": ",".join(str(index) for index in launch_config["gpu_indices"]),
+        "OMP_NUM_THREADS": _resolve_omp_num_threads(),
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _build_process_features_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
+    return {
+        "CUDA_VISIBLE_DEVICES": str(launch_config["gpu_index"]),
         "OMP_NUM_THREADS": _resolve_omp_num_threads(),
         "PYTHONUNBUFFERED": "1",
     }
@@ -921,6 +1083,32 @@ def _update_job_progress_from_output(
                 job.current = "Running"
 
 
+def _update_process_features_job_progress_from_output(
+    job: jobs_api.JobState,
+    line: str,
+    completed_subfolders: set[str],
+) -> None:
+    processing_match = PROCESS_FEATURES_PROCESSING_RE.search(line)
+    if processing_match:
+        subfolder_name = processing_match.group(1).strip()
+        with job.lock:
+            if job.status == "running" and not job.stop_requested:
+                job.current = f"Processing {subfolder_name}"
+        return
+
+    completed_match = PROCESS_FEATURES_COMPLETED_RE.search(line)
+    if not completed_match:
+        return
+
+    subfolder_name = completed_match.group(1).strip()
+    with job.lock:
+        if job.status != "running" or job.stop_requested or subfolder_name in completed_subfolders:
+            return
+        completed_subfolders.add(subfolder_name)
+        job.processed = min(job.total, len(completed_subfolders)) if job.total > 0 else len(completed_subfolders)
+        job.current = subfolder_name
+
+
 def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
     output_path = Path(launch_config["output_path"])
     expected_feature_paths = _expected_feature_paths(output_path, launch_config["selected_stems"])
@@ -1090,12 +1278,129 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
             log_handle.close()
 
 
+def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    repo_root = get_repo_root()
+    log_handle = _open_job_log(job)
+    command_env = _build_process_features_command_env(launch_config)
+    command = _build_process_features_command(launch_config)
+    command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
+    completed_subfolders: set[str] = set()
+
+    with job.lock:
+        job.command = command_text
+        job.working_dir = str(repo_root)
+
+    _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
+    _append_job_log_line(job, f"[server] Command: {command_text}", log_handle)
+
+    try:
+        with job.lock:
+            if job.stop_requested:
+                _mark_job_halted_locked(job)
+                stop_before_launch = True
+            else:
+                stop_before_launch = False
+                job.current = "Starting"
+        if stop_before_launch:
+            _append_job_log_line(job, "[server] Job stopped before launch.", log_handle)
+            return
+
+        env = os.environ.copy()
+        env.update(command_env)
+        _append_job_log_line(job, "[server] Launching process-features job.", log_handle)
+        process = subprocess.Popen(
+            command,
+            cwd=str(repo_root),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+
+        with job.lock:
+            job.process = process
+            if job.stop_requested:
+                job.current = "Stopping"
+
+        if job.stop_requested:
+            jobs_api.terminate_job_process(job, force=False)
+
+        last_output_line: str | None = None
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                for part in raw_line.split("\r"):
+                    line = _clean_process_line(part)
+                    if not line:
+                        continue
+                    last_output_line = line
+                    _append_job_log_line(job, line, log_handle)
+                    _update_process_features_job_progress_from_output(job, line, completed_subfolders)
+
+        return_code = process.wait()
+        final_log_line: str | None = None
+        with job.lock:
+            job.process = None
+            job.exit_code = return_code
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+                job.finished_at_ms = jobs_api._now_ms()
+                final_log_line = "[server] Job stopped by user."
+            elif return_code == 0 and len(completed_subfolders) == job.total:
+                job.status = "completed"
+                job.processed = len(completed_subfolders)
+                job.current = "Done"
+                job.finished_at_ms = jobs_api._now_ms()
+                final_log_line = "[server] Process-features job completed successfully."
+            else:
+                job.status = "failed"
+                job.current = "Failed"
+                if return_code == 0:
+                    job.error = (
+                        f"Process-features job exited successfully but only completed "
+                        f"{len(completed_subfolders)}/{job.total} subfolders."
+                    )
+                else:
+                    job.error = last_output_line or f"Process-features job exited with code {return_code}."
+                job.finished_at_ms = jobs_api._now_ms()
+                final_log_line = f"[server] {job.error}"
+        if final_log_line:
+            _append_job_log_line(job, final_log_line, log_handle)
+    except Exception as exc:
+        _append_job_log_line(job, f"[server] Runner error: {exc}", log_handle)
+        with job.lock:
+            job.process = None
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+            else:
+                job.status = "failed"
+                job.current = "Failed"
+                job.error = str(exc)
+            job.finished_at_ms = jobs_api._now_ms()
+    finally:
+        if log_handle is not None:
+            log_handle.close()
+
+
 def _launch_inference_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
     thread = threading.Thread(
         target=_run_inference_job,
         args=(job, launch_config),
         daemon=True,
         name=f"inference-job-{job.job_id}",
+    )
+    thread.start()
+
+
+def _launch_process_features_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_process_features_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"process-features-job-{job.job_id}",
     )
     thread.start()
 
@@ -1150,6 +1455,49 @@ def inference_options() -> dict[str, object]:
 @api.post("/inference/validate-input")
 def validate_inference_input(payload: ValidateInferenceInputRequest) -> dict[str, Any]:
     return validate_inference_input_folder(payload.path)
+
+
+@api.post("/post-processing/process-features/validate-input")
+def validate_process_features_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+    return validate_process_features_input_folder(payload.path)
+
+
+@api.post("/post-processing/process-features/run")
+def run_process_features(
+    payload: RunProcessFeaturesRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_process_features_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    input_path = Path(launch_config["input_path"])
+    label = f"Process features {input_path.name}".strip()
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="process-features",
+        status="running",
+        processed=0,
+        total=int(launch_config["subfolder_count"]),
+        current="Queued",
+        label=label,
+        save_dir=str(input_path),
+        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_process_features_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_process_features_run("submit_failed", f"Could not start process-features job: {exc}"),
+        }
+
+    return {"submitted": True, "jobId": job.job_id, "message": "Process-features job submitted."}
 
 
 @api.post("/inference/run")

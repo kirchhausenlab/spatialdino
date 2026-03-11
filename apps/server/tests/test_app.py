@@ -209,6 +209,142 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["reasonCode"], "shape_mismatch")
         self.assertIn("TIFF files do not all have the same 3D shape.", payload["message"])
 
+    def test_validate_process_features_input_folder_accepts_valid_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(
+            payload,
+            {
+                "valid": True,
+                "message": "Valid feature folder. Found 2 subfolders.",
+                "subfolderCount": 2,
+            },
+        )
+
+    def test_validate_process_features_input_folder_rejects_missing_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "no_subfolders")
+        self.assertEqual(payload["message"], "Input folder contains no subfolders.")
+
+    def test_validate_process_features_input_folder_rejects_missing_lr_feats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "missing_required_files")
+        self.assertEqual(payload["message"], "Subfolder sample_a is missing lr_feats.npy.")
+
+    def test_validate_process_features_input_folder_rejects_missing_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "missing_required_files")
+        self.assertEqual(payload["message"], "Subfolder sample_a is missing volume_unnorm.tif.")
+
+    def test_build_process_features_launch_config_accepts_valid_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                save_high_resolution_features=True,
+                high_resolution_save_format=".tif",
+                save_pca=True,
+                pca_components=3,
+                pca_save_format=".tif",
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderCount"], 1)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["gpu_index"], 0)
+        self.assertEqual(launch_config["subfolder_count"], 1)
+        self.assertEqual(launch_config["high_resolution_save_format"], ".tif")
+        self.assertEqual(launch_config["pca_save_format"], ".tif")
+
+    def test_build_process_features_launch_config_rejects_missing_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                save_high_resolution_features=False,
+                save_pca=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "no_outputs_selected")
+        self.assertIsNone(launch_config)
+
     def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -59,7 +59,7 @@ function readStoredBookmarkedDirs(): string[] {
     if (!Array.isArray(parsed)) return [];
     return normalizeBookmarkedDirs(parsed.filter((v): v is string => typeof v === "string"));
   } catch (error) {
-    console.warn("[spatialDINO] Unable to read bookmarked directories from localStorage:", error);
+    console.warn("[SpatialDINO] Unable to read bookmarked directories from localStorage:", error);
     return [];
   }
 }
@@ -69,7 +69,7 @@ function writeStoredBookmarkedDirs(paths: readonly string[]) {
   try {
     window.localStorage.setItem(BOOKMARKS_STORAGE_KEY, JSON.stringify(paths));
   } catch (error) {
-    console.warn("[spatialDINO] Unable to persist bookmarked directories to localStorage:", error);
+    console.warn("[SpatialDINO] Unable to persist bookmarked directories to localStorage:", error);
   }
 }
 

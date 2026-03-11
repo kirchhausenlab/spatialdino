@@ -5,8 +5,7 @@ import ThemeToggle from "./ThemeToggle";
 const navItems: Array<{ to: string; label: string }> = [
   { to: "/training", label: "Training" },
   { to: "/inference", label: "Inference" },
-  { to: "/segmentation", label: "Segmentation" },
-  { to: "/tracking", label: "Tracking" }
+  { to: "/post-processing", label: "Post-processing" }
 ];
 
 export default function TopNav() {
@@ -14,8 +13,8 @@ export default function TopNav() {
     <header className="topNav">
       <nav className="topNavInner" aria-label="Primary">
         <div className="topNavLeft">
-          <NavLink to="/inference" className="topNavBrand" aria-label="spatialDINO home">
-            spatialDINO
+          <NavLink to="/inference" className="topNavBrand" aria-label="SpatialDINO home">
+            SpatialDINO
           </NavLink>
           <div className="topNavDivider" aria-hidden="true" />
           {navItems.map((item) => (
