@@ -80,8 +80,11 @@ git clone --recursive git@github.com:kirchhausenlab/spatialdino.git
 In the repository directory, run
 ```bash
 uv venv --python 3.12
-uv sync
+uv sync --all-packages
 ```
+
+This creates a single root `.venv` shared by the core `spatialdino` package and the GUI server in
+`apps/server`.
 
 ---
 
@@ -95,7 +98,8 @@ uv sync
 #!/bin/bash
 
 folder_path="/nfs/data1expansion/datasync3/Gustavo/20210422_0p5_0p55_sCMOS_Gu_AP2/CS1_Ap2_live_3colorsDic/Ex07_488_60mW_z0p5/ch488nmCamA/DS"
-number_of_files=1                    # -1 for all timepoints, otherwise chose a number
+file_start=0
+file_end=1                           # exclusive; leave unset to process through the end
 save_path="/raid1/cme_tests/results/ablations/ap2_test"
 export OMP_NUM_THREADS=32
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -105,15 +109,19 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
          --rdzv_endpoint=localhost:9999 ./scripts/inference/inference.py \
   file_path="$folder_path" \
   save_path="$save_path" \
-  number_of_files=$number_of_files \
+  file_start=$file_start \
+  file_end=$file_end \
+  global_hist_min=null \
+  global_hist_max=null \
   crop_params="[0,0,0,0,0,0]"
 ```
 
 ### Script Parameters
 
 - **`folder_path`**: Path to folder containing images
-- **`number_of_files`**: Number of files to process (-1 for all files)
+- **`file_start` / `file_end`**: File slice passed to `fnames[file_start:file_end]` (`file_end` is exclusive)
 - **`save_path`**: Path to save results
+- **`global_hist_min` / `global_hist_max`**: Optional global histogram bounds. If both are provided, inference uses those shared values for all volumes instead of the default per-volume normalization. These correspond to the values written by `scripts/inference/norm_per_vol.py`.
 - **`OMP_NUM_THREADS`**: Number of threads to use
 - **`CUDA_VISIBLE_DEVICES`**: List of GPUs to use
 - **`NUM_PROC_PER_NODE`**: Number of processes/GPUs per node

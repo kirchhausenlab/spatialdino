@@ -1,4 +1,4 @@
-
+/models
 *.pth
 *.pt
 *.pdf
@@ -27,6 +27,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!apps/web/src/lib/
+!apps/web/src/lib/**
 lib64/
 parts/
 sdist/
@@ -102,3 +104,7 @@ src/third_party/VTK
 *.npz
 copilot.md
 *.mp4
+node_modules/
+.vite/
+.uv-cache/
+apps/server/.venv/

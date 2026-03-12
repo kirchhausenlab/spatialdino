@@ -1,0 +1,19 @@
+[project]
+name = "spatialdino-server"
+version = "0.0.0"
+description = "spatialDINO infrastructure server (FastAPI API + serves web UI)"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+spatialdino-server = "spatialdino_server.cli:main"
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["spatialdino_server"]

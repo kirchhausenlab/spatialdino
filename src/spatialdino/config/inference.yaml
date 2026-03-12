@@ -3,6 +3,10 @@ backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoint
 seed: 0
 file_path: null
 save_path: null
+file_start: 0
+file_end: null
+global_hist_min: null
+global_hist_max: null
 model: vits8
 
 device_type: "cuda"

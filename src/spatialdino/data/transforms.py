@@ -1985,6 +1985,7 @@ def make_inference_transform(
     max_val: int = 65535,
     threshold_divisor: float = 1.0 / 5000,
     dtype: str = "fp32",
+    normalize: bool = True,
     allow_missing_keys: bool = False,
 ) -> Compose:
     dtype = DTYPE_MAPPING[dtype]  # type: ignore
@@ -2036,21 +2037,26 @@ def make_inference_transform(
             constant_values=pad_value,
             allow_missing_keys=allow_missing_keys,
         ),
-        *make_normalize_transform(
-            image_key=image_key,
-            mean=mean,
-            std=std,
-            max_val=max_val,
-            threshold_divisor=threshold_divisor,
-            channel_wise=True,
-            allow_missing_keys=allow_missing_keys,
-        ),
+    ])
+    if normalize:
+        transforms_list.extend(
+            make_normalize_transform(
+                image_key=image_key,
+                mean=mean,
+                std=std,
+                max_val=max_val,
+                threshold_divisor=threshold_divisor,
+                channel_wise=True,
+                allow_missing_keys=allow_missing_keys,
+            )
+        )
+    transforms_list.append(
         ToTensord(
             keys=image_key,
             dtype=dtype,  # type: ignore
             allow_missing_keys=allow_missing_keys,
-        ),
-    ])
+        )
+    )
 
     return Compose(transforms_list)
 
