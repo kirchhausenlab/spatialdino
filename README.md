@@ -21,7 +21,7 @@ _Equal contribution, equal first authorship_
 
 ## 📂 Public Data Access
 
-All datasets and pre-trained models are publicly available on AWS S3.
+All datasets and pre-trained models are publicly available on AWS S3. All datasets are also available via [Mirante4D](https://kirchhausenlab.github.io/llsm_viewer/).
 
 ### Download Commands
 
@@ -45,15 +45,7 @@ aws s3 ls s3://spatialdino/ --no-sign-request
 
 ---
 
-## CUDA Installation 🛠️
-
-This project requires CUDA version 12 or higher. Verify the correct version of CUDA installed by running:
-
-```bash
-nvcc --version
-```
-
----
+## Get started
 
 ### 1. Install uv
 
@@ -85,6 +77,36 @@ uv sync --all-packages
 
 This creates a single root `.venv` shared by the core `spatialdino` package and the GUI server in
 `apps/server`.
+
+### 4. Install the GUI
+
+In the repository directory, run
+
+```bash
+cd apps/web
+npm install
+```
+
+### 5. Run the GUI
+
+In the repository directory, run
+
+```bash
+cd apps/web
+npm run dev
+```
+
+Then follow the GUI instructions shown in the terminal and browser.
+
+---
+
+## CUDA Installation 🛠️
+
+This project requires CUDA version 12 or higher. Verify the correct version of CUDA installed by running:
+
+```bash
+nvcc --version
+```
 
 ---
 
