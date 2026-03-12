@@ -6,6 +6,8 @@ import ServerDirectoryPicker from "../components/ServerDirectoryPicker";
 import { getClientId } from "../lib/clientId";
 
 type WorkflowOption = "process_features" | "segmentation" | "tracking";
+type SegmentationMode = "voronoi_otsu" | "probability_map";
+type TrackingSegmentationSource = "voronoi_otsu" | "probability_map";
 type SaveFormat = ".npy" | ".tif";
 
 type GpuOption = {
@@ -22,6 +24,9 @@ type PostProcessingValidationSuccess = {
   valid: true;
   message: string;
   subfolderCount: number;
+  subfolderNames?: string[];
+  probmapDensitiesPath?: string;
+  probmapDensitiesExists?: boolean;
 };
 
 type PostProcessingValidationFailure = {
@@ -45,9 +50,34 @@ type ProcessFeaturesRunRequest = {
 type SegmentationRunRequest = {
   input_path: string;
   gpu_index: number | null;
-  enable_voronoi_otsu: boolean;
+  mode: SegmentationMode;
   gaussian_blur_sigma: number;
   rolling_ball_radius: number;
+  run_density_estimation: boolean;
+  training_timepoint: string | null;
+  seg_tif: string | null;
+  valid_mask_tif: string | null;
+  density_method: "gpu-hist" | "kde";
+  feature_batch: number;
+  kde_points: number;
+  kde_max_samples: number;
+  kde_bandwidth: number | null;
+  hist_sigma_bins: number;
+  bg_prob_threshold: number;
+  fg_prob_threshold: number;
+  seed: number;
+};
+
+type TrackingRunRequest = {
+  input_path: string;
+  segmentation_filename: string;
+  max_distance_xy: number;
+  max_distance_z: number;
+  z_distance_weight: number;
+  min_distance_to_remove_cand: number;
+  vote_thresholds: string;
+  dice_threshold: number;
+  corr_threshold: number;
 };
 
 type RunSubmittedResponse = {
@@ -88,9 +118,50 @@ const WORKFLOW_OPTIONS: Array<{
   },
 ];
 
+const SEGMENTATION_OPTIONS: Array<{
+  value: SegmentationMode;
+  label: string;
+}> = [
+  {
+    value: "voronoi_otsu",
+    label: "Voronoi-Otsu",
+  },
+  {
+    value: "probability_map",
+    label: "Probability map",
+  },
+];
+
+const TRACKING_SEGMENTATION_OPTIONS: Array<{
+  value: TrackingSegmentationSource;
+  label: string;
+}> = [
+  {
+    value: "voronoi_otsu",
+    label: "Voronoi-Otsu",
+  },
+  {
+    value: "probability_map",
+    label: "Probability map",
+  },
+];
+
 function getWorkflowLabel(workflow: WorkflowOption | null): string {
   if (!workflow) return "Post-processing";
   return WORKFLOW_OPTIONS.find((option) => option.value === workflow)?.label ?? "Post-processing";
+}
+
+function parentPathForPicker(path: string | null): string | null {
+  if (!path) return null;
+  const normalized = path.trim();
+  if (!normalized.startsWith("/")) return null;
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex <= 0) return "/";
+  return normalized.slice(0, slashIndex);
+}
+
+function trackingSegmentationFilename(source: TrackingSegmentationSource): string {
+  return source === "voronoi_otsu" ? "voronoi-otsu/instance_seg.tif" : "probmap/instance_seg.tif";
 }
 
 export default function PostProcessingPage() {
@@ -98,7 +169,9 @@ export default function PostProcessingPage() {
   const validationRequestIdRef = useRef(0);
 
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowOption | null>(null);
+  const [selectedSegmentationMode, setSelectedSegmentationMode] = useState<SegmentationMode>("voronoi_otsu");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<"input" | "seg_tif" | "valid_mask">("input");
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationResult, setValidationResult] = useState<PostProcessingValidationResult | null>(null);
@@ -112,9 +185,30 @@ export default function PostProcessingPage() {
   const [savePca, setSavePca] = useState(false);
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
-  const [enableVoronoiOtsu, setEnableVoronoiOtsu] = useState(true);
   const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
   const [rollingBallRadius, setRollingBallRadius] = useState("10");
+  const [runDensityEstimation, setRunDensityEstimation] = useState(true);
+  const [densityEstimationTimepoint, setDensityEstimationTimepoint] = useState<string>("");
+  const [segTifPath, setSegTifPath] = useState<string | null>(null);
+  const [validMaskTifPath, setValidMaskTifPath] = useState<string | null>(null);
+  const [probabilityMapDensityMethod, setProbabilityMapDensityMethod] = useState<"gpu-hist" | "kde">("gpu-hist");
+  const [probabilityMapFeatureBatch, setProbabilityMapFeatureBatch] = useState("32");
+  const [probabilityMapKdePoints, setProbabilityMapKdePoints] = useState("512");
+  const [probabilityMapKdeMaxSamples, setProbabilityMapKdeMaxSamples] = useState("200000");
+  const [probabilityMapKdeBandwidth, setProbabilityMapKdeBandwidth] = useState("");
+  const [probabilityMapHistSigmaBins, setProbabilityMapHistSigmaBins] = useState("1.5");
+  const [probabilityMapBgThreshold, setProbabilityMapBgThreshold] = useState("0.4");
+  const [probabilityMapFgThreshold, setProbabilityMapFgThreshold] = useState("0.95");
+  const [probabilityMapSeed, setProbabilityMapSeed] = useState("1337");
+  const [trackingSegmentationSource, setTrackingSegmentationSource] =
+    useState<TrackingSegmentationSource>("voronoi_otsu");
+  const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("20");
+  const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("10");
+  const [trackingZDistanceWeight, setTrackingZDistanceWeight] = useState("2.5");
+  const [trackingMinDistanceToRemoveCand, setTrackingMinDistanceToRemoveCand] = useState("3");
+  const [trackingVoteThresholds, setTrackingVoteThresholds] = useState("320,300,280,260");
+  const [trackingDiceThreshold, setTrackingDiceThreshold] = useState("0.5");
+  const [trackingCorrThreshold, setTrackingCorrThreshold] = useState("0.5");
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
 
@@ -157,12 +251,13 @@ export default function PostProcessingPage() {
     validationRequestIdRef.current += 1;
     setValidationLoading(false);
     setValidationResult(null);
-  }, [inputPath]);
+  }, [inputPath, selectedWorkflow, trackingSegmentationSource]);
 
   useEffect(() => {
     setRunFeedback(null);
   }, [
     selectedWorkflow,
+    selectedSegmentationMode,
     inputPath,
     selectedGpuIndex,
     saveHighResolutionFeatures,
@@ -170,9 +265,29 @@ export default function PostProcessingPage() {
     savePca,
     pcaComponents,
     pcaSaveFormat,
-    enableVoronoiOtsu,
     gaussianBlurSigma,
     rollingBallRadius,
+    runDensityEstimation,
+    densityEstimationTimepoint,
+    segTifPath,
+    validMaskTifPath,
+    probabilityMapDensityMethod,
+    probabilityMapFeatureBatch,
+    probabilityMapKdePoints,
+    probabilityMapKdeMaxSamples,
+    probabilityMapKdeBandwidth,
+    probabilityMapHistSigmaBins,
+    probabilityMapBgThreshold,
+    probabilityMapFgThreshold,
+    probabilityMapSeed,
+    trackingSegmentationSource,
+    trackingMaxDistanceXy,
+    trackingMaxDistanceZ,
+    trackingZDistanceWeight,
+    trackingMinDistanceToRemoveCand,
+    trackingVoteThresholds,
+    trackingDiceThreshold,
+    trackingCorrThreshold,
   ]);
 
   const workflowLabel = getWorkflowLabel(selectedWorkflow);
@@ -180,10 +295,23 @@ export default function PostProcessingPage() {
   const processFeaturesSelected = selectedWorkflow === "process_features";
   const segmentationSelected = selectedWorkflow === "segmentation";
   const trackingSelected = selectedWorkflow === "tracking";
+  const voronoiOtsuSelected = segmentationSelected && selectedSegmentationMode === "voronoi_otsu";
+  const probabilityMapSelected = segmentationSelected && selectedSegmentationMode === "probability_map";
   const parametersVisible = validationResult?.valid === true;
+  const validatedSubfolderNames = validationResult?.valid ? validationResult.subfolderNames ?? [] : [];
+  const probmapDensitiesPath = validationResult?.valid ? validationResult.probmapDensitiesPath ?? null : null;
+  const probmapDensitiesExists = validationResult?.valid ? Boolean(validationResult.probmapDensitiesExists) : false;
+
+  useEffect(() => {
+    if (!probabilityMapSelected) return;
+    if (!validatedSubfolderNames.length) return;
+    if (densityEstimationTimepoint && validatedSubfolderNames.includes(densityEstimationTimepoint)) return;
+    setDensityEstimationTimepoint(validatedSubfolderNames[0]);
+  }, [densityEstimationTimepoint, probabilityMapSelected, validatedSubfolderNames]);
 
   async function validateInputFolder() {
     if (!inputPath) return;
+    if (!selectedWorkflow) return;
 
     const requestId = validationRequestIdRef.current + 1;
     validationRequestIdRef.current = requestId;
@@ -191,13 +319,26 @@ export default function PostProcessingPage() {
     setValidationResult(null);
 
     try {
-      const resp = await fetch("/api/post-processing/process-features/validate-input", {
+      const validationUrl =
+        selectedWorkflow === "tracking"
+          ? "/api/post-processing/tracking/validate-input"
+          : selectedWorkflow === "segmentation"
+            ? "/api/post-processing/segmentation/validate-input"
+            : "/api/post-processing/process-features/validate-input";
+      const resp = await fetch(validationUrl, {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ path: inputPath }),
+        body: JSON.stringify(
+          selectedWorkflow === "tracking"
+            ? {
+                path: inputPath,
+                segmentation_filename: trackingSegmentationFilename(trackingSegmentationSource),
+              }
+            : { path: inputPath }
+        ),
       });
 
       if (!resp.ok) {
@@ -243,7 +384,10 @@ export default function PostProcessingPage() {
     };
   }
 
-  async function submitRun(url: string, request: ProcessFeaturesRunRequest | SegmentationRunRequest) {
+  async function submitRun(
+    url: string,
+    request: ProcessFeaturesRunRequest | SegmentationRunRequest | TrackingRunRequest
+  ) {
     setSubmitting(true);
     setRunFeedback(null);
 
@@ -311,29 +455,197 @@ export default function PostProcessingPage() {
       setRunFeedback({ tone: "error", message: "Select one GPU." });
       return;
     }
-    if (!enableVoronoiOtsu) {
-      setRunFeedback({ tone: "error", message: "Enable Voronoi-Otsu segmentation." });
+
+    if (selectedSegmentationMode === "voronoi_otsu") {
+      const parsedGaussianBlurSigma = Number.parseInt(gaussianBlurSigma.trim(), 10);
+      if (!Number.isFinite(parsedGaussianBlurSigma) || parsedGaussianBlurSigma < 0) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative integer for Gaussian blur sigma." });
+        return;
+      }
+
+      const parsedRollingBallRadius = Number.parseFloat(rollingBallRadius.trim());
+      if (!Number.isFinite(parsedRollingBallRadius) || parsedRollingBallRadius < 0) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative number for Rolling ball radius." });
+        return;
+      }
+
+      await submitRun("/api/post-processing/segmentation/run", {
+        input_path: inputPath,
+        gpu_index: selectedGpuIndex,
+        mode: "voronoi_otsu",
+        gaussian_blur_sigma: parsedGaussianBlurSigma,
+        rolling_ball_radius: parsedRollingBallRadius,
+        run_density_estimation: false,
+        training_timepoint: null,
+        seg_tif: null,
+        valid_mask_tif: null,
+        density_method: "gpu-hist",
+        feature_batch: 32,
+        kde_points: 512,
+        kde_max_samples: 200000,
+        kde_bandwidth: null,
+        hist_sigma_bins: 1.5,
+        bg_prob_threshold: 0.4,
+        fg_prob_threshold: 0.95,
+        seed: 1337,
+      });
       return;
     }
 
-    const parsedGaussianBlurSigma = Number.parseInt(gaussianBlurSigma.trim(), 10);
-    if (!Number.isFinite(parsedGaussianBlurSigma) || parsedGaussianBlurSigma < 0) {
-      setRunFeedback({ tone: "error", message: "Enter a valid nonnegative integer for Gaussian blur sigma." });
+    const parsedFeatureBatch = Number.parseInt(probabilityMapFeatureBatch.trim(), 10);
+    if (!Number.isFinite(parsedFeatureBatch) || parsedFeatureBatch < 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Feature batch." });
       return;
     }
 
-    const parsedRollingBallRadius = Number.parseFloat(rollingBallRadius.trim());
-    if (!Number.isFinite(parsedRollingBallRadius) || parsedRollingBallRadius < 0) {
-      setRunFeedback({ tone: "error", message: "Enter a valid nonnegative number for Rolling ball radius." });
+    const parsedKdePoints = Number.parseInt(probabilityMapKdePoints.trim(), 10);
+    if (!Number.isFinite(parsedKdePoints) || parsedKdePoints < 2) {
+      setRunFeedback({ tone: "error", message: "Enter a valid integer of at least 2 for Density grid size." });
+      return;
+    }
+
+    const parsedKdeMaxSamples = Number.parseInt(probabilityMapKdeMaxSamples.trim(), 10);
+    if (!Number.isFinite(parsedKdeMaxSamples) || parsedKdeMaxSamples < 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Max samples per class." });
+      return;
+    }
+
+    const parsedBgThreshold = Number.parseFloat(probabilityMapBgThreshold.trim());
+    if (!Number.isFinite(parsedBgThreshold) || parsedBgThreshold < 0 || parsedBgThreshold > 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid background probability threshold between 0 and 1." });
+      return;
+    }
+
+    const parsedFgThreshold = Number.parseFloat(probabilityMapFgThreshold.trim());
+    if (!Number.isFinite(parsedFgThreshold) || parsedFgThreshold < 0 || parsedFgThreshold > 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid foreground probability threshold between 0 and 1." });
+      return;
+    }
+
+    const parsedSeed = Number.parseInt(probabilityMapSeed.trim(), 10);
+    if (!Number.isFinite(parsedSeed)) {
+      setRunFeedback({ tone: "error", message: "Enter a valid integer for Random seed." });
+      return;
+    }
+
+    const parsedHistSigmaBins = Number.parseFloat(probabilityMapHistSigmaBins.trim());
+    if (
+      probabilityMapDensityMethod === "gpu-hist" &&
+      (!Number.isFinite(parsedHistSigmaBins) || parsedHistSigmaBins <= 0)
+    ) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Histogram sigma." });
+      return;
+    }
+
+    let parsedKdeBandwidth: number | null = null;
+    if (probabilityMapDensityMethod === "kde" && probabilityMapKdeBandwidth.trim()) {
+      parsedKdeBandwidth = Number.parseFloat(probabilityMapKdeBandwidth.trim());
+      if (!Number.isFinite(parsedKdeBandwidth) || parsedKdeBandwidth <= 0) {
+        setRunFeedback({ tone: "error", message: "Enter a valid positive KDE bandwidth, or leave it blank for auto." });
+        return;
+      }
+    }
+
+    if (runDensityEstimation) {
+      if (!densityEstimationTimepoint) {
+        setRunFeedback({ tone: "error", message: "Choose one training timepoint for density estimation." });
+        return;
+      }
+      if (!segTifPath) {
+        setRunFeedback({ tone: "error", message: "Choose a segmentation mask TIFF for density estimation." });
+        return;
+      }
+    } else if (!probmapDensitiesExists) {
+      setRunFeedback({
+        tone: "error",
+        message: "probmap_densities.npz was not found in the input folder root. Run density estimation first.",
+      });
       return;
     }
 
     await submitRun("/api/post-processing/segmentation/run", {
       input_path: inputPath,
       gpu_index: selectedGpuIndex,
-      enable_voronoi_otsu: enableVoronoiOtsu,
-      gaussian_blur_sigma: parsedGaussianBlurSigma,
-      rolling_ball_radius: parsedRollingBallRadius,
+      mode: "probability_map",
+      gaussian_blur_sigma: 3,
+      rolling_ball_radius: 10,
+      run_density_estimation: runDensityEstimation,
+      training_timepoint: runDensityEstimation ? densityEstimationTimepoint : null,
+      seg_tif: runDensityEstimation ? segTifPath : null,
+      valid_mask_tif: runDensityEstimation ? validMaskTifPath : null,
+      density_method: probabilityMapDensityMethod,
+      feature_batch: parsedFeatureBatch,
+      kde_points: parsedKdePoints,
+      kde_max_samples: parsedKdeMaxSamples,
+      kde_bandwidth: probabilityMapDensityMethod === "kde" ? parsedKdeBandwidth : null,
+      hist_sigma_bins: probabilityMapDensityMethod === "gpu-hist" ? parsedHistSigmaBins : 1.5,
+      bg_prob_threshold: parsedBgThreshold,
+      fg_prob_threshold: parsedFgThreshold,
+      seed: parsedSeed,
+    });
+  }
+
+  async function handleTrackingRun() {
+    if (!inputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an input folder." });
+      return;
+    }
+
+    const parsedMaxDistanceXy = Number.parseFloat(trackingMaxDistanceXy.trim());
+    if (!Number.isFinite(parsedMaxDistanceXy) || parsedMaxDistanceXy <= 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Max XY distance." });
+      return;
+    }
+
+    const parsedMaxDistanceZ = Number.parseFloat(trackingMaxDistanceZ.trim());
+    if (!Number.isFinite(parsedMaxDistanceZ) || parsedMaxDistanceZ <= 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Max Z distance." });
+      return;
+    }
+
+    const parsedZDistanceWeight = Number.parseFloat(trackingZDistanceWeight.trim());
+    if (!Number.isFinite(parsedZDistanceWeight) || parsedZDistanceWeight <= 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Z distance weight." });
+      return;
+    }
+
+    const parsedMinDistanceToRemoveCand = Number.parseFloat(trackingMinDistanceToRemoveCand.trim());
+    if (!Number.isFinite(parsedMinDistanceToRemoveCand) || parsedMinDistanceToRemoveCand < 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid nonnegative immediate assignment distance." });
+      return;
+    }
+
+    const parsedDiceThreshold = Number.parseFloat(trackingDiceThreshold.trim());
+    if (!Number.isFinite(parsedDiceThreshold) || parsedDiceThreshold < 0 || parsedDiceThreshold > 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid Dice threshold between 0 and 1." });
+      return;
+    }
+
+    const parsedCorrThreshold = Number.parseFloat(trackingCorrThreshold.trim());
+    if (!Number.isFinite(parsedCorrThreshold) || parsedCorrThreshold < -1 || parsedCorrThreshold > 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid correlation threshold between -1 and 1." });
+      return;
+    }
+
+    const normalizedVoteThresholds = trackingVoteThresholds
+      .split(",")
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0);
+    if (normalizedVoteThresholds.some((token) => !/^\d+$/.test(token) || Number.parseInt(token, 10) <= 0)) {
+      setRunFeedback({ tone: "error", message: "Vote thresholds must be a comma-separated list of positive integers." });
+      return;
+    }
+
+    await submitRun("/api/post-processing/tracking/run", {
+      input_path: inputPath,
+      segmentation_filename: trackingSegmentationFilename(trackingSegmentationSource),
+      max_distance_xy: parsedMaxDistanceXy,
+      max_distance_z: parsedMaxDistanceZ,
+      z_distance_weight: parsedZDistanceWeight,
+      min_distance_to_remove_cand: parsedMinDistanceToRemoveCand,
+      vote_thresholds: normalizedVoteThresholds.join(","),
+      dice_threshold: parsedDiceThreshold,
+      corr_threshold: parsedCorrThreshold,
     });
   }
 
@@ -366,12 +678,38 @@ export default function PostProcessingPage() {
         </div>
       </section>
 
+      {segmentationSelected ? (
+        <section className="datasetCard" aria-label="Segmentation workflows">
+          <div className="segmentationOptionGrid">
+            {SEGMENTATION_OPTIONS.map((option) => {
+              const active = option.value === selectedSegmentationMode;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={active ? "postProcessingOptionButton isActive" : "postProcessingOptionButton"}
+                  aria-pressed={active}
+                  onClick={() => setSelectedSegmentationMode(option.value)}
+                >
+                  <div className="postProcessingOptionLabel">{option.label}</div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
       {inputStepVisible ? (
         <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} input folder`}>
           <DirectoryFieldRow
             label="Input folder"
             path={inputPath}
-            onChoose={() => setPickerOpen(true)}
+            buttonLabel="Choose directory"
+            emptyLabel="No directory selected yet"
+            onChoose={() => {
+              setPickerTarget("input");
+              setPickerOpen(true);
+            }}
             action={
               <button
                 type="button"
@@ -383,6 +721,25 @@ export default function PostProcessingPage() {
               </button>
             }
           />
+
+          {trackingSelected ? (
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Segmentation source:</div>
+              <select
+                className="inferenceSelect"
+                value={trackingSegmentationSource}
+                onChange={(event) =>
+                  setTrackingSegmentationSource(event.target.value as TrackingSegmentationSource)
+                }
+              >
+                {TRACKING_SEGMENTATION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           {validationLoading ? (
             <ValidationMessage tone="neutral">Validating input folder...</ValidationMessage>
@@ -480,45 +837,201 @@ export default function PostProcessingPage() {
         <section className="datasetCard inferenceFormCard" aria-label="Segmentation parameters">
           {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
 
-          <div className="inferenceFormRows">
-            <GpuSelectionRow
-              optionsLoading={optionsLoading}
-              availableGpus={availableGpus}
-              gpuError={gpuError}
-              selectedGpuIndex={selectedGpuIndex}
-              onSelectGpu={setSelectedGpuIndex}
-            />
+          {voronoiOtsuSelected ? (
+            <div className="inferenceFormRows">
+              <GpuSelectionRow
+                optionsLoading={optionsLoading}
+                availableGpus={availableGpus}
+                gpuError={gpuError}
+                selectedGpuIndex={selectedGpuIndex}
+                onSelectGpu={setSelectedGpuIndex}
+              />
 
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Voronoi-Otsu segmentation:</div>
-              <label className="inferenceCheckboxLabel">
-                <input
-                  type="checkbox"
-                  checked={enableVoronoiOtsu}
-                  onChange={(event) => setEnableVoronoiOtsu(event.target.checked)}
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">Voronoi-Otsu:</div>
+                <div className="inferenceInlineLabel isStrong">Gaussian blur sigma</div>
+                <PostProcessingNumberInput value={gaussianBlurSigma} onChange={setGaussianBlurSigma} min={0} step={1} />
+                <div className="inferenceInlineLabel isStrong">Rolling ball radius</div>
+                <PostProcessingNumberInput
+                  value={rollingBallRadius}
+                  onChange={setRollingBallRadius}
+                  min={0}
+                  step={0.1}
                 />
-                <span>Enabled</span>
-              </label>
-              {enableVoronoiOtsu ? (
-                <>
-                  <div className="inferenceInlineLabel isStrong">Gaussian blur sigma:</div>
+              </div>
+            </div>
+          ) : null}
+
+          {probabilityMapSelected ? (
+            <>
+              <div className="sidebarHint">
+                Density estimation runs on one selected training timepoint, saves{" "}
+                <code>probmap_densities.npz</code> in the input folder root, and probability map estimation writes only{" "}
+                <code>probmap/semantic_seg.tif</code>, <code>probmap/instance_seg.tif</code>, and{" "}
+                <code>probmap/probmap.tif</code> inside each timepoint.
+              </div>
+
+              <div className="inferenceFormRows">
+                <GpuSelectionRow
+                  optionsLoading={optionsLoading}
+                  availableGpus={availableGpus}
+                  gpuError={gpuError}
+                  selectedGpuIndex={selectedGpuIndex}
+                  onSelectGpu={setSelectedGpuIndex}
+                />
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">Density estimation:</div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={runDensityEstimation}
+                      onChange={(event) => setRunDensityEstimation(event.target.checked)}
+                    />
+                    <span>Run before probability map estimation</span>
+                  </label>
+                </div>
+
+                {runDensityEstimation ? (
+                  <>
+                    <div className="inferenceFormRow">
+                      <div className="inferenceFieldLabel">Training timepoint:</div>
+                      <select
+                        className="inferenceSelect"
+                        value={densityEstimationTimepoint}
+                        onChange={(event) => setDensityEstimationTimepoint(event.target.value)}
+                      >
+                        {validatedSubfolderNames.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <DirectoryFieldRow
+                      label="Segmentation TIFF"
+                      path={segTifPath}
+                      buttonLabel="Choose file"
+                      emptyLabel="No file selected yet"
+                      onChoose={() => {
+                        setPickerTarget("seg_tif");
+                        setPickerOpen(true);
+                      }}
+                    />
+
+                    <DirectoryFieldRow
+                      label="Valid mask TIFF"
+                      path={validMaskTifPath}
+                      buttonLabel="Choose file"
+                      emptyLabel="No file selected yet"
+                      onChoose={() => {
+                        setPickerTarget("valid_mask");
+                        setPickerOpen(true);
+                      }}
+                      action={
+                        validMaskTifPath ? (
+                          <button
+                            type="button"
+                            className="pickerSecondaryButton"
+                            onClick={() => setValidMaskTifPath(null)}
+                          >
+                            Clear
+                          </button>
+                        ) : null
+                      }
+                    />
+                  </>
+                ) : (
+                  <div className={probmapDensitiesExists ? "sidebarHint" : "sidebarWarning"}>
+                    {probmapDensitiesExists
+                      ? `Probability map estimation will load ${probmapDensitiesPath ?? "probmap_densities.npz"} from the input folder root.`
+                      : "probmap_densities.npz was not found in the input folder root. Run density estimation first."}
+                  </div>
+                )}
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">Density estimation:</div>
+                  <div className="inferenceInlineLabel isStrong">Method</div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={probabilityMapDensityMethod}
+                    onChange={(event) =>
+                      setProbabilityMapDensityMethod(event.target.value as "gpu-hist" | "kde")
+                    }
+                  >
+                    <option value="gpu-hist">GPU histogram</option>
+                    <option value="kde">KDE</option>
+                  </select>
+                  <div className="inferenceInlineLabel isStrong">Density grid size</div>
                   <PostProcessingNumberInput
-                    value={gaussianBlurSigma}
-                    onChange={setGaussianBlurSigma}
-                    min={0}
+                    value={probabilityMapKdePoints}
+                    onChange={setProbabilityMapKdePoints}
+                    min={2}
                     step={1}
                   />
-                  <div className="inferenceInlineLabel isStrong">Rolling ball radius:</div>
+                  {probabilityMapDensityMethod === "gpu-hist" ? (
+                    <>
+                      <div className="inferenceInlineLabel isStrong">Histogram sigma</div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapHistSigmaBins}
+                        onChange={setProbabilityMapHistSigmaBins}
+                        min={0.1}
+                        step={0.1}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <div className="inferenceInlineLabel isStrong">KDE bandwidth</div>
+                      <PostProcessingTextInput
+                        value={probabilityMapKdeBandwidth}
+                        onChange={setProbabilityMapKdeBandwidth}
+                        placeholder="auto"
+                      />
+                    </>
+                  )}
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">Sampling:</div>
+                  <div className="inferenceInlineLabel isStrong">Max samples per class</div>
                   <PostProcessingNumberInput
-                    value={rollingBallRadius}
-                    onChange={setRollingBallRadius}
-                    min={0}
-                    step={0.1}
+                    value={probabilityMapKdeMaxSamples}
+                    onChange={setProbabilityMapKdeMaxSamples}
+                    min={1}
+                    step={1}
                   />
-                </>
-              ) : null}
-            </div>
-          </div>
+                  <div className="inferenceInlineLabel isStrong">Random seed</div>
+                  <PostProcessingNumberInput value={probabilityMapSeed} onChange={setProbabilityMapSeed} min={0} step={1} />
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">Probability map estimation:</div>
+                  <div className="inferenceInlineLabel isStrong">Feature batch</div>
+                  <PostProcessingNumberInput
+                    value={probabilityMapFeatureBatch}
+                    onChange={setProbabilityMapFeatureBatch}
+                    min={1}
+                    step={1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">BG probability threshold</div>
+                  <PostProcessingNumberInput
+                    value={probabilityMapBgThreshold}
+                    onChange={setProbabilityMapBgThreshold}
+                    min={0}
+                    step={0.01}
+                  />
+                  <div className="inferenceInlineLabel isStrong">FG probability threshold</div>
+                  <PostProcessingNumberInput
+                    value={probabilityMapFgThreshold}
+                    onChange={setProbabilityMapFgThreshold}
+                    min={0}
+                    step={0.01}
+                  />
+                </div>
+              </div>
+            </>
+          ) : null}
 
           <div className="validationActions">
             <button
@@ -536,18 +1049,115 @@ export default function PostProcessingPage() {
       ) : null}
 
       {parametersVisible && trackingSelected ? (
-        <section className="datasetCard postProcessingPlaceholderCard" aria-label="Tracking post-processing">
-          <div className="postProcessingPlaceholderTitle">Tracking</div>
+        <section className="datasetCard inferenceFormCard" aria-label="Tracking parameters">
+          <div className="sidebarHint">
+            Tracking reads each subfolder&apos;s <code>lr_feats.npy</code>, the selected segmentation branch
+            <code>{` ${trackingSegmentationFilename(trackingSegmentationSource)}`}</code>, and <code>volume_unnorm.tif</code>,
+            follows the original overlap-and-voting tracker, and writes a single final-format <code>tracks.csv</code> into
+            the selected input folder while keeping exported <code>z</code> coordinates as-is.
+          </div>
+
+          <div className="inferenceFormRows">
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Match window:</div>
+              <div className="inferenceInlineLabel isStrong">Max XY distance</div>
+              <PostProcessingNumberInput
+                value={trackingMaxDistanceXy}
+                onChange={setTrackingMaxDistanceXy}
+                min={0.1}
+                step={0.1}
+              />
+              <div className="inferenceInlineLabel">voxels</div>
+              <div className="inferenceInlineLabel isStrong">Max Z distance</div>
+              <PostProcessingNumberInput
+                value={trackingMaxDistanceZ}
+                onChange={setTrackingMaxDistanceZ}
+                min={0.1}
+                step={0.1}
+              />
+              <div className="inferenceInlineLabel">voxels</div>
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Distance logic:</div>
+              <div className="inferenceInlineLabel isStrong">Z distance weight</div>
+              <PostProcessingNumberInput
+                value={trackingZDistanceWeight}
+                onChange={setTrackingZDistanceWeight}
+                min={0.1}
+                step={0.1}
+              />
+              <div className="inferenceInlineLabel isStrong">Immediate assignment distance</div>
+              <PostProcessingNumberInput
+                value={trackingMinDistanceToRemoveCand}
+                onChange={setTrackingMinDistanceToRemoveCand}
+                min={0}
+                step={0.1}
+              />
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Voting thresholds:</div>
+              <div className="inferenceInlineLabel isStrong">Vote thresholds</div>
+              <PostProcessingTextInput value={trackingVoteThresholds} onChange={setTrackingVoteThresholds} />
+              <div className="inferenceInlineLabel isStrong">Min Dice</div>
+              <PostProcessingNumberInput
+                value={trackingDiceThreshold}
+                onChange={setTrackingDiceThreshold}
+                min={0}
+                step={0.01}
+              />
+              <div className="inferenceInlineLabel isStrong">Min Corr</div>
+              <PostProcessingNumberInput
+                value={trackingCorrThreshold}
+                onChange={setTrackingCorrThreshold}
+                min={-1}
+                step={0.01}
+              />
+            </div>
+          </div>
+
+          <div className="validationActions">
+            <button
+              type="button"
+              className="preprocessValidateButton"
+              onClick={() => void handleTrackingRun()}
+              disabled={submitting}
+            >
+              {submitting ? "Submitting..." : "Run"}
+            </button>
+          </div>
+
+          {runFeedback ? <ValidationMessage tone={runFeedback.tone}>{runFeedback.message}</ValidationMessage> : null}
         </section>
       ) : null}
 
       <ServerDirectoryPicker
         open={pickerOpen}
-        title="Choose the input folder"
-        initialPath={inputPath}
+        title={
+          pickerTarget === "input"
+            ? "Choose the input folder"
+            : pickerTarget === "seg_tif"
+              ? "Choose the segmentation TIFF"
+              : "Choose the valid-mask TIFF"
+        }
+        selectionMode={pickerTarget === "input" ? "directory" : "file"}
+        initialPath={
+          pickerTarget === "input"
+            ? inputPath
+            : pickerTarget === "seg_tif"
+              ? parentPathForPicker(segTifPath) ?? inputPath
+              : parentPathForPicker(validMaskTifPath) ?? inputPath
+        }
         onClose={() => setPickerOpen(false)}
         onSelect={(path) => {
-          setInputPath(path);
+          if (pickerTarget === "input") {
+            setInputPath(path);
+          } else if (pickerTarget === "seg_tif") {
+            setSegTifPath(path);
+          } else {
+            setValidMaskTifPath(path);
+          }
           setPickerOpen(false);
         }}
       />
@@ -558,11 +1168,15 @@ export default function PostProcessingPage() {
 function DirectoryFieldRow({
   label,
   path,
+  buttonLabel,
+  emptyLabel,
   onChoose,
   action,
 }: {
   label: string;
   path: string | null;
+  buttonLabel: string;
+  emptyLabel: string;
   onChoose: () => void;
   action?: ReactNode;
 }) {
@@ -570,10 +1184,10 @@ function DirectoryFieldRow({
     <div className="inferencePathRow">
       <div className="inferencePathLabel">{label}</div>
       <button type="button" className="pickerPrimaryButton" onClick={onChoose}>
-        Choose directory
+        {buttonLabel}
       </button>
       <div className={path ? "datasetPath" : "datasetPath isEmpty"}>
-        <div className="datasetPathValue">{path ?? "No directory selected yet"}</div>
+        <div className="datasetPathValue">{path ?? emptyLabel}</div>
       </div>
       {action ? <div className="inferencePathAction">{action}</div> : null}
     </div>
@@ -636,6 +1250,26 @@ function PostProcessingNumberInput({
       onChange={(event) => onChange(event.target.value)}
       min={min}
       step={step}
+    />
+  );
+}
+
+function PostProcessingTextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <input
+      type="text"
+      className="inferenceNumberInput"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
     />
   );
 }

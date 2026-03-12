@@ -124,12 +124,14 @@ export default function ServerDirectoryPicker({
   open,
   title,
   initialPath,
+  selectionMode = "directory",
   onClose,
   onSelect
 }: {
   open: boolean;
   title?: string;
   initialPath?: string | null;
+  selectionMode?: "directory" | "file";
   onClose: () => void;
   onSelect: (path: string) => void;
 }) {
@@ -139,6 +141,7 @@ export default function ServerDirectoryPicker({
   const resolveInitialPath = useCallback((nextInitialPath: string | null | undefined) => {
     return nextInitialPath ?? lastVisitedPickerPath ?? "/";
   }, []);
+  const dirsOnly = selectionMode !== "file";
 
   const [path, setPath] = useState<string>(() => resolveInitialPath(initialPath));
   const [pathInput, setPathInput] = useState<string>(() => resolveInitialPath(initialPath));
@@ -153,6 +156,7 @@ export default function ServerDirectoryPicker({
   }>({ loading: false, error: null, data: null, items: [] });
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedIsDir, setSelectedIsDir] = useState<boolean | null>(null);
   const [bookmarkedDirs, setBookmarkedDirs] = useState<string[]>(() => readStoredBookmarkedDirs());
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [newDirName, setNewDirName] = useState<string | null>(null);
@@ -182,6 +186,7 @@ export default function ServerDirectoryPicker({
     setPath(next);
     setPathInput(next);
     setSelectedPath(null);
+    setSelectedIsDir(null);
   }, [open, initialPath, resolveInitialPath]);
 
   useEffect(() => {
@@ -192,6 +197,7 @@ export default function ServerDirectoryPicker({
   useEffect(() => {
     if (!open) return;
     setSelectedPath(null);
+    setSelectedIsDir(null);
   }, [open, path]);
 
   useEffect(() => {
@@ -233,8 +239,8 @@ export default function ServerDirectoryPicker({
   }, [bookmarksOpen]);
 
   const queryKeyBase = useMemo(() => {
-    return cacheKey({ path, sort, order, includeHidden: false, dirsOnly: true });
-  }, [path, sort, order]);
+    return cacheKey({ path, sort, order, includeHidden: false, dirsOnly });
+  }, [dirsOnly, path, sort, order]);
 
   const clearListCache = useCallback(() => {
     listCache.current.clear();
@@ -268,8 +274,16 @@ export default function ServerDirectoryPicker({
       const page = 1;
 
       try {
-        const data = await fetchFsList({ path: target, page, pageSize: FETCH_PAGE_SIZE, sort, order, includeHidden: false, dirsOnly: true });
-        const canonicalKeyBase = cacheKey({ path: data.path, sort, order, includeHidden: false, dirsOnly: true });
+        const data = await fetchFsList({
+          path: target,
+          page,
+          pageSize: FETCH_PAGE_SIZE,
+          sort,
+          order,
+          includeHidden: false,
+          dirsOnly
+        });
+        const canonicalKeyBase = cacheKey({ path: data.path, sort, order, includeHidden: false, dirsOnly });
         const canonicalQueryKey = cacheKey({ base: canonicalKeyBase, page, pageSize: FETCH_PAGE_SIZE });
         listCache.current.set(canonicalQueryKey, { atMs: Date.now(), value: data });
         loadedPagesRef.current = new Set([1]);
@@ -277,6 +291,7 @@ export default function ServerDirectoryPicker({
         setPath(data.path);
         setPathInput(data.path);
         setSelectedPath(null);
+        setSelectedIsDir(null);
         setListState({ loading: false, error: null, data, items: data.items });
         return { ok: true };
       } catch (error) {
@@ -285,7 +300,7 @@ export default function ServerDirectoryPicker({
         return { ok: false, error: message };
       }
     },
-    [order, sort]
+    [dirsOnly, order, sort]
   );
 
   useEffect(() => {
@@ -309,10 +324,10 @@ export default function ServerDirectoryPicker({
     void (async () => {
       try {
         const data = await fetchFsList(
-          { path, page, pageSize: FETCH_PAGE_SIZE, sort, order, includeHidden: false, dirsOnly: true },
+          { path, page, pageSize: FETCH_PAGE_SIZE, sort, order, includeHidden: false, dirsOnly },
           controller.signal
         );
-        const canonicalKeyBase = cacheKey({ path: data.path, sort, order, includeHidden: false, dirsOnly: true });
+        const canonicalKeyBase = cacheKey({ path: data.path, sort, order, includeHidden: false, dirsOnly });
         const canonicalQueryKey = cacheKey({ base: canonicalKeyBase, page, pageSize: FETCH_PAGE_SIZE });
         listCache.current.set(canonicalQueryKey, { atMs: Date.now(), value: data });
         if (data.path !== path) {
@@ -328,7 +343,7 @@ export default function ServerDirectoryPicker({
     })();
 
     return () => controller.abort();
-  }, [open, path, sort, order, queryKeyBase, resetAndLoadFirstPage, cacheTtlMs]);
+  }, [open, path, sort, order, queryKeyBase, resetAndLoadFirstPage, cacheTtlMs, dirsOnly]);
 
   const canLoadMore = useMemo(() => {
     const total = listState.data?.total ?? 0;
@@ -364,7 +379,7 @@ export default function ServerDirectoryPicker({
                 sort,
                 order,
                 includeHidden: false,
-                dirsOnly: true
+                dirsOnly
               });
 
         listCache.current.set(queryKey, { atMs: Date.now(), value: data });
@@ -382,7 +397,7 @@ export default function ServerDirectoryPicker({
         loadMoreRef.current.inFlight = false;
       }
     };
-  }, [open, path, sort, order, queryKeyBase, listState.data, listState.items.length, canLoadMore]);
+  }, [open, path, sort, order, queryKeyBase, listState.data, listState.items.length, canLoadMore, dirsOnly]);
 
   const currentPath = listState.data?.path ?? path ?? "";
   const currentBookmarkPath = sanitizeBookmarkedPath(currentPath);
@@ -390,6 +405,9 @@ export default function ServerDirectoryPicker({
   const isCurrentBookmarked = Boolean(bookmarkTargetPath && bookmarkedDirs.includes(bookmarkTargetPath));
   const isCreatingDir = newDirName !== null;
   const selectedLabel = selectedPath ?? "";
+  const canConfirmSelection = Boolean(
+    selectedPath && (selectionMode === "directory" ? selectedIsDir === true : selectedIsDir === false)
+  );
   const showEmptyRow = Boolean(listState.data && !listState.loading && !listState.error && !isCreatingDir && listState.items.length === 0);
   const visibleRowCount = listState.items.length + (isCreatingDir ? 1 : 0) + (showEmptyRow ? 1 : 0);
   const placeholderCount = Math.max(0, VISIBLE_ROWS - Math.min(VISIBLE_ROWS, visibleRowCount));
@@ -453,6 +471,7 @@ export default function ServerDirectoryPicker({
       clearListCache();
       const result = await navigateTo(parentPath);
       setSelectedPath(created.path);
+      setSelectedIsDir(true);
       setNewDirName(null);
       setNewDirBusy(false);
       if (!result.ok) {
@@ -482,32 +501,37 @@ export default function ServerDirectoryPicker({
   return (
     <Modal
       open={open}
-      title={title ?? "Choose a directory"}
+      title={title ?? (selectionMode === "directory" ? "Choose a directory" : "Choose a file")}
       onClose={handleClose}
       panelClassName="pickerModalPanel"
       bodyClassName="pickerModalBody"
       footer={
-        <div className="pickerFooter">
-          <div className="pickerFooterPath">
-            <span className="pickerFooterPathLabel">Selected:</span>
+          <div className="pickerFooter">
+            <div className="pickerFooterPath">
+            <span className="pickerFooterPathLabel">
+              {selectionMode === "directory" ? "Selected directory:" : "Selected file:"}
+            </span>
             <span className="pickerFooterPathValue" title={selectedLabel}>
               {selectedPath ?? "—"}
             </span>
           </div>
           <div className="pickerFooterActions">
-            <button
-              type="button"
-              className="pickerSecondaryButton"
-              disabled={!listState.data || isCreatingDir || newDirBusy}
-              onClick={() => {
-                if (!listState.data || isCreatingDir || newDirBusy) return;
-                setSelectedPath(null);
-                setNewDirName("");
-                setNewDirMessage(null);
-              }}
-            >
-              {newDirBusy ? "Creating..." : "New folder"}
-            </button>
+            {selectionMode === "directory" ? (
+              <button
+                type="button"
+                className="pickerSecondaryButton"
+                disabled={!listState.data || isCreatingDir || newDirBusy}
+                onClick={() => {
+                  if (!listState.data || isCreatingDir || newDirBusy) return;
+                  setSelectedPath(null);
+                  setSelectedIsDir(null);
+                  setNewDirName("");
+                  setNewDirMessage(null);
+                }}
+              >
+                {newDirBusy ? "Creating..." : "New folder"}
+              </button>
+            ) : null}
             <button
               type="button"
               className="pickerSecondaryButton"
@@ -520,12 +544,12 @@ export default function ServerDirectoryPicker({
             <button
               type="button"
               className="pickerPrimaryButton"
-              disabled={!selectedPath}
+              disabled={!canConfirmSelection}
               onClick={() => {
-                if (selectedPath) onSelect(selectedPath);
+                if (selectedPath && canConfirmSelection) onSelect(selectedPath);
               }}
             >
-              Use this directory
+              {selectionMode === "directory" ? "Use this directory" : "Use this file"}
             </button>
           </div>
         </div>
@@ -689,7 +713,7 @@ export default function ServerDirectoryPicker({
           <div
             className="pickerTableWrap"
             role="table"
-            aria-label="Directories"
+            aria-label={selectionMode === "directory" ? "Directories" : "Files and directories"}
             onScroll={(e) => {
               if (listState.loading) return;
               if (!canLoadMore) return;
@@ -757,7 +781,7 @@ export default function ServerDirectoryPicker({
             {showEmptyRow ? (
               <div className="pickerRow isPlaceholder" role="row">
                 <div className="pickerTd pickerNameCol pickerEmptyCell" role="cell">
-                  No directories.
+                  {selectionMode === "directory" ? "No directories." : "No entries."}
                 </div>
                 <div className="pickerTd pickerModifiedCol" role="cell" />
               </div>
@@ -776,10 +800,19 @@ export default function ServerDirectoryPicker({
                     onClick={() => {
                       if (isCreatingDir) return;
                       setSelectedPath(item.path);
+                      setSelectedIsDir(item.isDir);
                     }}
                     onDoubleClick={() => {
                       if (isCreatingDir) return;
-                      void navigateTo(item.path);
+                      if (item.isDir) {
+                        void navigateTo(item.path);
+                        return;
+                      }
+                      setSelectedPath(item.path);
+                      setSelectedIsDir(false);
+                      if (selectionMode === "file") {
+                        onSelect(item.path);
+                      }
                     }}
                   >
                     {item.name}

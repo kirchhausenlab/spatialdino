@@ -607,6 +607,12 @@ button {
   gap: 10px;
 }
 
+.segmentationOptionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .postProcessingOptionButton {
   padding: 16px;
   border: 1px solid var(--border);
@@ -665,6 +671,10 @@ button {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.inferencePathRow .pickerSecondaryButton {
+  flex: 0 0 auto;
 }
 
 .inferencePathAction {
@@ -829,6 +839,10 @@ button {
 
 @media (max-width: 900px) {
   .postProcessingOptionGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .segmentationOptionGrid {
     grid-template-columns: 1fr;
   }
 

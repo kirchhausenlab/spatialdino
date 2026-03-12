@@ -304,6 +304,7 @@ class AppTests(unittest.TestCase):
                 "valid": True,
                 "message": "Valid feature folder. Found 2 subfolders.",
                 "subfolderCount": 2,
+                "subfolderNames": ["sample_a", "sample_b"],
             },
         )
 
@@ -453,6 +454,7 @@ class AppTests(unittest.TestCase):
         assert launch_config is not None
         self.assertEqual(launch_config["gpu_index"], 0)
         self.assertEqual(launch_config["subfolder_count"], 1)
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_VORONOI_OTSU)
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
@@ -463,7 +465,95 @@ class AppTests(unittest.TestCase):
         self.assertIn("--gaussian-blur-sigma", command)
         self.assertIn("--rolling-ball-radius", command)
 
-    def test_build_segmentation_launch_config_rejects_disabled_segmentation(self) -> None:
+    def test_validate_segmentation_input_folder_reports_subfolder_names_and_probmap_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.savez_compressed(input_dir / "probmap_densities.npz", x1=np.array([], dtype=object))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation = app_module.validate_segmentation_input_folder(str(input_dir))
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderNames"], ["sample_a", "sample_b"])
+        self.assertTrue(validation["probmapDensitiesExists"])
+        self.assertEqual(validation["probmapDensitiesPath"], str(input_dir / "probmap_densities.npz"))
+
+    def test_build_segmentation_launch_config_accepts_probability_map_request_with_density_estimation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            seg_tif = root / "seg.tif"
+            valid_mask_tif = root / "valid_mask.tif"
+            tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
+            tifffile.imwrite(valid_mask_tif, np.ones((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                run_density_estimation=True,
+                training_timepoint="sample_b",
+                seg_tif=str(seg_tif),
+                valid_mask_tif=str(valid_mask_tif),
+                density_method="gpu-hist",
+                feature_batch=24,
+                kde_points=256,
+                kde_max_samples=1000,
+                hist_sigma_bins=2.0,
+                bg_prob_threshold=0.3,
+                fg_prob_threshold=0.9,
+                seed=9,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertTrue(launch_config["run_density_estimation"])
+        self.assertEqual(launch_config["training_timepoint"], "sample_b")
+        self.assertEqual(launch_config["feature_batch"], 24)
+        self.assertEqual(launch_config["kde_points"], 256)
+        self.assertEqual(launch_config["kde_max_samples"], 1000)
+        self.assertEqual(launch_config["hist_sigma_bins"], 2.0)
+        self.assertEqual(launch_config["bg_prob_threshold"], 0.3)
+        self.assertEqual(launch_config["fg_prob_threshold"], 0.9)
+        self.assertEqual(launch_config["seed"], 9)
+        self.assertEqual(launch_config["progress_total"], 4)
+        self.assertEqual(launch_config["densities_path"], input_dir / "probmap_densities.npz")
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertIn("scripts/post_processing/probability_map.py", command)
+        self.assertIn("--run-density-estimation", command)
+        self.assertIn("--training-timepoint", command)
+        self.assertIn("--seg-tif", command)
+        self.assertIn("--valid-mask-tif", command)
+        self.assertIn("--density-method", command)
+        self.assertIn("--bg-prob-threshold", command)
+        self.assertIn("--fg-prob-threshold", command)
+
+    def test_build_segmentation_launch_config_rejects_probability_map_without_saved_densities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -476,9 +566,8 @@ class AppTests(unittest.TestCase):
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
                 gpu_index=0,
-                enable_voronoi_otsu=False,
-                gaussian_blur_sigma=3,
-                rolling_ball_radius=10.0,
+                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                run_density_estimation=False,
             )
 
             with (
@@ -491,7 +580,287 @@ class AppTests(unittest.TestCase):
                 validation, launch_config = app_module._build_segmentation_launch_config(payload)
 
         self.assertEqual(validation["valid"], False)
-        self.assertEqual(validation["reasonCode"], "segmentation_disabled")
+        self.assertEqual(validation["reasonCode"], "missing_probmap_densities")
+        self.assertIsNone(launch_config)
+
+    def test_validate_tracking_input_folder_accepts_valid_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                (sample_dir / "voronoi-otsu").mkdir()
+                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_input_folder(
+                    str(input_dir),
+                    segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
+                )
+
+        self.assertEqual(
+            payload,
+            {
+                "valid": True,
+                "message": "Valid tracking folder. Found 2 subfolders.",
+                "subfolderCount": 2,
+            },
+        )
+
+    def test_validate_tracking_input_folder_rejects_insufficient_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            sample_dir = input_dir / "sample_a"
+            input_dir.mkdir()
+            sample_dir.mkdir()
+            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+            tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "insufficient_subfolders")
+        self.assertEqual(payload["message"], "Tracking requires at least 2 subfolders/timepoints.")
+
+    def test_validate_tracking_input_folder_rejects_missing_segmentation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            (input_dir / "sample_a" / "probmap").mkdir()
+            tifffile.imwrite(input_dir / "sample_a" / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_input_folder(
+                    str(input_dir),
+                    segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
+                )
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "missing_required_files")
+        self.assertEqual(payload["message"], "Subfolder sample_b is missing probmap/instance_seg.tif.")
+
+    def test_build_tracking_launch_config_accepts_valid_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                (sample_dir / "probmap").mkdir()
+                tifffile.imwrite(sample_dir / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+
+            payload = app_module.RunTrackingRequest(
+                input_path=str(input_dir),
+                segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
+                max_distance_xy=24.0,
+                max_distance_z=12.0,
+                z_distance_weight=2.0,
+                min_distance_to_remove_cand=4.0,
+                vote_thresholds="300,280,260",
+                dice_threshold=0.6,
+                corr_threshold=0.4,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_tracking_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderCount"], 2)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["subfolder_count"], 2)
+        self.assertEqual(launch_config["pair_count"], 1)
+        self.assertEqual(launch_config["progress_total"], 3)
+        self.assertEqual(launch_config["max_distance_xy"], 24.0)
+        self.assertEqual(launch_config["max_distance_z"], 12.0)
+        self.assertEqual(launch_config["z_distance_weight"], 2.0)
+        self.assertEqual(launch_config["min_distance_to_remove_cand"], 4.0)
+        self.assertEqual(launch_config["vote_thresholds"], (300, 280, 260))
+        self.assertEqual(launch_config["dice_threshold"], 0.6)
+        self.assertEqual(launch_config["corr_threshold"], 0.4)
+        self.assertFalse(launch_config["invert_z"])
+        self.assertEqual(launch_config["segmentation_filename"], app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME)
+
+        command = app_module._build_tracking_command(launch_config)
+        self.assertIn("scripts/post_processing/tracking.py", command)
+        self.assertIn(app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME, command)
+        self.assertIn("--max-distance-xy", command)
+        self.assertIn("--max-distance-z", command)
+        self.assertIn("--z-distance-weight", command)
+        self.assertIn("--min-distance-to-remove-cand", command)
+        self.assertIn("--vote-thresholds", command)
+        self.assertIn("--dice-threshold", command)
+        self.assertIn("--corr-threshold", command)
+        self.assertNotIn("--invert-z", command)
+
+    def test_run_tracking_submits_job_when_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                (sample_dir / "voronoi-otsu").mkdir()
+                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+
+            payload = app_module.RunTrackingRequest(
+                input_path=str(input_dir),
+                segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
+                max_distance_xy=20.0,
+                max_distance_z=10.0,
+                z_distance_weight=2.5,
+                min_distance_to_remove_cand=3.5,
+                vote_thresholds="320,300,280,260",
+                dice_threshold=0.5,
+                corr_threshold=0.55,
+                invert_z=True,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app._launch_tracking_job_thread") as launch_thread,
+            ):
+                response = app_module.run_tracking(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        self.assertIn("jobId", response)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["max_distance_xy"], 20.0)
+        self.assertEqual(launch_config["max_distance_z"], 10.0)
+        self.assertEqual(launch_config["z_distance_weight"], 2.5)
+        self.assertEqual(launch_config["min_distance_to_remove_cand"], 3.5)
+        self.assertEqual(launch_config["vote_thresholds"], (320, 300, 280, 260))
+        self.assertEqual(launch_config["dice_threshold"], 0.5)
+        self.assertEqual(launch_config["corr_threshold"], 0.55)
+        self.assertTrue(launch_config["invert_z"])
+        self.assertEqual(launch_config["segmentation_filename"], app_module.VORONOI_OTSU_SEGMENTATION_FILENAME)
+        command = app_module._build_tracking_command(launch_config)
+        self.assertIn("--invert-z", command)
+        self.assertNotIn("--no-invert-z", command)
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "tracking")
+            self.assertEqual(job.total, 3)
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+
+    def test_update_tracking_job_progress_from_output_tracks_preparation_and_pairs(self) -> None:
+        job = jobs_api.JobState(
+            job_id="job-track-progress",
+            owner_client_id="client-1234",
+            type="tracking",
+            status="running",
+            total=5,
+        )
+        progress_state: dict[str, object] = {}
+
+        app_module._update_tracking_job_progress_from_output(job, "[tracking] Processing sample_a (1/3)", progress_state)
+        with job.lock:
+            self.assertEqual(job.current, "Preparing sample_a")
+            self.assertEqual(job.processed, 0)
+
+        app_module._update_tracking_job_progress_from_output(job, "[tracking] Completed sample_a", progress_state)
+        with job.lock:
+            self.assertEqual(job.current, "Prepared sample_a")
+            self.assertEqual(job.processed, 1)
+
+        app_module._update_tracking_job_progress_from_output(
+            job,
+            "[tracking] Matching sample_a -> sample_b (1/2)",
+            progress_state,
+        )
+        with job.lock:
+            self.assertEqual(job.current, "Matching sample_a -> sample_b")
+            self.assertEqual(job.processed, 1)
+
+        app_module._update_tracking_job_progress_from_output(
+            job,
+            "[tracking] Matched sample_a -> sample_b (1/2)",
+            progress_state,
+        )
+        with job.lock:
+            self.assertEqual(job.current, "Matched sample_a -> sample_b")
+            self.assertEqual(job.processed, 2)
+
+    def test_update_process_features_job_progress_accepts_probability_map_lines(self) -> None:
+        job = jobs_api.JobState(
+            job_id="job-probmap-progress",
+            owner_client_id="client-1234",
+            type="segmentation",
+            status="running",
+            total=4,
+        )
+        progress_state: dict[str, object] = {}
+
+        app_module._update_process_features_job_progress_from_output(
+            job,
+            "[probmap] Processing density samples (1/2)",
+            progress_state,
+        )
+        with job.lock:
+            self.assertEqual(job.current, "Processing density samples")
+            self.assertEqual(job.processed, 0)
+
+        app_module._update_process_features_job_progress_from_output(
+            job,
+            "[probmap] Completed density samples",
+            progress_state,
+        )
+        with job.lock:
+            self.assertEqual(job.current, "density samples")
+            self.assertEqual(job.processed, 1)
+
+        app_module._update_process_features_job_progress_from_output(
+            job,
+            "[probmap] Completed density fitting",
+            progress_state,
+        )
+        with job.lock:
+            self.assertEqual(job.current, "density fitting")
+            self.assertEqual(job.processed, 2)
+
+    def test_build_tracking_launch_config_rejects_invalid_vote_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+
+            payload = app_module.RunTrackingRequest(
+                input_path=str(input_dir),
+                vote_thresholds="320,0,280",
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_tracking_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "invalid_vote_thresholds")
         self.assertIsNone(launch_config)
 
     def test_run_segmentation_submits_job_when_valid(self) -> None:
@@ -535,6 +904,50 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 1)
             self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+
+    def test_run_segmentation_probability_map_submits_job_with_density_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            seg_tif = root / "seg.tif"
+            tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                gpu_index=0,
+                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                run_density_estimation=True,
+                training_timepoint="sample_a",
+                seg_tif=str(seg_tif),
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+                patch("spatialdino_server.app._launch_segmentation_job_thread") as launch_thread,
+            ):
+                response = app_module.run_segmentation(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertTrue(launch_config["run_density_estimation"])
+        self.assertEqual(launch_config["progress_total"], 4)
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "segmentation")
+            self.assertEqual(job.total, 4)
 
     def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

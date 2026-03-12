@@ -17,6 +17,8 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 ATTENTION_HEAD_CHANNELS = 6
+VORONOI_OTSU_DIRNAME = "voronoi-otsu"
+SEGMENTATION_FILENAME = "instance_seg.tif"
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,11 +144,22 @@ def segment_subfolder(
         device=cle_device,
     )
     seg = cle.voronoi_otsu_labeling(gaussian_blur, spot_sigma=2, outline_sigma=2, device=cle_device)
+    seg_array = np.asarray(seg).astype(np.uint32, copy=False)
+    output_dir = subfolder / VORONOI_OTSU_DIRNAME
+    output_dir.mkdir(parents=True, exist_ok=True)
     tifffile.imwrite(
-        subfolder / "instance_seg.tif",
-        np.asarray(seg).astype(np.uint32, copy=False),
+        subfolder / SEGMENTATION_FILENAME,
+        seg_array,
         bigtiff=True,
         metadata=None,
+        photometric="minisblack",
+    )
+    tifffile.imwrite(
+        output_dir / SEGMENTATION_FILENAME,
+        seg_array,
+        bigtiff=True,
+        metadata=None,
+        photometric="minisblack",
     )
 
 

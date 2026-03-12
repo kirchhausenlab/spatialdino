@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 import sys
 import threading
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 import urllib.request
 import uuid
 
@@ -181,6 +181,11 @@ class ValidateProcessFeaturesInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+class ValidateTrackingInputRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    segmentation_filename: str = Field("instance_seg.tif", min_length=1)
+
+
 class DownloadBackboneWeightsRequest(BaseModel):
     overwrite: bool = False
 
@@ -235,9 +240,36 @@ class RunProcessFeaturesRequest(BaseModel):
 class RunSegmentationRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     gpu_index: int | None = None
-    enable_voronoi_otsu: bool = False
+    mode: str = Field("voronoi_otsu", min_length=1)
+    enable_voronoi_otsu: bool = True
     gaussian_blur_sigma: int = Field(3, ge=0)
     rolling_ball_radius: float = Field(10.0, ge=0.0)
+    run_density_estimation: bool = True
+    training_timepoint: str | None = None
+    seg_tif: str | None = None
+    valid_mask_tif: str | None = None
+    density_method: str = Field("gpu-hist", min_length=1)
+    feature_batch: int = Field(32, ge=1)
+    kde_points: int = Field(512, ge=2)
+    kde_max_samples: int = Field(200000, ge=1)
+    kde_bandwidth: float | None = Field(None, gt=0.0)
+    hist_sigma_bins: float = Field(1.5, gt=0.0)
+    bg_prob_threshold: float = Field(0.4, ge=0.0, le=1.0)
+    fg_prob_threshold: float = Field(0.95, ge=0.0, le=1.0)
+    seed: int = 1337
+
+
+class RunTrackingRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    segmentation_filename: str = Field("instance_seg.tif", min_length=1)
+    max_distance_xy: float = Field(20.0, gt=0.0)
+    max_distance_z: float = Field(10.0, gt=0.0)
+    z_distance_weight: float = Field(2.5, gt=0.0)
+    min_distance_to_remove_cand: float = Field(3.0, ge=0.0)
+    vote_thresholds: str = Field("320,300,280,260", min_length=0)
+    dice_threshold: float = Field(0.5, ge=0.0, le=1.0)
+    corr_threshold: float = Field(0.5, ge=-1.0, le=1.0)
+    invert_z: bool = False
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -333,6 +365,23 @@ def _invalid_process_features_input(reason_code: str, message: str) -> dict[str,
     }
 
 
+def _parse_tracking_vote_thresholds(raw_value: str) -> tuple[int, ...] | None:
+    text = (raw_value or "").strip()
+    if not text:
+        return None
+
+    thresholds: list[int] = []
+    for token in text.split(","):
+        value = token.strip()
+        if not value:
+            continue
+        parsed = int(value)
+        if parsed <= 0:
+            raise ValueError("Vote thresholds must be positive integers.")
+        thresholds.append(parsed)
+    return tuple(thresholds) if thresholds else None
+
+
 def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
 
@@ -366,6 +415,63 @@ def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
     return {
         "valid": True,
         "message": f"Valid feature folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
+        "subfolderCount": subfolder_count,
+        "subfolderNames": [subfolder.name for subfolder in subfolders],
+    }
+
+
+def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
+    validation = validate_process_features_input_folder(raw_path)
+    if not validation["valid"]:
+        return validation
+
+    input_path = _resolve_allowed_inference_path(raw_path)
+    densities_path = input_path / "probmap_densities.npz"
+    return {
+        **validation,
+        "probmapDensitiesPath": str(densities_path),
+        "probmapDensitiesExists": densities_path.is_file(),
+    }
+
+
+def validate_tracking_input_folder(raw_path: str, *, segmentation_filename: str = "instance_seg.tif") -> dict[str, Any]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+
+    if not input_path.exists():
+        return _invalid_process_features_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+
+    subfolders = _list_child_directories(input_path)
+    if len(subfolders) < 2:
+        return _invalid_process_features_input(
+            "insufficient_subfolders",
+            "Tracking requires at least 2 subfolders/timepoints.",
+        )
+
+    for subfolder in subfolders:
+        missing_files: list[str] = []
+        if not subfolder.joinpath("lr_feats.npy").is_file():
+            missing_files.append("lr_feats.npy")
+        if not subfolder.joinpath(segmentation_filename).is_file():
+            missing_files.append(segmentation_filename)
+        if not subfolder.joinpath("volume_unnorm.tif").is_file():
+            missing_files.append("volume_unnorm.tif")
+
+        if missing_files:
+            if len(missing_files) == 1:
+                missing_text = missing_files[0]
+            else:
+                missing_text = ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
+            return _invalid_process_features_input(
+                "missing_required_files",
+                f"Subfolder {subfolder.name} is missing {missing_text}.",
+            )
+
+    subfolder_count = len(subfolders)
+    return {
+        "valid": True,
+        "message": f"Valid tracking folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
         "subfolderCount": subfolder_count,
     }
 
@@ -431,8 +537,12 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SAVE_PATH_RE = re.compile(r"Saving to\s+(.+)$")
 SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
-PROCESS_FEATURES_PROCESSING_RE = re.compile(r"^\[(?:process-features|segmentation)\] Processing (.+?) \((\d+)/(\d+)\)$")
-PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[(?:process-features|segmentation)\] Completed (.+)$")
+PROCESS_FEATURES_PROCESSING_RE = re.compile(
+    r"^\[(?:process-features|segmentation|tracking|probmap)\] Processing (.+?) \((\d+)/(\d+)\)$"
+)
+PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[(?:process-features|segmentation|tracking|probmap)\] Completed (.+)$")
+TRACKING_MATCHING_RE = re.compile(r"^\[tracking\] Matching (.+?) -> (.+?) \((\d+)/(\d+)\)$")
+TRACKING_MATCHED_RE = re.compile(r"^\[tracking\] Matched (.+?) -> (.+?) \((\d+)/(\d+)\)$")
 DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
 NORM_PER_VOL_MIN_RE = re.compile(r"^Global hist min:\s*(.+?)\s*$", re.MULTILINE)
 NORM_PER_VOL_MAX_RE = re.compile(r"^Global hist max:\s*(.+?)\s*$", re.MULTILINE)
@@ -440,6 +550,16 @@ NORMALIZATION_MODE_PER_VOLUME = "per_volume"
 NORMALIZATION_MODE_GLOBAL_AUTO = "global_auto"
 NORMALIZATION_MODE_GLOBAL_MANUAL = "global_manual"
 PROCESS_FEATURES_SAVE_FORMATS = {".npy", ".tif"}
+SEGMENTATION_MODE_VORONOI_OTSU = "voronoi_otsu"
+SEGMENTATION_MODE_PROBABILITY_MAP = "probability_map"
+SEGMENTATION_MODE_OPTIONS = {
+    SEGMENTATION_MODE_VORONOI_OTSU,
+    SEGMENTATION_MODE_PROBABILITY_MAP,
+}
+PROBABILITY_MAP_DENSITIES_FILENAME = "probmap_densities.npz"
+PROBABILITY_MAP_DENSITY_METHODS = {"kde", "gpu-hist"}
+VORONOI_OTSU_SEGMENTATION_FILENAME = "voronoi-otsu/instance_seg.tif"
+PROBABILITY_MAP_SEGMENTATION_FILENAME = "probmap/instance_seg.tif"
 NORMALIZATION_MODE_OPTIONS = {
     NORMALIZATION_MODE_PER_VOLUME,
     NORMALIZATION_MODE_GLOBAL_AUTO,
@@ -552,15 +672,9 @@ def _build_process_features_launch_config(
 def _build_segmentation_launch_config(
     payload: RunSegmentationRequest,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    input_validation = validate_process_features_input_folder(payload.input_path)
+    input_validation = validate_segmentation_input_folder(payload.input_path)
     if not input_validation["valid"]:
         return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
-
-    if not payload.enable_voronoi_otsu:
-        return _invalid_process_features_run(
-            "segmentation_disabled",
-            "Enable Voronoi-Otsu segmentation.",
-        ), None
 
     if payload.gpu_index is None:
         return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
@@ -571,8 +685,130 @@ def _build_segmentation_launch_config(
     if requested_gpu not in available_gpus:
         return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
 
+    segmentation_mode = (payload.mode or "").strip() or (
+        SEGMENTATION_MODE_VORONOI_OTSU if payload.enable_voronoi_otsu else ""
+    )
+    if segmentation_mode not in SEGMENTATION_MODE_OPTIONS:
+        return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
+
     input_path = _resolve_allowed_inference_path(payload.input_path)
     subfolder_count = int(input_validation["subfolderCount"])
+    launch_config: dict[str, Any] = {
+        "input_path": input_path,
+        "gpu_index": requested_gpu,
+        "mode": segmentation_mode,
+        "subfolder_count": subfolder_count,
+    }
+
+    if segmentation_mode == SEGMENTATION_MODE_VORONOI_OTSU:
+        launch_config.update(
+            {
+                "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
+                "rolling_ball_radius": float(payload.rolling_ball_radius),
+                "enable_voronoi_otsu": True,
+            }
+        )
+        return (
+            {
+                "valid": True,
+                "message": "Validation passed.",
+                "subfolderCount": subfolder_count,
+            },
+            launch_config,
+        )
+
+    if payload.density_method not in PROBABILITY_MAP_DENSITY_METHODS:
+        return _invalid_process_features_run(
+            "invalid_density_method",
+            "Probability-map density method must be one of: kde or gpu-hist.",
+        ), None
+
+    run_density_estimation = bool(payload.run_density_estimation)
+    densities_path = input_path / PROBABILITY_MAP_DENSITIES_FILENAME
+    training_timepoint = (payload.training_timepoint or "").strip() or None
+    subfolder_names = set(input_validation.get("subfolderNames", []))
+    seg_tif_path: Path | None = None
+    valid_mask_tif_path: Path | None = None
+
+    if run_density_estimation:
+        if training_timepoint is None:
+            return _invalid_process_features_run(
+                "missing_training_timepoint",
+                "Choose one timepoint for density estimation.",
+            ), None
+        if training_timepoint not in subfolder_names:
+            return _invalid_process_features_run(
+                "invalid_training_timepoint",
+                "Selected density-estimation timepoint is not part of the validated input folder.",
+            ), None
+        seg_tif_raw = (payload.seg_tif or "").strip()
+        if not seg_tif_raw:
+            return _invalid_process_features_run("missing_seg_tif", "Choose a segmentation mask TIFF."), None
+        seg_tif_path = _resolve_allowed_inference_path(seg_tif_raw)
+        if not seg_tif_path.is_file():
+            return _invalid_process_features_run("missing_seg_tif", "Segmentation mask TIFF does not exist."), None
+        valid_mask_raw = (payload.valid_mask_tif or "").strip()
+        if valid_mask_raw:
+            valid_mask_tif_path = _resolve_allowed_inference_path(valid_mask_raw)
+            if not valid_mask_tif_path.is_file():
+                return _invalid_process_features_run(
+                    "missing_valid_mask_tif",
+                    "Valid-mask TIFF does not exist.",
+                ), None
+    elif not densities_path.is_file():
+        return _invalid_process_features_run(
+            "missing_probmap_densities",
+            f"Could not find {PROBABILITY_MAP_DENSITIES_FILENAME} in the input folder root.",
+        ), None
+
+    progress_total = subfolder_count + (2 if run_density_estimation else 0)
+    launch_config.update(
+        {
+            "run_density_estimation": run_density_estimation,
+            "training_timepoint": training_timepoint,
+            "seg_tif": seg_tif_path,
+            "valid_mask_tif": valid_mask_tif_path,
+            "densities_path": densities_path,
+            "density_method": payload.density_method,
+            "feature_batch": int(payload.feature_batch),
+            "kde_points": int(payload.kde_points),
+            "kde_max_samples": int(payload.kde_max_samples),
+            "kde_bandwidth": float(payload.kde_bandwidth) if payload.kde_bandwidth is not None else None,
+            "hist_sigma_bins": float(payload.hist_sigma_bins),
+            "bg_prob_threshold": float(payload.bg_prob_threshold),
+            "fg_prob_threshold": float(payload.fg_prob_threshold),
+            "seed": int(payload.seed),
+            "progress_total": progress_total,
+        }
+    )
+    return (
+        {
+            "valid": True,
+            "message": "Validation passed.",
+            "subfolderCount": subfolder_count,
+            "probmapDensitiesPath": str(densities_path),
+            "probmapDensitiesExists": densities_path.is_file(),
+        },
+        launch_config,
+    )
+
+
+def _build_tracking_launch_config(
+    payload: RunTrackingRequest,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    input_validation = validate_tracking_input_folder(
+        payload.input_path,
+        segmentation_filename=payload.segmentation_filename,
+    )
+    if not input_validation["valid"]:
+        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    subfolder_count = int(input_validation["subfolderCount"])
+    try:
+        vote_thresholds = _parse_tracking_vote_thresholds(payload.vote_thresholds)
+    except ValueError as exc:
+        return _invalid_process_features_run("invalid_vote_thresholds", str(exc)), None
     return (
         {
             "valid": True,
@@ -581,11 +817,18 @@ def _build_segmentation_launch_config(
         },
         {
             "input_path": input_path,
-            "gpu_index": requested_gpu,
-            "enable_voronoi_otsu": bool(payload.enable_voronoi_otsu),
-            "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
-            "rolling_ball_radius": float(payload.rolling_ball_radius),
+            "segmentation_filename": payload.segmentation_filename,
+            "max_distance_xy": float(payload.max_distance_xy),
+            "max_distance_z": float(payload.max_distance_z),
+            "z_distance_weight": float(payload.z_distance_weight),
+            "min_distance_to_remove_cand": float(payload.min_distance_to_remove_cand),
+            "vote_thresholds": vote_thresholds,
             "subfolder_count": subfolder_count,
+            "pair_count": max(0, subfolder_count - 1),
+            "progress_total": subfolder_count + max(0, subfolder_count - 1),
+            "dice_threshold": float(payload.dice_threshold),
+            "corr_threshold": float(payload.corr_threshold),
+            "invert_z": bool(payload.invert_z),
         },
     )
 
@@ -933,6 +1176,43 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
 
 
 def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
+    if launch_config["mode"] == SEGMENTATION_MODE_PROBABILITY_MAP:
+        command = [
+            sys.executable,
+            "scripts/post_processing/probability_map.py",
+            "--input-path",
+            str(launch_config["input_path"]),
+            "--densities-path",
+            str(launch_config["densities_path"]),
+            "--device",
+            "cuda:0",
+            "--feature-batch",
+            str(launch_config["feature_batch"]),
+            "--kde-points",
+            str(launch_config["kde_points"]),
+            "--kde-max-samples",
+            str(launch_config["kde_max_samples"]),
+            "--density-method",
+            launch_config["density_method"],
+            "--hist-sigma-bins",
+            str(launch_config["hist_sigma_bins"]),
+            "--bg-prob-threshold",
+            str(launch_config["bg_prob_threshold"]),
+            "--fg-prob-threshold",
+            str(launch_config["fg_prob_threshold"]),
+            "--seed",
+            str(launch_config["seed"]),
+        ]
+        if launch_config.get("kde_bandwidth") is not None:
+            command.extend(["--kde-bandwidth", str(launch_config["kde_bandwidth"])])
+        if launch_config.get("run_density_estimation"):
+            command.extend(["--run-density-estimation", "--training-timepoint", launch_config["training_timepoint"]])
+            if launch_config.get("seg_tif") is not None:
+                command.extend(["--seg-tif", str(launch_config["seg_tif"])])
+            if launch_config.get("valid_mask_tif") is not None:
+                command.extend(["--valid-mask-tif", str(launch_config["valid_mask_tif"])])
+        return command
+
     command = [
         sys.executable,
         "scripts/post_processing/segmentation.py",
@@ -945,6 +1225,37 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
     ]
     if launch_config["enable_voronoi_otsu"]:
         command.append("--enable-voronoi-otsu")
+    return command
+
+
+def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/post_processing/tracking.py",
+        "--input-path",
+        str(launch_config["input_path"]),
+        "--segmentation-filename",
+        launch_config["segmentation_filename"],
+        "--max-distance-xy",
+        str(launch_config["max_distance_xy"]),
+        "--max-distance-z",
+        str(launch_config["max_distance_z"]),
+        "--z-distance-weight",
+        str(launch_config["z_distance_weight"]),
+        "--min-distance-to-remove-cand",
+        str(launch_config["min_distance_to_remove_cand"]),
+        "--dice-threshold",
+        str(launch_config["dice_threshold"]),
+        "--corr-threshold",
+        str(launch_config["corr_threshold"]),
+    ]
+    vote_thresholds = launch_config.get("vote_thresholds")
+    if vote_thresholds:
+        command.extend(["--vote-thresholds", ",".join(str(value) for value in vote_thresholds)])
+    else:
+        command.extend(["--vote-thresholds", ""])
+    if launch_config.get("invert_z", False):
+        command.append("--invert-z")
     return command
 
 
@@ -976,6 +1287,13 @@ def _build_inference_command_env(launch_config: dict[str, Any]) -> dict[str, str
 def _build_process_features_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
     return {
         "CUDA_VISIBLE_DEVICES": str(launch_config["gpu_index"]),
+        "OMP_NUM_THREADS": _resolve_omp_num_threads(),
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _build_tracking_command_env() -> dict[str, str]:
+    return {
         "OMP_NUM_THREADS": _resolve_omp_num_threads(),
         "PYTHONUNBUFFERED": "1",
     }
@@ -1222,27 +1540,84 @@ def _update_job_progress_from_output(
 def _update_process_features_job_progress_from_output(
     job: jobs_api.JobState,
     line: str,
-    completed_subfolders: set[str],
-) -> None:
+    progress_state: dict[str, Any],
+) -> int:
+    completed_subfolders = progress_state.setdefault("completed_subfolders", set())
     processing_match = PROCESS_FEATURES_PROCESSING_RE.search(line)
     if processing_match:
         subfolder_name = processing_match.group(1).strip()
         with job.lock:
             if job.status == "running" and not job.stop_requested:
                 job.current = f"Processing {subfolder_name}"
-        return
+        return len(completed_subfolders)
 
     completed_match = PROCESS_FEATURES_COMPLETED_RE.search(line)
     if not completed_match:
-        return
+        return len(completed_subfolders)
 
     subfolder_name = completed_match.group(1).strip()
     with job.lock:
         if job.status != "running" or job.stop_requested or subfolder_name in completed_subfolders:
-            return
+            return len(completed_subfolders)
         completed_subfolders.add(subfolder_name)
         job.processed = min(job.total, len(completed_subfolders)) if job.total > 0 else len(completed_subfolders)
         job.current = subfolder_name
+    return len(completed_subfolders)
+
+
+def _update_tracking_job_progress_from_output(
+    job: jobs_api.JobState,
+    line: str,
+    progress_state: dict[str, Any],
+) -> int:
+    completed_subfolders = progress_state.setdefault("completed_subfolders", set())
+    completed_pairs = progress_state.setdefault("completed_pairs", set())
+    total_completed = len(completed_subfolders) + len(completed_pairs)
+
+    matching_match = TRACKING_MATCHING_RE.search(line)
+    if matching_match:
+        ref_name = matching_match.group(1).strip()
+        cand_name = matching_match.group(2).strip()
+        with job.lock:
+            if job.status == "running" and not job.stop_requested:
+                job.current = f"Matching {ref_name} -> {cand_name}"
+        return total_completed
+
+    matched_match = TRACKING_MATCHED_RE.search(line)
+    if matched_match:
+        ref_name = matched_match.group(1).strip()
+        cand_name = matched_match.group(2).strip()
+        pair_key = f"{ref_name}->{cand_name}"
+        with job.lock:
+            if job.status != "running" or job.stop_requested or pair_key in completed_pairs:
+                return len(completed_subfolders) + len(completed_pairs)
+            completed_pairs.add(pair_key)
+            total_completed = len(completed_subfolders) + len(completed_pairs)
+            job.processed = min(job.total, total_completed) if job.total > 0 else total_completed
+            job.current = f"Matched {ref_name} -> {cand_name}"
+        return len(completed_subfolders) + len(completed_pairs)
+
+    processing_match = PROCESS_FEATURES_PROCESSING_RE.search(line)
+    if processing_match:
+        subfolder_name = processing_match.group(1).strip()
+        with job.lock:
+            if job.status == "running" and not job.stop_requested:
+                job.current = f"Preparing {subfolder_name}"
+        return total_completed
+
+    completed_match = PROCESS_FEATURES_COMPLETED_RE.search(line)
+    if not completed_match:
+        return total_completed
+
+    subfolder_name = completed_match.group(1).strip()
+    with job.lock:
+        if job.status != "running" or job.stop_requested or subfolder_name in completed_subfolders:
+            return len(completed_subfolders) + len(completed_pairs)
+        completed_subfolders.add(subfolder_name)
+        total_completed = len(completed_subfolders) + len(completed_pairs)
+        job.processed = min(job.total, total_completed) if job.total > 0 else total_completed
+        job.current = f"Prepared {subfolder_name}"
+    return len(completed_subfolders) + len(completed_pairs)
 
 
 def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
@@ -1438,6 +1813,19 @@ def _run_segmentation_job(job: jobs_api.JobState, launch_config: dict[str, Any])
     )
 
 
+def _run_tracking_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    _run_single_gpu_post_processing_job(
+        job,
+        launch_config,
+        command=_build_tracking_command(launch_config),
+        command_env=_build_tracking_command_env(),
+        launch_log_line="[server] Launching tracking job.",
+        success_log_line="[server] Tracking job completed successfully.",
+        job_name="Tracking",
+        progress_updater=_update_tracking_job_progress_from_output,
+    )
+
+
 def _run_single_gpu_post_processing_job(
     job: jobs_api.JobState,
     launch_config: dict[str, Any],
@@ -1447,11 +1835,14 @@ def _run_single_gpu_post_processing_job(
     launch_log_line: str,
     success_log_line: str,
     job_name: str,
+    progress_updater: Callable[[jobs_api.JobState, str, dict[str, Any]], int] = _update_process_features_job_progress_from_output,
+    progress_state: dict[str, Any] | None = None,
 ) -> None:
     repo_root = get_repo_root()
     log_handle = _open_job_log(job)
     command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
-    completed_subfolders: set[str] = set()
+    progress_state = {} if progress_state is None else progress_state
+    completed_count = 0
 
     with job.lock:
         job.command = command_text
@@ -1503,7 +1894,7 @@ def _run_single_gpu_post_processing_job(
                         continue
                     last_output_line = line
                     _append_job_log_line(job, line, log_handle)
-                    _update_process_features_job_progress_from_output(job, line, completed_subfolders)
+                    completed_count = progress_updater(job, line, progress_state)
 
         return_code = process.wait()
         final_log_line: str | None = None
@@ -1515,9 +1906,9 @@ def _run_single_gpu_post_processing_job(
                 job.current = "Stopped"
                 job.finished_at_ms = jobs_api._now_ms()
                 final_log_line = "[server] Job stopped by user."
-            elif return_code == 0 and len(completed_subfolders) == job.total:
+            elif return_code == 0 and completed_count == job.total:
                 job.status = "completed"
-                job.processed = len(completed_subfolders)
+                job.processed = completed_count
                 job.current = "Done"
                 job.finished_at_ms = jobs_api._now_ms()
                 final_log_line = success_log_line
@@ -1525,7 +1916,7 @@ def _run_single_gpu_post_processing_job(
                 job.status = "failed"
                 job.current = "Failed"
                 if return_code == 0:
-                    job.error = f"{job_name} job exited successfully but only completed {len(completed_subfolders)}/{job.total} subfolders."
+                    job.error = f"{job_name} job exited successfully but only completed {completed_count}/{job.total} progress steps."
                 else:
                     job.error = last_output_line or f"{job_name} job exited with code {return_code}."
                 job.finished_at_ms = jobs_api._now_ms()
@@ -1575,6 +1966,16 @@ def _launch_segmentation_job_thread(job: jobs_api.JobState, launch_config: dict[
         args=(job, launch_config),
         daemon=True,
         name=f"segmentation-job-{job.job_id}",
+    )
+    thread.start()
+
+
+def _launch_tracking_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_tracking_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"tracking-job-{job.job_id}",
     )
     thread.start()
 
@@ -1681,6 +2082,16 @@ def validate_process_features_input(payload: ValidateProcessFeaturesInputRequest
     return validate_process_features_input_folder(payload.path)
 
 
+@api.post("/post-processing/segmentation/validate-input")
+def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+    return validate_segmentation_input_folder(payload.path)
+
+
+@api.post("/post-processing/tracking/validate-input")
+def validate_tracking_input(payload: ValidateTrackingInputRequest) -> dict[str, Any]:
+    return validate_tracking_input_folder(payload.path, segmentation_filename=payload.segmentation_filename)
+
+
 @api.post("/post-processing/process-features/run")
 def run_process_features(
     payload: RunProcessFeaturesRequest,
@@ -1737,7 +2148,7 @@ def run_segmentation(
         type="segmentation",
         status="running",
         processed=0,
-        total=int(launch_config["subfolder_count"]),
+        total=int(launch_config.get("progress_total", launch_config["subfolder_count"])),
         current="Queued",
         label=label,
         save_dir=str(input_path),
@@ -1755,6 +2166,44 @@ def run_segmentation(
         }
 
     return {"submitted": True, "jobId": job.job_id, "message": "Segmentation job submitted."}
+
+
+@api.post("/post-processing/tracking/run")
+def run_tracking(
+    payload: RunTrackingRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_tracking_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    input_path = Path(launch_config["input_path"])
+    label = f"Tracking {input_path.name}".strip()
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="tracking",
+        status="running",
+        processed=0,
+        total=int(launch_config["progress_total"]),
+        current="Queued",
+        label=label,
+        save_dir=str(input_path),
+        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_tracking_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_process_features_run("submit_failed", f"Could not start tracking job: {exc}"),
+        }
+
+    return {"submitted": True, "jobId": job.job_id, "message": "Tracking job submitted."}
 
 
 @api.post("/inference/run")
