@@ -183,7 +183,11 @@ class ValidateProcessFeaturesInputRequest(BaseModel):
 
 class ValidateTrackingInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
-    segmentation_filename: str = Field("instance_seg.tif", min_length=1)
+
+
+class ValidateTrackingSegmentationFolderRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    segmentation_path: str = Field(..., min_length=1)
 
 
 class DownloadBackboneWeightsRequest(BaseModel):
@@ -239,6 +243,7 @@ class RunProcessFeaturesRequest(BaseModel):
 
 class RunSegmentationRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
+    output_path: str = Field(..., min_length=1)
     gpu_index: int | None = None
     mode: str = Field("voronoi_otsu", min_length=1)
     enable_voronoi_otsu: bool = True
@@ -261,7 +266,7 @@ class RunSegmentationRequest(BaseModel):
 
 class RunTrackingRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
-    segmentation_filename: str = Field("instance_seg.tif", min_length=1)
+    segmentation_path: str = Field(..., min_length=1)
     max_distance_xy: float = Field(20.0, gt=0.0)
     max_distance_z: float = Field(10.0, gt=0.0)
     z_distance_weight: float = Field(2.5, gt=0.0)
@@ -438,7 +443,7 @@ def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
     }
 
 
-def validate_tracking_input_folder(raw_path: str, *, segmentation_filename: str = "instance_seg.tif") -> dict[str, Any]:
+def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
 
     if not input_path.exists():
@@ -446,37 +451,72 @@ def validate_tracking_input_folder(raw_path: str, *, segmentation_filename: str 
     if not input_path.is_dir():
         return _invalid_process_features_input("not_directory", "Input path is not a folder.")
 
-    subfolders = _list_child_directories(input_path)
-    if len(subfolders) < 2:
+    candidate_subfolders: list[Path] = []
+    for subfolder in _list_child_directories(input_path):
+        has_lr_feats = subfolder.joinpath("lr_feats.npy").is_file()
+        has_volume = subfolder.joinpath("volume_unnorm.tif").is_file()
+        if not has_lr_feats and not has_volume:
+            continue
+        if not has_lr_feats or not has_volume:
+            missing_files: list[str] = []
+            if not has_lr_feats:
+                missing_files.append("lr_feats.npy")
+            if not has_volume:
+                missing_files.append("volume_unnorm.tif")
+            missing_text = (
+                missing_files[0]
+                if len(missing_files) == 1
+                else ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
+            )
+            return _invalid_process_features_input(
+                "missing_required_files",
+                f"Subfolder {subfolder.name} is missing {missing_text}.",
+            )
+        candidate_subfolders.append(subfolder)
+
+    subfolder_count = len(candidate_subfolders)
+    if subfolder_count == 0:
+        return _invalid_process_features_input("no_subfolders", "Input folder contains no valid timepoint subfolders.")
+    if subfolder_count < 2:
         return _invalid_process_features_input(
             "insufficient_subfolders",
             "Tracking requires at least 2 subfolders/timepoints.",
         )
 
-    for subfolder in subfolders:
-        missing_files: list[str] = []
-        if not subfolder.joinpath("lr_feats.npy").is_file():
-            missing_files.append("lr_feats.npy")
-        if not subfolder.joinpath(segmentation_filename).is_file():
-            missing_files.append(segmentation_filename)
-        if not subfolder.joinpath("volume_unnorm.tif").is_file():
-            missing_files.append("volume_unnorm.tif")
-
-        if missing_files:
-            if len(missing_files) == 1:
-                missing_text = missing_files[0]
-            else:
-                missing_text = ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
-            return _invalid_process_features_input(
-                "missing_required_files",
-                f"Subfolder {subfolder.name} is missing {missing_text}.",
-            )
-
-    subfolder_count = len(subfolders)
     return {
         "valid": True,
-        "message": f"Valid tracking folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
+        "message": f"Valid feature folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
         "subfolderCount": subfolder_count,
+        "subfolderNames": [subfolder.name for subfolder in candidate_subfolders],
+    }
+
+
+def validate_tracking_segmentation_folder(raw_input_path: str, raw_segmentation_path: str) -> dict[str, Any]:
+    input_validation = validate_tracking_input_folder(raw_input_path)
+    if not input_validation["valid"]:
+        return input_validation
+
+    segmentation_path = _resolve_allowed_inference_path(raw_segmentation_path)
+    if not segmentation_path.exists():
+        return _invalid_process_features_input("missing", "Segmentation folder does not exist.")
+    if not segmentation_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Segmentation path is not a folder.")
+
+    subfolder_names = [str(name) for name in input_validation.get("subfolderNames", [])]
+    for subfolder_name in subfolder_names:
+        mask_path = segmentation_path / f"{subfolder_name}.tif"
+        if not mask_path.is_file():
+            return _invalid_process_features_input(
+                "missing_required_files",
+                f"Segmentation folder is missing {mask_path.name}.",
+            )
+
+    subfolder_count = int(input_validation["subfolderCount"])
+    return {
+        "valid": True,
+        "message": f"Valid segmentation folder. Found {subfolder_count} mask file{'s' if subfolder_count != 1 else ''}.",
+        "subfolderCount": subfolder_count,
+        "subfolderNames": subfolder_names,
     }
 
 
@@ -562,8 +602,6 @@ SEGMENTATION_MODE_OPTIONS = {
 }
 PROBABILITY_MAP_DENSITIES_FILENAME = "probmap_densities.npz"
 PROBABILITY_MAP_DENSITY_METHODS = {"kde", "gpu-hist"}
-VORONOI_OTSU_SEGMENTATION_FILENAME = "voronoi-otsu/instance_seg.tif"
-PROBABILITY_MAP_SEGMENTATION_FILENAME = "probmap/instance_seg.tif"
 NORMALIZATION_MODE_OPTIONS = {
     NORMALIZATION_MODE_PER_VOLUME,
     NORMALIZATION_MODE_GLOBAL_AUTO,
@@ -696,9 +734,14 @@ def _build_segmentation_launch_config(
         return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_path = _resolve_allowed_inference_path(payload.output_path)
+    if output_path.exists() and not output_path.is_dir():
+        return _invalid_process_features_run("output_not_directory", "Output path is not a folder."), None
+
     subfolder_count = int(input_validation["subfolderCount"])
     launch_config: dict[str, Any] = {
         "input_path": input_path,
+        "output_path": output_path,
         "gpu_index": requested_gpu,
         "mode": segmentation_mode,
         "subfolder_count": subfolder_count,
@@ -800,14 +843,19 @@ def _build_segmentation_launch_config(
 def _build_tracking_launch_config(
     payload: RunTrackingRequest,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    input_validation = validate_tracking_input_folder(
-        payload.input_path,
-        segmentation_filename=payload.segmentation_filename,
-    )
+    input_validation = validate_tracking_input_folder(payload.input_path)
     if not input_validation["valid"]:
         return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
 
+    segmentation_validation = validate_tracking_segmentation_folder(payload.input_path, payload.segmentation_path)
+    if not segmentation_validation["valid"]:
+        return _invalid_process_features_run(
+            segmentation_validation["reasonCode"],
+            segmentation_validation["message"],
+        ), None
+
     input_path = _resolve_allowed_inference_path(payload.input_path)
+    segmentation_path = _resolve_allowed_inference_path(payload.segmentation_path)
     subfolder_count = int(input_validation["subfolderCount"])
     try:
         vote_thresholds = _parse_tracking_vote_thresholds(payload.vote_thresholds)
@@ -821,7 +869,7 @@ def _build_tracking_launch_config(
         },
         {
             "input_path": input_path,
-            "segmentation_filename": payload.segmentation_filename,
+            "segmentation_path": segmentation_path,
             "max_distance_xy": float(payload.max_distance_xy),
             "max_distance_z": float(payload.max_distance_z),
             "z_distance_weight": float(payload.z_distance_weight),
@@ -1186,6 +1234,8 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             "scripts/post_processing/probability_map.py",
             "--input-path",
             str(launch_config["input_path"]),
+            "--output-path",
+            str(launch_config["output_path"]),
             "--densities-path",
             str(launch_config["densities_path"]),
             "--device",
@@ -1222,6 +1272,8 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
         "scripts/post_processing/segmentation.py",
         "--input-path",
         str(launch_config["input_path"]),
+        "--output-path",
+        str(launch_config["output_path"]),
         "--gaussian-blur-sigma",
         str(launch_config["gaussian_blur_sigma"]),
         "--rolling-ball-radius",
@@ -1238,8 +1290,8 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         "scripts/post_processing/tracking.py",
         "--input-path",
         str(launch_config["input_path"]),
-        "--segmentation-filename",
-        launch_config["segmentation_filename"],
+        "--segmentation-path",
+        str(launch_config["segmentation_path"]),
         "--max-distance-xy",
         str(launch_config["max_distance_xy"]),
         "--max-distance-z",
@@ -2093,7 +2145,12 @@ def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) ->
 
 @api.post("/post-processing/tracking/validate-input")
 def validate_tracking_input(payload: ValidateTrackingInputRequest) -> dict[str, Any]:
-    return validate_tracking_input_folder(payload.path, segmentation_filename=payload.segmentation_filename)
+    return validate_tracking_input_folder(payload.path)
+
+
+@api.post("/post-processing/tracking/validate-segmentation-folder")
+def validate_tracking_segmentation(payload: ValidateTrackingSegmentationFolderRequest) -> dict[str, Any]:
+    return validate_tracking_segmentation_folder(payload.input_path, payload.segmentation_path)
 
 
 @api.post("/post-processing/process-features/run")
@@ -2145,6 +2202,7 @@ def run_segmentation(
         return {"submitted": False, **validation}
 
     input_path = Path(launch_config["input_path"])
+    output_path = Path(launch_config["output_path"])
     label = f"Segmentation {input_path.name}".strip()
     job = jobs_api.JobState(
         job_id=str(uuid.uuid4()),
@@ -2155,8 +2213,8 @@ def run_segmentation(
         total=int(launch_config.get("progress_total", launch_config["subfolder_count"])),
         current="Queued",
         label=label,
-        save_dir=str(input_path),
-        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+        save_dir=str(output_path.parent),
+        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
     )
     jobs_api.register_job(job)
 

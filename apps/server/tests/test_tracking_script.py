@@ -31,7 +31,17 @@ tracking_script = _load_tracking_module()
 
 class TrackingScriptTests(unittest.TestCase):
     def test_parse_args_defaults_to_non_inverted_z_export(self) -> None:
-        with patch.object(sys, "argv", ["tracking.py", "--input-path", "/tmp/tracking-input"]):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "tracking.py",
+                "--input-path",
+                "/tmp/tracking-input",
+                "--segmentation-path",
+                "/tmp/segmentations",
+            ],
+        ):
             args = tracking_script.parse_args()
 
         self.assertFalse(args.invert_z)
@@ -69,6 +79,8 @@ class TrackingScriptTests(unittest.TestCase):
     def test_run_tracking_writes_final_tracks_csv_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            segmentation_dir = root / "segmentations"
+            segmentation_dir.mkdir()
             for index, x_start, amplitude in ((1, 1, 120), (2, 2, 140)):
                 sample_dir = root / f"stack{index:04d}"
                 sample_dir.mkdir()
@@ -78,7 +90,7 @@ class TrackingScriptTests(unittest.TestCase):
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
-                tifffile.imwrite(sample_dir / "instance_seg.tif", seg, photometric="minisblack")
+                tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
                 tifffile.imwrite(
@@ -89,7 +101,7 @@ class TrackingScriptTests(unittest.TestCase):
 
             output_path = tracking_script.run_tracking(
                 root,
-                segmentation_filename="instance_seg.tif",
+                segmentation_path=segmentation_dir,
                 params=tracking_script.TrackingParams(
                     max_distance_xy=20.0,
                     max_distance_z=10.0,
@@ -123,6 +135,8 @@ class TrackingScriptTests(unittest.TestCase):
     def test_run_tracking_can_leave_z_unflipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            segmentation_dir = root / "segmentations"
+            segmentation_dir.mkdir()
             for index, x_start, amplitude in ((1, 1, 120), (2, 2, 140)):
                 sample_dir = root / f"stack{index:04d}"
                 sample_dir.mkdir()
@@ -132,14 +146,14 @@ class TrackingScriptTests(unittest.TestCase):
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
-                tifffile.imwrite(sample_dir / "instance_seg.tif", seg, photometric="minisblack")
+                tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", raw, photometric="minisblack")
 
             output_path = tracking_script.run_tracking(
                 root,
-                segmentation_filename="instance_seg.tif",
+                segmentation_path=segmentation_dir,
                 params=tracking_script.TrackingParams(
                     max_distance_xy=20.0,
                     max_distance_z=10.0,

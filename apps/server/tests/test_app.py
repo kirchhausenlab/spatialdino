@@ -461,6 +461,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -469,6 +470,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 enable_voronoi_otsu=True,
                 gaussian_blur_sigma=3,
@@ -494,9 +496,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
+        self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
         self.assertIn("scripts/post_processing/segmentation.py", command)
+        self.assertIn("--output-path", command)
         self.assertIn("--enable-voronoi-otsu", command)
         self.assertIn("--gaussian-blur-sigma", command)
         self.assertIn("--rolling-ball-radius", command)
@@ -525,6 +529,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
@@ -538,6 +543,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=True,
@@ -578,9 +584,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["seed"], 9)
         self.assertEqual(launch_config["progress_total"], 4)
         self.assertEqual(launch_config["densities_path"], input_dir / "probmap_densities.npz")
+        self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
         self.assertIn("scripts/post_processing/probability_map.py", command)
+        self.assertIn("--output-path", command)
         self.assertIn("--run-density-estimation", command)
         self.assertIn("--training-timepoint", command)
         self.assertIn("--seg-tif", command)
@@ -593,6 +601,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -601,6 +610,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=False,
@@ -628,22 +638,18 @@ class AppTests(unittest.TestCase):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "voronoi-otsu").mkdir()
-                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_input_folder(
-                    str(input_dir),
-                    segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
-                )
+                payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(
             payload,
             {
                 "valid": True,
-                "message": "Valid tracking folder. Found 2 subfolders.",
+                "message": "Valid feature folder. Found 2 subfolders.",
                 "subfolderCount": 2,
+                "subfolderNames": ["sample_a", "sample_b"],
             },
         )
 
@@ -655,7 +661,6 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             sample_dir.mkdir()
             np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
             tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -665,28 +670,56 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["reasonCode"], "insufficient_subfolders")
         self.assertEqual(payload["message"], "Tracking requires at least 2 subfolders/timepoints.")
 
-    def test_validate_tracking_input_folder_rejects_missing_segmentation(self) -> None:
+    def test_validate_tracking_segmentation_folder_rejects_missing_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-            (input_dir / "sample_a" / "probmap").mkdir()
-            tifffile.imwrite(input_dir / "sample_a" / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+            tifffile.imwrite(segmentation_dir / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_input_folder(
+                payload = app_module.validate_tracking_segmentation_folder(
                     str(input_dir),
-                    segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
+                    str(segmentation_dir),
                 )
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_b is missing probmap/instance_seg.tif.")
+        self.assertEqual(payload["message"], "Segmentation folder is missing sample_b.tif.")
+
+    def test_validate_tracking_segmentation_folder_accepts_matching_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
+            input_dir.mkdir()
+            segmentation_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_segmentation_folder(str(input_dir), str(segmentation_dir))
+
+        self.assertEqual(
+            payload,
+            {
+                "valid": True,
+                "message": "Valid segmentation folder. Found 2 mask files.",
+                "subfolderCount": 2,
+                "subfolderNames": ["sample_a", "sample_b"],
+            },
+        )
 
     def test_validate_tracking_input_folder_ignores_hidden_subfolders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,17 +730,12 @@ class AppTests(unittest.TestCase):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "voronoi-otsu").mkdir()
-                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
             hidden_dir = input_dir / ".hidden_sample"
             hidden_dir.mkdir()
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_input_folder(
-                    str(input_dir),
-                    segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
-                )
+                payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], True)
         self.assertEqual(payload["subfolderCount"], 2)
@@ -716,18 +744,19 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "probmap").mkdir()
-                tifffile.imwrite(sample_dir / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
-                segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
+                segmentation_path=str(segmentation_dir),
                 max_distance_xy=24.0,
                 max_distance_z=12.0,
                 z_distance_weight=2.0,
@@ -755,11 +784,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.6)
         self.assertEqual(launch_config["corr_threshold"], 0.4)
         self.assertFalse(launch_config["invert_z"])
-        self.assertEqual(launch_config["segmentation_filename"], app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME)
+        self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
 
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("scripts/post_processing/tracking.py", command)
-        self.assertIn(app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME, command)
+        self.assertIn(str(segmentation_dir), command)
         self.assertIn("--max-distance-xy", command)
         self.assertIn("--max-distance-z", command)
         self.assertIn("--z-distance-weight", command)
@@ -773,18 +802,19 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "voronoi-otsu").mkdir()
-                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
-                segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
+                segmentation_path=str(segmentation_dir),
                 max_distance_xy=20.0,
                 max_distance_z=10.0,
                 z_distance_weight=2.5,
@@ -813,7 +843,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.5)
         self.assertEqual(launch_config["corr_threshold"], 0.55)
         self.assertTrue(launch_config["invert_z"])
-        self.assertEqual(launch_config["segmentation_filename"], app_module.VORONOI_OTSU_SEGMENTATION_FILENAME)
+        self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("--invert-z", command)
         self.assertNotIn("--no-invert-z", command)
@@ -903,16 +933,19 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
+                segmentation_path=str(segmentation_dir),
                 vote_thresholds="320,0,280",
             )
 
@@ -927,6 +960,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -935,6 +969,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 enable_voronoi_otsu=True,
                 gaussian_blur_sigma=3,
@@ -958,17 +993,19 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
+        self.assertEqual(launch_config["output_path"], output_dir)
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 1)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
     def test_run_segmentation_probability_map_submits_job_with_density_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
@@ -980,6 +1017,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=True,
@@ -1003,11 +1041,13 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["progress_total"], 4)
+        self.assertEqual(launch_config["output_path"], output_dir)
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 4)
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
     def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

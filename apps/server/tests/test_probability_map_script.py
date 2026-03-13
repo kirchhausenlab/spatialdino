@@ -210,6 +210,7 @@ class ProbabilityMapScriptTests(unittest.TestCase):
     def test_run_probability_map_writes_expected_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            output_dir = root / "segmentations"
             seg_tif = root / "seg.tif"
             seg = np.zeros((4, 4, 4), dtype=np.uint8)
             seg[:, :, 2:] = 1
@@ -233,6 +234,7 @@ class ProbabilityMapScriptTests(unittest.TestCase):
                 seg_tif=seg_tif,
                 valid_mask_tif=None,
                 densities_path=root / "probmap_densities.npz",
+                output_path=output_dir,
                 density_method="gpu-hist",
                 feature_batch=1,
                 kde_points=32,
@@ -250,19 +252,11 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             self.assertEqual(densities_path, root / "probmap_densities.npz")
             self.assertTrue(densities_path.is_file())
             for name in ("sample_a", "sample_b"):
-                output_dir = root / name / "probmap"
-                self.assertTrue((output_dir / "semantic_seg.tif").is_file())
-                self.assertTrue((output_dir / "instance_seg.tif").is_file())
-                self.assertTrue((output_dir / "probmap.tif").is_file())
-                self.assertFalse((output_dir / "export.tif").exists())
-                self.assertFalse((output_dir / "export2.tif").exists())
-                semantic_seg = tifffile.imread(output_dir / "semantic_seg.tif")
-                instance_seg = tifffile.imread(output_dir / "instance_seg.tif")
-                probmap = tifffile.imread(output_dir / "probmap.tif")
-                self.assertEqual(semantic_seg.shape, (4, 4, 4))
+                instance_seg_path = output_dir / f"{name}.tif"
+                self.assertTrue(instance_seg_path.is_file())
+                instance_seg = tifffile.imread(instance_seg_path)
                 self.assertEqual(instance_seg.shape, (4, 4, 4))
-                self.assertEqual(probmap.shape, (4, 4, 4))
-                np.testing.assert_array_equal(instance_seg > 0, semantic_seg > 0)
+                self.assertEqual(instance_seg.dtype, np.uint32)
 
 
 if __name__ == "__main__":

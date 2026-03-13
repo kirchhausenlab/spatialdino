@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,7 +15,6 @@ import tifffile
 DEFAULT_FEATURE_BATCH_BYTES = 256 * 1024 * 1024
 DEFAULT_N_PATCH_FEATURES = 384
 DEFAULT_RAW_FILENAME = "volume_unnorm.tif"
-DEFAULT_SEGMENTATION_FILENAME = "instance_seg.tif"
 
 
 @dataclass
@@ -143,9 +143,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Track segmented objects across timepoints.")
     parser.add_argument("--input-path", required=True, help="Folder containing per-timepoint subfolders.")
     parser.add_argument(
-        "--segmentation-filename",
-        default=DEFAULT_SEGMENTATION_FILENAME,
-        help="Segmentation file present in every timepoint subfolder.",
+        "--segmentation-path",
+        required=True,
+        help="Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
     )
     parser.add_argument(
         "--max-distance-xy",
@@ -229,8 +229,9 @@ def natural_sort_key(value: str) -> list[Any]:
     return key
 
 
-def list_subfolders(input_path: Path) -> list[Path]:
-    subfolders = [path for path in input_path.iterdir() if path.is_dir()]
+def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
+    excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
+    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
     subfolders.sort(key=lambda path: natural_sort_key(path.name))
     return subfolders
 
@@ -242,29 +243,33 @@ def read_tiff_volume(path: str | Path) -> np.ndarray:
     return np.moveaxis(array, 0, -1)
 
 
-def validate_subfolder(subfolder: Path, *, segmentation_filename: str) -> TimepointPaths:
+def mask_path_for_timepoint(segmentation_path: Path, *, timepoint_name: str) -> Path:
+    return segmentation_path / f"{timepoint_name}.tif"
+
+
+def validate_subfolder(subfolder: Path, *, segmentation_path: Path) -> TimepointPaths:
     raw_path = subfolder / DEFAULT_RAW_FILENAME
-    segmentation_path = subfolder / segmentation_filename
+    segmentation_mask_path = mask_path_for_timepoint(segmentation_path, timepoint_name=subfolder.name)
     lr_feats_path = subfolder / "lr_feats.npy"
     if not raw_path.is_file():
         raise FileNotFoundError(f"{subfolder.name} is missing {DEFAULT_RAW_FILENAME}.")
-    if not segmentation_path.is_file():
-        raise FileNotFoundError(f"{subfolder.name} is missing {segmentation_filename}.")
+    if not segmentation_mask_path.is_file():
+        raise FileNotFoundError(f"Missing segmentation mask for {subfolder.name}: {segmentation_mask_path.name}.")
     if not lr_feats_path.is_file():
         raise FileNotFoundError(f"{subfolder.name} is missing lr_feats.npy.")
     return TimepointPaths(
         name=subfolder.name,
         folder=subfolder,
         raw_path=raw_path,
-        segmentation_path=segmentation_path,
+        segmentation_path=segmentation_mask_path,
         lr_feats_path=lr_feats_path,
     )
 
 
-def discover_experiment(input_path: Path, *, segmentation_filename: str) -> list[TimepointPaths]:
+def discover_experiment(input_path: Path, *, segmentation_path: Path) -> list[TimepointPaths]:
     discovered: list[TimepointPaths] = []
-    for subfolder in list_subfolders(input_path):
-        discovered.append(validate_subfolder(subfolder, segmentation_filename=segmentation_filename))
+    for subfolder in list_subfolders(input_path, exclude_paths=(segmentation_path,)):
+        discovered.append(validate_subfolder(subfolder, segmentation_path=segmentation_path))
     return discovered
 
 
@@ -1113,8 +1118,12 @@ def validate_timepoint_shapes(prepared_timepoints: list[PreparedTimepoint], *, r
     return expected_z0
 
 
-def run_tracking(input_path: Path, *, segmentation_filename: str, params: TrackingParams) -> Path:
-    discovered = discover_experiment(input_path, segmentation_filename=segmentation_filename)
+def run_tracking(input_path: Path, *, segmentation_path: Path, params: TrackingParams) -> Path:
+    segmentation_path = segmentation_path.expanduser().resolve()
+    if not segmentation_path.is_dir():
+        raise FileNotFoundError(f"Segmentation folder does not exist or is not a directory: {segmentation_path}")
+
+    discovered = discover_experiment(input_path, segmentation_path=segmentation_path)
     if len(discovered) < 2:
         raise PipelineError("Tracking requires at least 2 subfolders/timepoints.")
 
@@ -1197,12 +1206,13 @@ def main() -> None:
         raise ValueError("Correlation threshold must be between -1 and 1.")
 
     input_path = Path(args.input_path).expanduser().resolve()
+    segmentation_path = Path(args.segmentation_path).expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
 
     run_tracking(
         input_path,
-        segmentation_filename=args.segmentation_filename,
+        segmentation_path=segmentation_path,
         params=TrackingParams(
             max_distance_xy=float(args.max_distance_xy),
             max_distance_z=float(args.max_distance_z),
