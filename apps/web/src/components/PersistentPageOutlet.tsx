@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
+import DataPage from "../pages/DataPage";
 import InferencePage from "../pages/InferencePage";
 import PostProcessingPage from "../pages/PostProcessingPage";
 import PlaceholderPage from "../pages/PlaceholderPage";
@@ -11,6 +12,7 @@ type PageDefinition = {
 };
 
 const pageDefinitions: PageDefinition[] = [
+  { path: "/data", render: () => <DataPage /> },
   {
     path: "/training",
     render: () => (
@@ -29,7 +31,7 @@ const legacyRedirects = new Map<string, string>([
   ["/segmentation", "/post-processing"],
   ["/tracking", "/post-processing"],
 ]);
-const defaultPath = "/inference";
+const defaultPath = "/data";
 
 function normalizePathname(pathname: string): string {
   if (pathname === "/") return pathname;

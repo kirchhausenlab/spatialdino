@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import zipfile
 
 import numpy as np
 from starlette.requests import Request
@@ -38,6 +40,14 @@ class FakeUrlopenResponse(io.BytesIO):
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.close()
         return False
+
+
+def make_zip_bytes(files: dict[str, bytes]) -> bytes:
+    handle = io.BytesIO()
+    with zipfile.ZipFile(handle, "w") as archive:
+        for path, content in files.items():
+            archive.writestr(path, content)
+    return handle.getvalue()
 
 
 class AppTests(unittest.TestCase):
@@ -210,6 +220,160 @@ class AppTests(unittest.TestCase):
             self.assertEqual(response["alreadyExisted"], True)
             self.assertEqual(target_path.read_bytes(), b"replacement-weights")
 
+    def test_data_options_lists_manifest_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            manifest = {
+                "version": 1,
+                "datasets": [
+                    {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                ],
+            }
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app.urllib.request.urlopen",
+                    return_value=FakeUrlopenResponse(json.dumps(manifest).encode("utf-8")),
+                ),
+            ):
+                payload = app_module.data_options()
+
+        self.assertEqual(payload["manifestUrl"], app_module.DEFAULT_PUBLIC_DATA_MANIFEST_URL)
+        self.assertEqual(payload["downloadRoot"], str(repo_root / "data" / "raw_data"))
+        self.assertEqual(payload["datasets"], [{"name": "ap2"}, {"name": "dextran"}])
+
+    def test_run_data_download_requests_overwrite_confirmation_for_existing_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            existing_path = repo_root / "data" / "raw_data" / "ap2"
+            existing_path.mkdir(parents=True)
+
+            payload = app_module.RunDataDownloadRequest(datasets=["ap2", "dextran"])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app._load_public_data_manifest",
+                    return_value=[
+                        {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    ],
+                ),
+            ):
+                response = app_module.run_data_download(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], True)
+        self.assertEqual(response["requiresOverwriteConfirmation"], True)
+        self.assertEqual(response["existingDatasetCount"], 1)
+        self.assertEqual(response["existingDatasetNames"], ["ap2"])
+        self.assertEqual(response["existingDatasetPaths"], [str(existing_path)])
+        with jobs_api._jobs_lock:
+            self.assertEqual(jobs_api._jobs, {})
+
+    def test_run_data_download_submits_job_when_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = app_module.RunDataDownloadRequest(datasets=["ap2", "dextran"])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app._load_public_data_manifest",
+                    return_value=[
+                        {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    ],
+                ),
+                patch("spatialdino_server.app._launch_data_download_job_thread") as launch_thread,
+            ):
+                response = app_module.run_data_download(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        self.assertIn("jobId", response)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["selected_names"], ["ap2", "dextran"])
+        self.assertEqual(launch_config["download_root"], repo_root / "data" / "raw_data")
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "data-download")
+            self.assertEqual(job.total, 2)
+            self.assertEqual(
+                job.datasets,
+                [
+                    {"source_dir": "https://example.com/ap2.zip", "save_to": "ap2"},
+                    {"source_dir": "https://example.com/dextran.zip", "save_to": "dextran"},
+                ],
+            )
+
+    def test_run_data_download_job_downloads_and_extracts_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            download_root = repo_root / "data" / "raw_data"
+            archive_bytes = {
+                "https://example.com/ap2.zip": make_zip_bytes(
+                    {
+                        "ap2/image_a.tif": b"ap2-image",
+                        "ap2/notes/readme.txt": b"ap2-readme",
+                    }
+                ),
+                "https://example.com/dextran.zip": make_zip_bytes(
+                    {
+                        "volume_001.tif": b"dextran-image",
+                        "metadata/info.txt": b"dextran-info",
+                    }
+                ),
+            }
+            job = jobs_api.JobState(
+                job_id="job-data-1",
+                owner_client_id="client-1234",
+                type="data-download",
+                status="running",
+                total=2,
+            )
+            launch_config = {
+                "manifest_url": "https://example.com/manifest.json",
+                "download_root": download_root,
+                "selected_datasets": [
+                    {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                ],
+                "selected_names": ["ap2", "dextran"],
+                "skipped_names": [],
+                "overwrite_existing": False,
+            }
+
+            def fake_download(url: str, target_path: Path) -> None:
+                target_path.write_bytes(archive_bytes[url])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch("spatialdino_server.app._download_url_to_file", side_effect=fake_download),
+            ):
+                app_module._run_data_download_job(job, launch_config)
+
+            self.assertEqual((download_root / "ap2" / "image_a.tif").read_bytes(), b"ap2-image")
+            self.assertEqual((download_root / "ap2" / "notes" / "readme.txt").read_bytes(), b"ap2-readme")
+            self.assertEqual((download_root / "dextran" / "volume_001.tif").read_bytes(), b"dextran-image")
+            self.assertEqual((download_root / "dextran" / "metadata" / "info.txt").read_bytes(), b"dextran-info")
+
+            with job.lock:
+                self.assertEqual(job.status, "completed")
+                self.assertEqual(job.current, "Done")
+                self.assertEqual(job.processed, 2)
+                self.assertTrue(job.log_available)
+                self.assertIsNotNone(job.command)
+                self.assertIsNotNone(job.log_path)
+
+            log_text = Path(job.log_path).read_text(encoding="utf-8")
+            self.assertIn("Downloading ap2", log_text)
+            self.assertIn("Saved dataset dextran", log_text)
+            self.assertIn("Public data download completed successfully.", log_text)
+
     def test_validate_inference_input_folder_accepts_uniform_3d_tiffs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -230,6 +394,22 @@ class AppTests(unittest.TestCase):
                 "shape": {"x": 4, "y": 3, "z": 2},
             },
         )
+
+    def test_validate_inference_input_folder_ignores_hidden_tiffs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            tifffile.imwrite(input_dir / "a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(input_dir / "b.tiff", np.ones((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(input_dir / ".hidden_bad.tif", np.ones((5, 6, 7), dtype=np.uint8))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_inference_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["fileCount"], 2)
+        self.assertEqual(payload["shape"], {"x": 4, "y": 3, "z": 2})
 
     def test_validate_inference_input_folder_rejects_missing_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,6 +500,26 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "no_subfolders")
         self.assertEqual(payload["message"], "Input folder contains no subfolders.")
+
+    def test_validate_process_features_input_folder_ignores_hidden_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            hidden_dir = input_dir / ".hidden_sample"
+            hidden_dir.mkdir()
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["subfolderCount"], 2)
+        self.assertEqual(payload["subfolderNames"], ["sample_a", "sample_b"])
 
     def test_validate_process_features_input_folder_rejects_missing_lr_feats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -425,6 +625,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -433,6 +634,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 enable_voronoi_otsu=True,
                 gaussian_blur_sigma=3,
@@ -458,9 +660,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
+        self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
         self.assertIn("scripts/post_processing/segmentation.py", command)
+        self.assertIn("--output-path", command)
         self.assertIn("--enable-voronoi-otsu", command)
         self.assertIn("--gaussian-blur-sigma", command)
         self.assertIn("--rolling-ball-radius", command)
@@ -489,6 +693,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
@@ -502,6 +707,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=True,
@@ -542,9 +748,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["seed"], 9)
         self.assertEqual(launch_config["progress_total"], 4)
         self.assertEqual(launch_config["densities_path"], input_dir / "probmap_densities.npz")
+        self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
         self.assertIn("scripts/post_processing/probability_map.py", command)
+        self.assertIn("--output-path", command)
         self.assertIn("--run-density-estimation", command)
         self.assertIn("--training-timepoint", command)
         self.assertIn("--seg-tif", command)
@@ -557,6 +765,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -565,6 +774,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=False,
@@ -592,22 +802,18 @@ class AppTests(unittest.TestCase):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "voronoi-otsu").mkdir()
-                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_input_folder(
-                    str(input_dir),
-                    segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
-                )
+                payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(
             payload,
             {
                 "valid": True,
-                "message": "Valid tracking folder. Found 2 subfolders.",
+                "message": "Valid feature folder. Found 2 subfolders.",
                 "subfolderCount": 2,
+                "subfolderNames": ["sample_a", "sample_b"],
             },
         )
 
@@ -619,7 +825,6 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             sample_dir.mkdir()
             np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
             tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -629,7 +834,58 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["reasonCode"], "insufficient_subfolders")
         self.assertEqual(payload["message"], "Tracking requires at least 2 subfolders/timepoints.")
 
-    def test_validate_tracking_input_folder_rejects_missing_segmentation(self) -> None:
+    def test_validate_tracking_segmentation_folder_rejects_missing_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
+            input_dir.mkdir()
+            segmentation_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            tifffile.imwrite(segmentation_dir / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_segmentation_folder(
+                    str(input_dir),
+                    str(segmentation_dir),
+                )
+
+        self.assertEqual(payload["valid"], False)
+        self.assertEqual(payload["reasonCode"], "missing_required_files")
+        self.assertEqual(payload["message"], "Segmentation folder is missing sample_b.tif.")
+
+    def test_validate_tracking_segmentation_folder_accepts_matching_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
+            input_dir.mkdir()
+            segmentation_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_segmentation_folder(str(input_dir), str(segmentation_dir))
+
+        self.assertEqual(
+            payload,
+            {
+                "valid": True,
+                "message": "Valid segmentation folder. Found 2 mask files.",
+                "subfolderCount": 2,
+                "subfolderNames": ["sample_a", "sample_b"],
+            },
+        )
+
+    def test_validate_tracking_input_folder_ignores_hidden_subfolders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -639,35 +895,32 @@ class AppTests(unittest.TestCase):
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-            (input_dir / "sample_a" / "probmap").mkdir()
-            tifffile.imwrite(input_dir / "sample_a" / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+            hidden_dir = input_dir / ".hidden_sample"
+            hidden_dir.mkdir()
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_input_folder(
-                    str(input_dir),
-                    segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
-                )
+                payload = app_module.validate_tracking_input_folder(str(input_dir))
 
-        self.assertEqual(payload["valid"], False)
-        self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_b is missing probmap/instance_seg.tif.")
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["subfolderCount"], 2)
 
     def test_build_tracking_launch_config_accepts_valid_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "probmap").mkdir()
-                tifffile.imwrite(sample_dir / "probmap" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
-                segmentation_filename=app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME,
+                segmentation_path=str(segmentation_dir),
                 max_distance_xy=24.0,
                 max_distance_z=12.0,
                 z_distance_weight=2.0,
@@ -695,11 +948,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.6)
         self.assertEqual(launch_config["corr_threshold"], 0.4)
         self.assertFalse(launch_config["invert_z"])
-        self.assertEqual(launch_config["segmentation_filename"], app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME)
+        self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
 
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("scripts/post_processing/tracking.py", command)
-        self.assertIn(app_module.PROBABILITY_MAP_SEGMENTATION_FILENAME, command)
+        self.assertIn(str(segmentation_dir), command)
         self.assertIn("--max-distance-xy", command)
         self.assertIn("--max-distance-z", command)
         self.assertIn("--z-distance-weight", command)
@@ -713,18 +966,19 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                (sample_dir / "voronoi-otsu").mkdir()
-                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
-                segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
+                segmentation_path=str(segmentation_dir),
                 max_distance_xy=20.0,
                 max_distance_z=10.0,
                 z_distance_weight=2.5,
@@ -753,7 +1007,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.5)
         self.assertEqual(launch_config["corr_threshold"], 0.55)
         self.assertTrue(launch_config["invert_z"])
-        self.assertEqual(launch_config["segmentation_filename"], app_module.VORONOI_OTSU_SEGMENTATION_FILENAME)
+        self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("--invert-z", command)
         self.assertNotIn("--no-invert-z", command)
@@ -843,16 +1097,19 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
             input_dir.mkdir()
+            segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
                 tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
+                segmentation_path=str(segmentation_dir),
                 vote_thresholds="320,0,280",
             )
 
@@ -867,6 +1124,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -875,6 +1133,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 enable_voronoi_otsu=True,
                 gaussian_blur_sigma=3,
@@ -898,17 +1157,19 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
+        self.assertEqual(launch_config["output_path"], output_dir)
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 1)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
     def test_run_segmentation_probability_map_submits_job_with_density_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
@@ -920,6 +1181,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=True,
@@ -943,11 +1205,13 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["progress_total"], 4)
+        self.assertEqual(launch_config["output_path"], output_dir)
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 4)
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
     def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

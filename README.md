@@ -11,11 +11,11 @@ _Automated detection and tracking of cellular interactions using self-supervised
 
 ## 👥 Authors
 
-[Alex Lavaee\*](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain\*](https://www.linkedin.com/in/arkashj/), [Gustavo Scanavachi Moreira Campos](https://scholar.google.com/citations?user=w4oASWoAAAAJ&hl=pt-BR), [Jose Inacio Costa-Filho](https://scholar.google.com/citations?user=oZdz4lEAAAAJ&hl=en), [Adam Ingemansson](https://kirchhausen.hms.harvard.edu/people/adam-ingemansson-bs), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+[Alex Lavaee\*](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain\*](https://www.linkedin.com/in/arkashj/), [Gustavo Scanavachi\*](https://scholar.google.com/citations?user=w4oASWoAAAAJ&hl=pt-BR), [Jose Inacio Costa-Filho\*](https://scholar.google.com/citations?user=oZdz4lEAAAAJ&hl=en), [Adam Ingemansson](https://kirchhausen.hms.harvard.edu/people/adam-ingemansson-bs), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
 
-_Equal contribution, equal first authorship_
+_Equal contribution_
 
-**SpatialDINO** uses advanced AI to automatically detect, segment, and track biological objects in 3D light-sheet microscopy data.
+**SpatialDINO** uses deep learning to detect, segment, and track biological objects in 3D light-sheet microscopy data.
 
 ---
 

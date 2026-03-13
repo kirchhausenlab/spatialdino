@@ -5,7 +5,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 import tifffile
@@ -20,7 +20,6 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 DEFAULT_DENSITIES_FILENAME = "probmap_densities.npz"
-DEFAULT_OUTPUT_DIRNAME = "probmap"
 DEFAULT_Z_CHUNK_SIZE = 4
 
 
@@ -39,6 +38,7 @@ class ProbabilityMapParams:
     seg_tif: Path | None
     valid_mask_tif: Path | None
     densities_path: Path
+    output_path: Path
     density_method: str
     feature_batch: int
     kde_points: int
@@ -64,6 +64,7 @@ class PackedDens:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run probability-map post-processing from lr_feats.npy.")
     parser.add_argument("--input-path", required=True, help="Folder containing per-timepoint subfolders.")
+    parser.add_argument("--output-path", required=True, help="Folder where segmentation masks are written.")
     parser.add_argument(
         "--run-density-estimation",
         action="store_true",
@@ -165,15 +166,16 @@ def load_valid_mask(valid_mask_tif: Path, *, shape_zyx: tuple[int, int, int]) ->
     return valid_mask > 0
 
 
-def list_subfolders(input_path: Path) -> list[Path]:
-    subfolders = [path for path in input_path.iterdir() if path.is_dir()]
+def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
+    excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
+    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
     subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
     return subfolders
 
 
-def discover_timepoints(input_path: Path) -> list[TimepointPaths]:
+def discover_timepoints(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[TimepointPaths]:
     discovered: list[TimepointPaths] = []
-    for subfolder in list_subfolders(input_path):
+    for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
         lr_path = subfolder / "lr_feats.npy"
         raw_path = subfolder / "volume_unnorm.tif"
         if not lr_path.is_file():
@@ -652,30 +654,6 @@ def interp1d_per_feature(values: Tensor, xp: Tensor, fp: Tensor, lengths: Tensor
     return torch.where(in_range, interpolated, torch.zeros_like(interpolated))
 
 
-def cleanup_output_dir(output_dir: Path) -> None:
-    ensure_dir(output_dir)
-    for filename in (
-        "export.tif",
-        "export2.tif",
-        "export3.tif",
-        "export4.tif",
-        "export5.tif",
-        "raw_crop.tif",
-        "semantic_seg.tif",
-        "instance_seg.tif",
-        "probmap.tif",
-    ):
-        path = output_dir / filename
-        if path.is_file():
-            path.unlink()
-    legacy_2d = output_dir / "2D"
-    if legacy_2d.is_dir():
-        for child in legacy_2d.iterdir():
-            if child.is_file() or child.is_symlink():
-                child.unlink()
-        legacy_2d.rmdir()
-
-
 def semantic_to_instance_seg(semantic_seg: np.ndarray) -> np.ndarray:
     semantic_bool = np.asarray(semantic_seg > 0, dtype=bool)
     labeled, _ = ndimage.label(semantic_bool, structure=np.ones((3, 3, 3), dtype=np.uint8))
@@ -685,28 +663,27 @@ def semantic_to_instance_seg(semantic_seg: np.ndarray) -> np.ndarray:
 def classify_timepoint(
     timepoint: TimepointPaths,
     *,
+    output_path: Path,
     densities: PackedDens,
     feature_batch: int,
     bg_prob_threshold: float,
     fg_prob_threshold: float,
     device: torch.device,
-) -> tuple[Path, Path, Path]:
+) -> Path:
     lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
     raw_shape = read_tiff_shape(timepoint.raw_path)
     sampler = UpsampledFeatureSampler(lr_feats, raw_shape, device)
     if sampler.channel_count != int(densities.x1.shape[0]):
         raise ValueError(
             f"{timepoint.name} has {sampler.channel_count} feature channels, but densities expect {int(densities.x1.shape[0])}."
-        )
+    )
     z_size, y_size, x_size = raw_shape
     stack_semantic = np.empty((z_size, y_size, x_size), dtype=np.uint8)
-    stack_probmap = np.empty((z_size, y_size, x_size), dtype=np.float32)
 
     for z_indices in iter_z_index_chunks(z_size):
         chunk_depth = len(z_indices)
         cnt_bg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
         cnt_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
-        sum_prob_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.float32)
 
         for start in range(0, sampler.channel_count, feature_batch):
             end = min(sampler.channel_count, start + feature_batch)
@@ -727,25 +704,18 @@ def classify_timepoint(
             zero_mask = denom == 0
             prob_bg = torch.where(zero_mask, 0.5, p_bg / denom).view(end - start, chunk_depth, y_size, x_size)
             prob_fg = torch.where(zero_mask, 0.5, p_fg / denom).view(end - start, chunk_depth, y_size, x_size)
-            sum_prob_fg += prob_fg.sum(dim=0)
             cnt_bg += (prob_bg > bg_prob_threshold).sum(dim=0)
             cnt_fg += (prob_fg > fg_prob_threshold).sum(dim=0)
             sampler.clear_feature_range_cache()
 
         semantic_chunk = (cnt_fg > cnt_bg).to(torch.uint8)
         stack_semantic[z_indices] = semantic_chunk.detach().cpu().numpy()
-        stack_probmap[z_indices] = sum_prob_fg.detach().cpu().numpy()
 
-    output_dir = timepoint.subfolder / DEFAULT_OUTPUT_DIRNAME
-    cleanup_output_dir(output_dir)
-    semantic_path = output_dir / "semantic_seg.tif"
-    instance_path = output_dir / "instance_seg.tif"
-    probmap_path = output_dir / "probmap.tif"
+    ensure_dir(output_path)
+    instance_path = output_path / f"{timepoint.name}.tif"
     instance_seg = semantic_to_instance_seg(stack_semantic)
-    tifffile.imwrite(semantic_path, stack_semantic, bigtiff=True, metadata=None, photometric="minisblack")
     tifffile.imwrite(instance_path, instance_seg, bigtiff=True, metadata=None, photometric="minisblack")
-    tifffile.imwrite(probmap_path, stack_probmap, bigtiff=True, metadata=None, photometric="minisblack")
-    return semantic_path, instance_path, probmap_path
+    return instance_path
 
 
 def load_or_compute_densities(
@@ -812,11 +782,14 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
     input_path = input_path.expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
-
+    output_path = params.output_path.expanduser().resolve()
+    if output_path.exists() and not output_path.is_dir():
+        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
     device = resolve_device(params.device_name)
-    timepoints = discover_timepoints(input_path)
+    timepoints = discover_timepoints(input_path, exclude_paths=(output_path,))
     print(f"[probmap] Using device {device}", flush=True)
     print(f"[probmap] Found {len(timepoints)} subfolders", flush=True)
+    ensure_dir(output_path)
 
     x1_all, f1_all, x2_all, f2_all = load_or_compute_densities(timepoints, params, device=device)
     packed_densities = pack_densities(x1_all, f1_all, x2_all, f2_all, device=device)
@@ -825,6 +798,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
         print(f"[probmap] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
         classify_timepoint(
             timepoint,
+            output_path=output_path,
             densities=packed_densities,
             feature_batch=params.feature_batch,
             bg_prob_threshold=params.bg_prob_threshold,
@@ -842,6 +816,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
 def main() -> None:
     args = parse_args()
     input_path = Path(args.input_path).expanduser().resolve()
+    output_path = Path(args.output_path).expanduser().resolve()
     densities_path = (
         Path(args.densities_path).expanduser().resolve()
         if args.densities_path
@@ -855,6 +830,7 @@ def main() -> None:
         seg_tif=seg_tif,
         valid_mask_tif=valid_mask_tif,
         densities_path=densities_path,
+        output_path=output_path,
         density_method=args.density_method,
         feature_batch=max(1, int(args.feature_batch)),
         kde_points=max(2, int(args.kde_points)),

@@ -17,13 +17,12 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 ATTENTION_HEAD_CHANNELS = 6
-VORONOI_OTSU_DIRNAME = "voronoi-otsu"
-SEGMENTATION_FILENAME = "instance_seg.tif"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Voronoi-Otsu segmentation on saved spatialDINO features.")
     parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
+    parser.add_argument("--output-path", required=True, help="Folder where segmentation masks are written.")
     parser.add_argument(
         "--enable-voronoi-otsu",
         action="store_true",
@@ -44,8 +43,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def list_subfolders(input_path: Path) -> list[Path]:
-    subfolders = [path for path in input_path.iterdir() if path.is_dir()]
+def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
+    excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
+    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
     subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
     return subfolders
 
@@ -105,12 +105,13 @@ def validate_folder(subfolder: Path) -> tuple[Path, Path]:
 def segment_subfolder(
     subfolder: Path,
     *,
+    output_path: Path,
     gaussian_blur_sigma: int,
     rolling_ball_radius: float,
     device: torch.device,
     cle_device: object,
     log_kernel: np.ndarray,
-) -> None:
+) -> Path:
     lr_path, volume_path = validate_folder(subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
@@ -145,26 +146,20 @@ def segment_subfolder(
     )
     seg = cle.voronoi_otsu_labeling(gaussian_blur, spot_sigma=2, outline_sigma=2, device=cle_device)
     seg_array = np.asarray(seg).astype(np.uint32, copy=False)
-    output_dir = subfolder / VORONOI_OTSU_DIRNAME
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
+    mask_path = output_path / f"{subfolder.name}.tif"
     tifffile.imwrite(
-        subfolder / SEGMENTATION_FILENAME,
+        mask_path,
         seg_array,
         bigtiff=True,
         metadata=None,
         photometric="minisblack",
     )
-    tifffile.imwrite(
-        output_dir / SEGMENTATION_FILENAME,
-        seg_array,
-        bigtiff=True,
-        metadata=None,
-        photometric="minisblack",
-    )
+    return mask_path
 
 
-def iter_subfolders(input_path: Path) -> Iterable[Path]:
-    for subfolder in list_subfolders(input_path):
+def iter_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> Iterable[Path]:
+    for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
         yield subfolder
 
 
@@ -179,9 +174,11 @@ def main() -> None:
         raise ValueError("Rolling ball radius must be nonnegative.")
 
     input_path = Path(args.input_path).expanduser().resolve()
+    output_path = Path(args.output_path).expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
-
+    if output_path.exists() and not output_path.is_dir():
+        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Segmentation requires one GPU.")
 
@@ -190,9 +187,11 @@ def main() -> None:
     cle_device = cle.get_device()
     kernel_fixed = np.transpose(_log_kernel((3, 3, 2), 1.0), (2, 1, 0))
 
-    subfolders = list(iter_subfolders(input_path))
+    subfolders = list(iter_subfolders(input_path, exclude_paths=(output_path,)))
     if not subfolders:
         raise ValueError(f"Input folder contains no subfolders: {input_path}")
+
+    output_path.mkdir(parents=True, exist_ok=True)
 
     print(f"[segmentation] Using torch device {device}", flush=True)
     print(f"[segmentation] Using pyclesperanto device {cle_device}", flush=True)
@@ -202,6 +201,7 @@ def main() -> None:
         print(f"[segmentation] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
         segment_subfolder(
             subfolder,
+            output_path=output_path,
             gaussian_blur_sigma=int(args.gaussian_blur_sigma),
             rolling_ball_radius=float(args.rolling_ball_radius),
             device=device,

@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import ThemeToggle from "./ThemeToggle";
 
 const navItems: Array<{ to: string; label: string }> = [
+  { to: "/data", label: "Data" },
   { to: "/training", label: "Training" },
   { to: "/inference", label: "Inference" },
   { to: "/post-processing", label: "Post-processing" }
@@ -13,7 +14,7 @@ export default function TopNav() {
     <header className="topNav">
       <nav className="topNavInner" aria-label="Primary">
         <div className="topNavLeft">
-          <NavLink to="/inference" className="topNavBrand" aria-label="SpatialDINO home">
+          <NavLink to="/data" className="topNavBrand" aria-label="SpatialDINO home">
             SpatialDINO
           </NavLink>
           <div className="topNavDivider" aria-hidden="true" />

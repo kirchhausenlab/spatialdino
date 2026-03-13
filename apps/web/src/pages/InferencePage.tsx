@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import Modal from "../components/Modal";
+import ParameterHelpLabel from "../components/ParameterHelpLabel";
 import ServerDirectoryPicker from "../components/ServerDirectoryPicker";
 import { useJobs } from "../components/JobsProvider";
 import { getClientId } from "../lib/clientId";
@@ -158,6 +159,19 @@ type OverwritePromptState = {
 
 const DEFAULT_UPSAMPLE_FACTOR = "3";
 const DEFAULT_ANISOTROPY = { x: "1.0", y: "1.0", z: "1.0" };
+const INFERENCE_PARAMETER_HELP = {
+  inputFolder: "Dataset directory containing the volumes to process.",
+  outputFolder: "Directory where inference outputs and metadata will be written.",
+  selectGpus: "Choose which detected GPUs will run the inference job.",
+  modelWeights: "Select the pretrained checkpoint used to encode the input volumes.",
+  route: "Pick the attention implementation; streaming uses less memory on large volumes.",
+  precision: "Set the numeric precision used while running inference.",
+  normalization: "Controls how input intensities are scaled before the model runs.",
+  upsampleFactor: "Scales the low-resolution feature grid before outputs are saved.",
+  anisotropyCorrection: "Rescales axes to compensate for unequal voxel spacing.",
+  crop: "Restrict inference to an inclusive subvolume in X, Y, and Z.",
+  chosenFiles: "Limit inference to a contiguous range of input files.",
+} as const;
 
 export default function InferencePage() {
   const jobs = useJobs();
@@ -204,6 +218,7 @@ export default function InferencePage() {
   const [commandPreviewLoading, setCommandPreviewLoading] = useState(false);
   const [commandPreview, setCommandPreview] = useState<InferenceCommandPreviewSuccess | null>(null);
   const [commandPreviewError, setCommandPreviewError] = useState<string | null>(null);
+  const [optionalParametersOpen, setOptionalParametersOpen] = useState(false);
 
   async function loadOptions(preferredBackboneWeight?: string) {
     const requestId = optionsRequestIdRef.current + 1;
@@ -315,16 +330,17 @@ export default function InferencePage() {
         z: Math.max(validatedDataset.shape.z - 1, 0),
       }
     : null;
-  const parameterMessages: ReactNode[] = [];
+  const primaryParameterMessages: ReactNode[] = [];
+  const optionalParameterMessages: ReactNode[] = [];
 
   if (optionsError) {
-    parameterMessages.push(
+    primaryParameterMessages.push(
       <ValidationMessage key="options-error" tone="error">
         {optionsError}
       </ValidationMessage>,
     );
   } else if (optionsLoading) {
-    parameterMessages.push(
+    primaryParameterMessages.push(
       <div key="options-loading" className="sidebarHint">
         Loading inference options...
       </div>,
@@ -332,7 +348,7 @@ export default function InferencePage() {
   }
 
   if (!optionsLoading && availableGpus.length === 0 && !gpuError) {
-    parameterMessages.push(
+    primaryParameterMessages.push(
       <div key="gpu-empty" className="sidebarHint">
         No NVIDIA GPUs detected.
       </div>,
@@ -340,7 +356,7 @@ export default function InferencePage() {
   }
 
   if (gpuError) {
-    parameterMessages.push(
+    primaryParameterMessages.push(
       <div key="gpu-error" className="sidebarError">
         {gpuError}
       </div>,
@@ -348,7 +364,7 @@ export default function InferencePage() {
   }
 
   if (downloadWeightsFeedback) {
-    parameterMessages.push(
+    primaryParameterMessages.push(
       <ValidationMessage key="download-feedback" tone={downloadWeightsFeedback.tone}>
         {downloadWeightsFeedback.message}
       </ValidationMessage>,
@@ -356,7 +372,7 @@ export default function InferencePage() {
   }
 
   if (route === "streaming") {
-    parameterMessages.push(
+    optionalParameterMessages.push(
       <div key="route-warning" className="sidebarWarning">
         Streaming attention only works on modern GPUs.
       </div>,
@@ -364,15 +380,20 @@ export default function InferencePage() {
   }
 
   if (precision === "bfloat16") {
-    parameterMessages.push(
+    optionalParameterMessages.push(
       <div key="precision-warning" className="sidebarWarning">
         bfloat16 only works on modern GPUs.
+      </div>,
+    );
+    optionalParameterMessages.push(
+      <div key="memory-warning" className="sidebarWarning">
+        In case of GPU memory limitations, try Streaming attention or reduce the upsample factor.
       </div>,
     );
   }
 
   if (normalizationMode === "global_auto") {
-    parameterMessages.push(
+    optionalParameterMessages.push(
       <div key="normalization-auto" className="sidebarHint">
         Auto mode runs a normalization prepass on the selected files, writes <code>norm_per_vol.txt</code> to the
         output folder, and then launches inference with those shared values.
@@ -380,15 +401,7 @@ export default function InferencePage() {
     );
   }
 
-  if (normalizationMode === "global_manual") {
-    parameterMessages.push(
-      <div key="normalization-manual" className="sidebarHint">
-        Enter the <code>Global hist min</code> and <code>Global hist max</code> values from <code>norm_per_vol.txt</code>.
-      </div>,
-    );
-  }
-
-  parameterMessages.push(
+  optionalParameterMessages.push(
     <div key="inclusive-note" className="sidebarHint">
       Crop and file end values are inclusive.
     </div>,
@@ -644,7 +657,9 @@ export default function InferencePage() {
 
       <section className="datasetCard inferenceInputCard" aria-label="Input folder">
         <DirectoryFieldRow
-          label="Input folder"
+          label={
+            <ParameterHelpLabel label="Input folder" description={INFERENCE_PARAMETER_HELP.inputFolder} />
+          }
           path={inputPath}
           onChoose={() => setPickerTarget("input")}
           action={
@@ -675,12 +690,18 @@ export default function InferencePage() {
       {parametersVisible ? (
         <section className="datasetCard inferenceFormCard" aria-label="Inference parameters">
           <div className="inferencePathStack">
-            <DirectoryFieldRow label="Output folder" path={outputPath} onChoose={() => setPickerTarget("output")} />
+            <DirectoryFieldRow
+              label={<ParameterHelpLabel label="Output folder" description={INFERENCE_PARAMETER_HELP.outputFolder} />}
+              path={outputPath}
+              onChoose={() => setPickerTarget("output")}
+            />
           </div>
 
           <div className="inferenceFormRows">
             <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Select GPUs:</div>
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Select GPUs" description={INFERENCE_PARAMETER_HELP.selectGpus} />
+              </div>
               <div className="inferenceCheckboxGroup">
                 {availableGpus.map((gpu) => (
                   <label key={gpu.index} className="inferenceCheckboxLabel">
@@ -702,7 +723,9 @@ export default function InferencePage() {
             </div>
 
             <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Backbone weights:</div>
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Model weights" description={INFERENCE_PARAMETER_HELP.modelWeights} />
+              </div>
               <select
                 className="inferenceSelect"
                 value={backboneWeight}
@@ -727,167 +750,212 @@ export default function InferencePage() {
               >
                 {downloadingWeights ? "Downloading..." : "Download weights"}
               </button>
-              <div className="inferenceInlineLabel isStrong">Route:</div>
-              <select
-                className="inferenceSelect inferenceCompactSelect"
-                value={route}
-                onChange={(event) => setRoute(event.target.value)}
-              >
-                <option value="full">Full attention (default)</option>
-                <option value="streaming">Streaming attention</option>
-              </select>
-              <div className="inferenceInlineLabel isStrong">Precision:</div>
-              <select
-                className="inferenceSelect inferenceCompactSelect"
-                value={precision}
-                onChange={(event) => setPrecision(event.target.value)}
-              >
-                <option value="bfloat16">bfloat16 (default)</option>
-                <option value="float16">float16</option>
-                <option value="float32">float32</option>
-              </select>
-            </div>
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Normalization:</div>
-              <select
-                className="inferenceSelect"
-                value={normalizationMode}
-                onChange={(event) => setNormalizationMode(event.target.value as NormalizationMode)}
-              >
-                <option value="per_volume">Per-volume (default)</option>
-                <option value="global_auto">Global, compute now</option>
-                <option value="global_manual">Global, manual values</option>
-              </select>
-              {normalizationMode === "global_manual" ? (
-                <>
-                  <div className="inferenceInlineLabel">Hist min</div>
-                  <InferenceNumberInput value={globalHistMin} onChange={setGlobalHistMin} min={0} step="any" />
-                  <div className="inferenceInlineLabel">Hist max</div>
-                  <InferenceNumberInput value={globalHistMax} onChange={setGlobalHistMax} min={0} step="any" />
-                </>
-              ) : null}
-            </div>
-
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Upsample factor:</div>
-              <InferenceNumberInput value={upsampleFactor} onChange={setUpsampleFactor} min={0} step="any" />
-              <div className="inferenceInlineLabel isStrong">Anisotropy correction:</div>
-              <div className="inferenceInlineLabel">X</div>
-              <InferenceNumberInput
-                value={anisotropy.x}
-                onChange={(value) => setAnisotropy((current) => ({ ...current, x: value }))}
-                min={0}
-                step="any"
-              />
-              <div className="inferenceInlineLabel">Y</div>
-              <InferenceNumberInput
-                value={anisotropy.y}
-                onChange={(value) => setAnisotropy((current) => ({ ...current, y: value }))}
-                min={0}
-                step="any"
-              />
-              <div className="inferenceInlineLabel">Z</div>
-              <InferenceNumberInput
-                value={anisotropy.z}
-                onChange={(value) => setAnisotropy((current) => ({ ...current, z: value }))}
-                min={0}
-                step="any"
-              />
-            </div>
-
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel isStrong">Crop:</div>
-              <div className="inferenceInlineGroup">
-                <div className="inferenceAxisGroup">
-                  <div className="inferenceInlineLabel">X</div>
-                  <InferenceNumberInput
-                    value={cropBounds.xStart}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, xStart: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.x}
-                    placeholder="start"
-                    ariaLabel="Crop X start"
-                  />
-                  <InferenceNumberInput
-                    value={cropBounds.xEnd}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, xEnd: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.x}
-                    placeholder="end"
-                    ariaLabel="Crop X end"
-                  />
-                </div>
-                <div className="inferenceAxisGroup">
-                  <div className="inferenceInlineLabel">Y</div>
-                  <InferenceNumberInput
-                    value={cropBounds.yStart}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, yStart: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.y}
-                    placeholder="start"
-                    ariaLabel="Crop Y start"
-                  />
-                  <InferenceNumberInput
-                    value={cropBounds.yEnd}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, yEnd: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.y}
-                    placeholder="end"
-                    ariaLabel="Crop Y end"
-                  />
-                </div>
-                <div className="inferenceAxisGroup">
-                  <div className="inferenceInlineLabel">Z</div>
-                  <InferenceNumberInput
-                    value={cropBounds.zStart}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, zStart: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.z}
-                    placeholder="start"
-                    ariaLabel="Crop Z start"
-                  />
-                  <InferenceNumberInput
-                    value={cropBounds.zEnd}
-                    onChange={(value) => setCropBounds((current) => ({ ...current, zEnd: value }))}
-                    min={0}
-                    step={1}
-                    max={maxCropBounds?.z}
-                    placeholder="end"
-                    ariaLabel="Crop Z end"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel isStrong">Chosen files:</div>
-              <div className="inferenceInlineLabel">Start file:</div>
-              <InferenceNumberInput
-                value={fileRange.start}
-                onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
-                min={0}
-                step={1}
-                max={maxFileIndex}
-                ariaLabel="Start file"
-              />
-              <div className="inferenceInlineLabel">End file:</div>
-              <InferenceNumberInput
-                value={fileRange.end}
-                onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
-                min={0}
-                step={1}
-                max={maxFileIndex}
-                ariaLabel="End file"
-              />
             </div>
           </div>
 
-          <div className="inferenceMessages">{parameterMessages}</div>
+          {primaryParameterMessages.length > 0 ? (
+            <div className="inferenceMessages">{primaryParameterMessages}</div>
+          ) : null}
+
+          <div className="inferenceOptionalToggleRow">
+            <button
+              type="button"
+              className="pickerPrimaryButton"
+              aria-expanded={optionalParametersOpen}
+              aria-controls="inference-optional-parameters"
+              onClick={() => setOptionalParametersOpen((current) => !current)}
+            >
+              Optional parameters
+            </button>
+          </div>
+
+          {optionalParametersOpen ? (
+            <div id="inference-optional-parameters" className="inferenceOptionalSection">
+              <div className="inferenceFormRows">
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel label="Route" description={INFERENCE_PARAMETER_HELP.route} />
+                  </div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={route}
+                    onChange={(event) => setRoute(event.target.value)}
+                  >
+                    <option value="full">Full attention (default)</option>
+                    <option value="streaming">Streaming attention</option>
+                  </select>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Precision" description={INFERENCE_PARAMETER_HELP.precision} />
+                  </div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={precision}
+                    onChange={(event) => setPrecision(event.target.value)}
+                  >
+                    <option value="bfloat16">bfloat16 (default)</option>
+                    <option value="float16">float16</option>
+                    <option value="float32">float32</option>
+                  </select>
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel label="Normalization" description={INFERENCE_PARAMETER_HELP.normalization} />
+                  </div>
+                  <select
+                    className="inferenceSelect"
+                    value={normalizationMode}
+                    onChange={(event) => setNormalizationMode(event.target.value as NormalizationMode)}
+                  >
+                    <option value="per_volume">Per-volume (default)</option>
+                    <option value="global_auto">Global, compute now</option>
+                    <option value="global_manual">Global, manual values</option>
+                  </select>
+                  {normalizationMode === "global_manual" ? (
+                    <>
+                      <div className="inferenceInlineLabel">Hist min</div>
+                      <InferenceNumberInput value={globalHistMin} onChange={setGlobalHistMin} min={0} step="any" />
+                      <div className="inferenceInlineLabel">Hist max</div>
+                      <InferenceNumberInput value={globalHistMax} onChange={setGlobalHistMax} min={0} step="any" />
+                    </>
+                  ) : null}
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Anisotropy correction"
+                      description={INFERENCE_PARAMETER_HELP.anisotropyCorrection}
+                    />
+                  </div>
+                  <div className="inferenceInlineLabel">X</div>
+                  <InferenceNumberInput
+                    value={anisotropy.x}
+                    onChange={(value) => setAnisotropy((current) => ({ ...current, x: value }))}
+                    min={0}
+                    step="any"
+                  />
+                  <div className="inferenceInlineLabel">Y</div>
+                  <InferenceNumberInput
+                    value={anisotropy.y}
+                    onChange={(value) => setAnisotropy((current) => ({ ...current, y: value }))}
+                    min={0}
+                    step="any"
+                  />
+                  <div className="inferenceInlineLabel">Z</div>
+                  <InferenceNumberInput
+                    value={anisotropy.z}
+                    onChange={(value) => setAnisotropy((current) => ({ ...current, z: value }))}
+                    min={0}
+                    step="any"
+                  />
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Upsample factor" description={INFERENCE_PARAMETER_HELP.upsampleFactor} />
+                  </div>
+                  <InferenceNumberInput value={upsampleFactor} onChange={setUpsampleFactor} min={0} step="any" />
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel isStrong">
+                    <ParameterHelpLabel label="Crop" description={INFERENCE_PARAMETER_HELP.crop} />
+                  </div>
+                  <div className="inferenceInlineGroup">
+                    <div className="inferenceAxisGroup">
+                      <div className="inferenceInlineLabel">X</div>
+                      <InferenceNumberInput
+                        value={cropBounds.xStart}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, xStart: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.x}
+                        placeholder="start"
+                        ariaLabel="Crop X start"
+                      />
+                      <InferenceNumberInput
+                        value={cropBounds.xEnd}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, xEnd: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.x}
+                        placeholder="end"
+                        ariaLabel="Crop X end"
+                      />
+                    </div>
+                    <div className="inferenceAxisGroup">
+                      <div className="inferenceInlineLabel">Y</div>
+                      <InferenceNumberInput
+                        value={cropBounds.yStart}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, yStart: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.y}
+                        placeholder="start"
+                        ariaLabel="Crop Y start"
+                      />
+                      <InferenceNumberInput
+                        value={cropBounds.yEnd}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, yEnd: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.y}
+                        placeholder="end"
+                        ariaLabel="Crop Y end"
+                      />
+                    </div>
+                    <div className="inferenceAxisGroup">
+                      <div className="inferenceInlineLabel">Z</div>
+                      <InferenceNumberInput
+                        value={cropBounds.zStart}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, zStart: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.z}
+                        placeholder="start"
+                        ariaLabel="Crop Z start"
+                      />
+                      <InferenceNumberInput
+                        value={cropBounds.zEnd}
+                        onChange={(value) => setCropBounds((current) => ({ ...current, zEnd: value }))}
+                        min={0}
+                        step={1}
+                        max={maxCropBounds?.z}
+                        placeholder="end"
+                        ariaLabel="Crop Z end"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel isStrong">
+                    <ParameterHelpLabel label="Chosen files" description={INFERENCE_PARAMETER_HELP.chosenFiles} />
+                  </div>
+                  <div className="inferenceInlineLabel">Start file:</div>
+                  <InferenceNumberInput
+                    value={fileRange.start}
+                    onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
+                    min={0}
+                    step={1}
+                    max={maxFileIndex}
+                    ariaLabel="Start file"
+                  />
+                  <div className="inferenceInlineLabel">End file:</div>
+                  <InferenceNumberInput
+                    value={fileRange.end}
+                    onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
+                    min={0}
+                    step={1}
+                    max={maxFileIndex}
+                    ariaLabel="End file"
+                  />
+                </div>
+              </div>
+
+              {optionalParameterMessages.length > 0 ? (
+                <div className="inferenceMessages">{optionalParameterMessages}</div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="validationActions">
             <button
@@ -1073,7 +1141,7 @@ function DirectoryFieldRow({
   onChoose,
   action,
 }: {
-  label: string;
+  label: ReactNode;
   path: string | null;
   onChoose: () => void;
   action?: ReactNode;

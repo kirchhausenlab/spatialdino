@@ -9,6 +9,7 @@ test_images
 .venv
 logs
 outputs
+data/
 wandb
 *.csv
 # Byte-compiled / optimized / DLL files
