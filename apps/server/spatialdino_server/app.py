@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import html
 import ipaddress
+import json
 import os
 import re
 import shlex
 import shutil
 import socket
 import subprocess
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 import sys
 import threading
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Literal, TextIO
 import urllib.request
 import uuid
+import zipfile
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -29,11 +32,16 @@ from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 
 
 JOB_LOGS_DIRNAME = ".spatialdino_job_logs"
+RAW_DATA_RELATIVE_PATH = "data/raw_data"
 DEFAULT_INFERENCE_BACKBONE_FILENAME = "backbone.pth"
 DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH = f"models/{DEFAULT_INFERENCE_BACKBONE_FILENAME}"
 DEFAULT_INFERENCE_BACKBONE_URL = (
     "https://spatialdino.s3.us-east-1.amazonaws.com/models/spatial_dino/step%3D244999/backbone.pth"
 )
+DEFAULT_PUBLIC_DATA_MANIFEST_URL = (
+    "https://spatialdino.s3.us-east-1.amazonaws.com/inference_data/raw_data/manifest.json"
+)
+PUBLIC_DATA_DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _default_inference_backbone_download_lock = threading.Lock()
 
 
@@ -60,6 +68,15 @@ def get_job_logs_dir() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return (get_repo_root() / JOB_LOGS_DIRNAME).resolve()
+
+
+def get_public_data_dir() -> Path:
+    return (get_repo_root() / RAW_DATA_RELATIVE_PATH).resolve()
+
+
+def get_public_data_manifest_url() -> str:
+    value = (os.environ.get("SPATIALDINO_DATA_MANIFEST_URL") or "").strip()
+    return value or DEFAULT_PUBLIC_DATA_MANIFEST_URL
 
 
 def get_server_hostname() -> str:
@@ -173,6 +190,64 @@ def _download_url_to_file(url: str, target_path: Path) -> None:
             temp_path.unlink()
 
 
+def _validate_public_data_dataset_name(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        raise ValueError("Dataset name cannot be empty.")
+    if value in {".", ".."}:
+        raise ValueError(f"Invalid dataset name: {value!r}")
+    if not PUBLIC_DATA_DATASET_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"Invalid dataset name: {value!r}. Only letters, digits, '.', '_' and '-' are supported."
+        )
+    return value
+
+
+def _load_public_data_manifest() -> list[dict[str, str]]:
+    manifest_url = get_public_data_manifest_url()
+    try:
+        with urllib.request.urlopen(manifest_url, timeout=60) as response:
+            payload = json.load(response)
+    except Exception as exc:
+        raise RuntimeError(f"Could not load public data manifest from {manifest_url}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Public data manifest must be a JSON object.")
+
+    datasets_payload = payload.get("datasets")
+    if not isinstance(datasets_payload, list):
+        raise RuntimeError("Public data manifest is missing a 'datasets' list.")
+
+    datasets: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+    for item in datasets_payload:
+        if not isinstance(item, dict):
+            raise RuntimeError("Each manifest dataset entry must be an object.")
+
+        name_raw = item.get("name")
+        archive_url_raw = item.get("archiveUrl")
+        if not isinstance(name_raw, str) or not isinstance(archive_url_raw, str):
+            raise RuntimeError("Each manifest dataset entry must include string 'name' and 'archiveUrl' fields.")
+
+        try:
+            name = _validate_public_data_dataset_name(name_raw)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid dataset name in public data manifest: {exc}") from exc
+
+        archive_url = archive_url_raw.strip()
+        if not archive_url.startswith(("http://", "https://")):
+            raise RuntimeError(f"Manifest dataset {name!r} has an invalid archiveUrl.")
+        if name in seen_names:
+            raise RuntimeError(f"Duplicate dataset name in public data manifest: {name!r}")
+
+        seen_names.add(name)
+        datasets.append({"name": name, "archiveUrl": archive_url})
+
+    if not datasets:
+        raise RuntimeError("Public data manifest contains no datasets.")
+    return datasets
+
+
 class ValidateInferenceInputRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
@@ -192,6 +267,11 @@ class ValidateTrackingSegmentationFolderRequest(BaseModel):
 
 class DownloadBackboneWeightsRequest(BaseModel):
     overwrite: bool = False
+
+
+class RunDataDownloadRequest(BaseModel):
+    datasets: list[str] = Field(default_factory=list)
+    existing_mode: Literal["skip", "overwrite"] | None = None
 
 
 class InferenceAxisRequest(BaseModel):
@@ -981,6 +1061,148 @@ def _clear_directory_contents(path: Path) -> None:
             continue
         if child.is_dir():
             shutil.rmtree(child)
+
+
+def _remove_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+        return
+    path.unlink(missing_ok=True)
+
+
+def _extract_zip_to_directory(archive_path: Path, extract_dir: Path) -> None:
+    with zipfile.ZipFile(archive_path) as archive:
+        infos = archive.infolist()
+        if not infos:
+            raise RuntimeError("Archive is empty.")
+
+        for info in infos:
+            member = Path(info.filename)
+            if member.is_absolute():
+                raise RuntimeError(f"Archive contains an absolute path: {info.filename!r}")
+            if any(part == ".." for part in member.parts):
+                raise RuntimeError(f"Archive contains an unsafe path: {info.filename!r}")
+
+        archive.extractall(extract_dir)
+
+
+def _select_extracted_dataset_path(extract_dir: Path, dataset_name: str) -> Path:
+    named_path = extract_dir / dataset_name
+    if named_path.is_dir():
+        return named_path
+
+    visible_children = [child for child in extract_dir.iterdir() if child.name not in {"__MACOSX"}]
+    if len(visible_children) == 1 and visible_children[0].is_dir():
+        return visible_children[0]
+    return extract_dir
+
+
+def _invalid_data_download(reason_code: str, message: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "reasonCode": reason_code,
+        "message": message,
+    }
+
+
+def _build_data_download_launch_config(
+    payload: RunDataDownloadRequest,
+    *,
+    require_overwrite_confirmation: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        manifest_datasets = _load_public_data_manifest()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    selected_names: list[str] = []
+    seen_names: set[str] = set()
+    for raw_name in payload.datasets:
+        try:
+            name = _validate_public_data_dataset_name(raw_name)
+        except ValueError:
+            return _invalid_data_download("invalid_dataset_name", f"Invalid dataset selection: {raw_name!r}"), None
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        selected_names.append(name)
+
+    if not selected_names:
+        return _invalid_data_download("missing_selection", "Select at least one dataset to download."), None
+
+    manifest_by_name = {item["name"]: item for item in manifest_datasets}
+    missing_names = [name for name in selected_names if name not in manifest_by_name]
+    if missing_names:
+        missing_preview = ", ".join(missing_names[:3])
+        if len(missing_names) > 3:
+            missing_preview = f"{missing_preview}, ..."
+        return _invalid_data_download(
+            "unknown_dataset",
+            f"Some selected datasets are not available in the public data manifest: {missing_preview}.",
+        ), None
+
+    repo_root = get_repo_root()
+    raw_data_dir = get_public_data_dir()
+    if not _is_relative_to(raw_data_dir, repo_root):
+        raise HTTPException(status_code=500, detail="Public data directory must stay inside the repo root.")
+
+    selected_datasets = [manifest_by_name[name] for name in selected_names]
+    existing_items = [
+        {
+            "name": item["name"],
+            "path": str(raw_data_dir / item["name"]),
+        }
+        for item in selected_datasets
+        if (raw_data_dir / item["name"]).exists() or (raw_data_dir / item["name"]).is_symlink()
+    ]
+
+    if existing_items and payload.existing_mode is None and require_overwrite_confirmation:
+        existing_names = [item["name"] for item in existing_items]
+        return {
+            "valid": True,
+            "requiresOverwriteConfirmation": True,
+            "message": (
+                f"{len(existing_names)} selected dataset{'s already exist' if len(existing_names) != 1 else ' already exists'} "
+                "under data/raw_data. Do you want to skip them or overwrite them?"
+            ),
+            "existingDatasetCount": len(existing_names),
+            "existingDatasetNames": existing_names,
+            "existingDatasetPaths": [item["path"] for item in existing_items],
+        }, None
+
+    existing_mode = payload.existing_mode or "overwrite"
+    overwrite_existing = existing_mode == "overwrite"
+    if existing_mode == "skip":
+        selected_datasets = [
+            item
+            for item in selected_datasets
+            if not (raw_data_dir / item["name"]).exists() and not (raw_data_dir / item["name"]).is_symlink()
+        ]
+
+    if not selected_datasets:
+        return (
+            _invalid_data_download(
+                "nothing_to_download",
+                "All selected datasets already exist in data/raw_data. Choose overwrite to replace them.",
+            ),
+            None,
+        )
+
+    selected_dataset_names = {item["name"] for item in selected_datasets}
+    skipped_names = [name for name in selected_names if name not in selected_dataset_names]
+    return None, {
+        "manifest_url": get_public_data_manifest_url(),
+        "download_root": raw_data_dir,
+        "selected_datasets": selected_datasets,
+        "selected_names": [item["name"] for item in selected_datasets],
+        "skipped_names": skipped_names,
+        "overwrite_existing": overwrite_existing,
+    }
 
 
 def _resolve_backbone_weight_path(raw_value: str) -> Path | None:
@@ -1882,6 +2104,126 @@ def _run_tracking_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> 
     )
 
 
+def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    repo_root = get_repo_root()
+    download_root = Path(launch_config["download_root"])
+    selected_datasets = list(launch_config["selected_datasets"])
+    overwrite_existing = bool(launch_config["overwrite_existing"])
+    log_handle = _open_job_log(job)
+
+    with job.lock:
+        job.command = f"Download public data from {launch_config['manifest_url']} to {download_root}"
+        job.working_dir = str(repo_root)
+
+    _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
+    _append_job_log_line(job, f"[server] Manifest: {launch_config['manifest_url']}", log_handle)
+    _append_job_log_line(job, f"[server] Download root: {download_root}", log_handle)
+    if launch_config.get("skipped_names"):
+        skipped_text = ", ".join(launch_config["skipped_names"])
+        _append_job_log_line(job, f"[server] Skipping existing datasets: {skipped_text}", log_handle)
+
+    try:
+        download_root.mkdir(parents=True, exist_ok=True)
+        temp_parent = download_root.parent
+
+        with job.lock:
+            if job.stop_requested:
+                _mark_job_halted_locked(job)
+                stop_before_start = True
+            else:
+                stop_before_start = False
+                job.current = "Starting"
+        if stop_before_start:
+            _append_job_log_line(job, "[server] Job stopped before launch.", log_handle)
+            return
+
+        for dataset in selected_datasets:
+            dataset_name = str(dataset["name"])
+            archive_url = str(dataset["archiveUrl"])
+            target_path = download_root / dataset_name
+
+            with job.lock:
+                if job.stop_requested:
+                    _mark_job_halted_locked(job)
+                    _append_job_log_line(job, "[server] Job stopped by user.", log_handle)
+                    return
+                job.current = f"Downloading {dataset_name}"
+
+            _append_job_log_line(job, f"[server] Downloading {dataset_name} from {archive_url}", log_handle)
+
+            with tempfile.TemporaryDirectory(prefix=f"spatialdino-data-{dataset_name}-", dir=temp_parent) as tmp:
+                tmp_path = Path(tmp)
+                archive_path = tmp_path / f"{dataset_name}.zip"
+                extract_dir = tmp_path / "extract"
+                extract_dir.mkdir(parents=True, exist_ok=True)
+
+                _download_url_to_file(archive_url, archive_path)
+
+                with job.lock:
+                    if job.stop_requested:
+                        _mark_job_halted_locked(job)
+                        _append_job_log_line(job, "[server] Job stopped by user.", log_handle)
+                        return
+                    job.current = f"Extracting {dataset_name}"
+
+                _append_job_log_line(job, f"[server] Extracting {dataset_name}", log_handle)
+                _extract_zip_to_directory(archive_path, extract_dir)
+
+                extracted_source = _select_extracted_dataset_path(extract_dir, dataset_name)
+                if not extracted_source.exists():
+                    raise RuntimeError(f"Archive for {dataset_name} produced no extractable data.")
+
+                if extracted_source == extract_dir:
+                    wrapped_dir = tmp_path / dataset_name
+                    wrapped_dir.mkdir(parents=True, exist_ok=True)
+                    moved_any = False
+                    for child in list(extract_dir.iterdir()):
+                        shutil.move(str(child), str(wrapped_dir / child.name))
+                        moved_any = True
+                    if not moved_any:
+                        raise RuntimeError(f"Archive for {dataset_name} is empty after extraction.")
+                    extracted_source = wrapped_dir
+
+                if target_path.exists() or target_path.is_symlink():
+                    if overwrite_existing:
+                        _remove_path(target_path)
+                    else:
+                        raise RuntimeError(
+                            f"Target path already exists for {dataset_name}: {target_path}. Use overwrite to replace it."
+                        )
+
+                shutil.move(str(extracted_source), str(target_path))
+
+            with job.lock:
+                job.processed = min(job.total, job.processed + 1) if job.total > 0 else job.processed + 1
+                job.current = dataset_name
+            _append_job_log_line(job, f"[server] Saved dataset {dataset_name} to {target_path}", log_handle)
+
+        with job.lock:
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+            else:
+                job.status = "completed"
+                job.current = "Done"
+            job.finished_at_ms = jobs_api._now_ms()
+        _append_job_log_line(job, "[server] Public data download completed successfully.", log_handle)
+    except Exception as exc:
+        _append_job_log_line(job, f"[server] Runner error: {exc}", log_handle)
+        with job.lock:
+            if job.stop_requested:
+                job.status = "halted"
+                job.current = "Stopped"
+            else:
+                job.status = "failed"
+                job.current = "Failed"
+                job.error = str(exc)
+            job.finished_at_ms = jobs_api._now_ms()
+    finally:
+        if log_handle is not None:
+            log_handle.close()
+
+
 def _run_single_gpu_post_processing_job(
     job: jobs_api.JobState,
     launch_config: dict[str, Any],
@@ -2036,6 +2378,16 @@ def _launch_tracking_job_thread(job: jobs_api.JobState, launch_config: dict[str,
     thread.start()
 
 
+def _launch_data_download_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_data_download_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"data-download-job-{job.job_id}",
+    )
+    thread.start()
+
+
 def load_index_html(dist_dir: Path) -> str | None:
     index_path = dist_dir / "index.html"
     if not index_path.is_file():
@@ -2070,6 +2422,71 @@ def session_info(request: Request) -> dict[str, str]:
         "serverHostname": get_server_hostname(),
         "sessionLabel": classify_client_session(client_host),
     }
+
+
+@api.get("/data/options")
+def data_options() -> dict[str, object]:
+    try:
+        datasets = _load_public_data_manifest()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "manifestUrl": get_public_data_manifest_url(),
+        "downloadRoot": str(get_public_data_dir()),
+        "datasets": [{"name": item["name"]} for item in datasets],
+    }
+
+
+@api.post("/data/download")
+def run_data_download(
+    payload: RunDataDownloadRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_data_download_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    download_root = Path(launch_config["download_root"])
+    label = "Public data download"
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="data-download",
+        status="running",
+        processed=0,
+        total=len(launch_config["selected_datasets"]),
+        current="Queued",
+        label=label,
+        save_dir=str(download_root),
+        datasets=[
+            {"source_dir": str(item["archiveUrl"]), "save_to": str(item["name"])}
+            for item in launch_config["selected_datasets"]
+        ],
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_data_download_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_data_download("submit_failed", f"Could not start public data download: {exc}"),
+        }
+
+    skipped_names = list(launch_config.get("skipped_names", []))
+    if skipped_names:
+        return {
+            "submitted": True,
+            "jobId": job.job_id,
+            "message": (
+                f"Public data download submitted. Skipping {len(skipped_names)} existing dataset"
+                f"{'' if len(skipped_names) == 1 else 's'}."
+            ),
+        }
+    return {"submitted": True, "jobId": job.job_id, "message": "Public data download submitted."}
 
 
 @api.get("/inference/options")

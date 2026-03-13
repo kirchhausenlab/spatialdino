@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import zipfile
 
 import numpy as np
 from starlette.requests import Request
@@ -38,6 +40,14 @@ class FakeUrlopenResponse(io.BytesIO):
     def __exit__(self, exc_type, exc, tb) -> bool:
         self.close()
         return False
+
+
+def make_zip_bytes(files: dict[str, bytes]) -> bytes:
+    handle = io.BytesIO()
+    with zipfile.ZipFile(handle, "w") as archive:
+        for path, content in files.items():
+            archive.writestr(path, content)
+    return handle.getvalue()
 
 
 class AppTests(unittest.TestCase):
@@ -209,6 +219,160 @@ class AppTests(unittest.TestCase):
             self.assertEqual(response["downloaded"], True)
             self.assertEqual(response["alreadyExisted"], True)
             self.assertEqual(target_path.read_bytes(), b"replacement-weights")
+
+    def test_data_options_lists_manifest_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            manifest = {
+                "version": 1,
+                "datasets": [
+                    {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                ],
+            }
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app.urllib.request.urlopen",
+                    return_value=FakeUrlopenResponse(json.dumps(manifest).encode("utf-8")),
+                ),
+            ):
+                payload = app_module.data_options()
+
+        self.assertEqual(payload["manifestUrl"], app_module.DEFAULT_PUBLIC_DATA_MANIFEST_URL)
+        self.assertEqual(payload["downloadRoot"], str(repo_root / "data" / "raw_data"))
+        self.assertEqual(payload["datasets"], [{"name": "ap2"}, {"name": "dextran"}])
+
+    def test_run_data_download_requests_overwrite_confirmation_for_existing_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            existing_path = repo_root / "data" / "raw_data" / "ap2"
+            existing_path.mkdir(parents=True)
+
+            payload = app_module.RunDataDownloadRequest(datasets=["ap2", "dextran"])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app._load_public_data_manifest",
+                    return_value=[
+                        {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    ],
+                ),
+            ):
+                response = app_module.run_data_download(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], True)
+        self.assertEqual(response["requiresOverwriteConfirmation"], True)
+        self.assertEqual(response["existingDatasetCount"], 1)
+        self.assertEqual(response["existingDatasetNames"], ["ap2"])
+        self.assertEqual(response["existingDatasetPaths"], [str(existing_path)])
+        with jobs_api._jobs_lock:
+            self.assertEqual(jobs_api._jobs, {})
+
+    def test_run_data_download_submits_job_when_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = app_module.RunDataDownloadRequest(datasets=["ap2", "dextran"])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch(
+                    "spatialdino_server.app._load_public_data_manifest",
+                    return_value=[
+                        {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    ],
+                ),
+                patch("spatialdino_server.app._launch_data_download_job_thread") as launch_thread,
+            ):
+                response = app_module.run_data_download(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], True)
+        self.assertIn("jobId", response)
+        launch_thread.assert_called_once()
+        launch_config = launch_thread.call_args.args[1]
+        self.assertEqual(launch_config["selected_names"], ["ap2", "dextran"])
+        self.assertEqual(launch_config["download_root"], repo_root / "data" / "raw_data")
+        with jobs_api._jobs_lock:
+            self.assertEqual(len(jobs_api._jobs), 1)
+            job = next(iter(jobs_api._jobs.values()))
+            self.assertEqual(job.type, "data-download")
+            self.assertEqual(job.total, 2)
+            self.assertEqual(
+                job.datasets,
+                [
+                    {"source_dir": "https://example.com/ap2.zip", "save_to": "ap2"},
+                    {"source_dir": "https://example.com/dextran.zip", "save_to": "dextran"},
+                ],
+            )
+
+    def test_run_data_download_job_downloads_and_extracts_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            download_root = repo_root / "data" / "raw_data"
+            archive_bytes = {
+                "https://example.com/ap2.zip": make_zip_bytes(
+                    {
+                        "ap2/image_a.tif": b"ap2-image",
+                        "ap2/notes/readme.txt": b"ap2-readme",
+                    }
+                ),
+                "https://example.com/dextran.zip": make_zip_bytes(
+                    {
+                        "volume_001.tif": b"dextran-image",
+                        "metadata/info.txt": b"dextran-info",
+                    }
+                ),
+            }
+            job = jobs_api.JobState(
+                job_id="job-data-1",
+                owner_client_id="client-1234",
+                type="data-download",
+                status="running",
+                total=2,
+            )
+            launch_config = {
+                "manifest_url": "https://example.com/manifest.json",
+                "download_root": download_root,
+                "selected_datasets": [
+                    {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
+                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                ],
+                "selected_names": ["ap2", "dextran"],
+                "skipped_names": [],
+                "overwrite_existing": False,
+            }
+
+            def fake_download(url: str, target_path: Path) -> None:
+                target_path.write_bytes(archive_bytes[url])
+
+            with (
+                patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
+                patch("spatialdino_server.app._download_url_to_file", side_effect=fake_download),
+            ):
+                app_module._run_data_download_job(job, launch_config)
+
+            self.assertEqual((download_root / "ap2" / "image_a.tif").read_bytes(), b"ap2-image")
+            self.assertEqual((download_root / "ap2" / "notes" / "readme.txt").read_bytes(), b"ap2-readme")
+            self.assertEqual((download_root / "dextran" / "volume_001.tif").read_bytes(), b"dextran-image")
+            self.assertEqual((download_root / "dextran" / "metadata" / "info.txt").read_bytes(), b"dextran-info")
+
+            with job.lock:
+                self.assertEqual(job.status, "completed")
+                self.assertEqual(job.current, "Done")
+                self.assertEqual(job.processed, 2)
+                self.assertTrue(job.log_available)
+                self.assertIsNotNone(job.command)
+                self.assertIsNotNone(job.log_path)
+
+            log_text = Path(job.log_path).read_text(encoding="utf-8")
+            self.assertIn("Downloading ap2", log_text)
+            self.assertIn("Saved dataset dextran", log_text)
+            self.assertIn("Public data download completed successfully.", log_text)
 
     def test_validate_inference_input_folder_accepts_uniform_3d_tiffs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

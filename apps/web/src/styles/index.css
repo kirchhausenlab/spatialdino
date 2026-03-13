@@ -661,6 +661,65 @@ button {
   gap: 16px;
 }
 
+.dataCardRow {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.dataSelectionModes {
+  display: grid;
+  gap: 10px;
+}
+
+.dataSelectionOption {
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: calc(var(--radius) + 2px);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.dataSelectionOption:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.dataSelectionOption input,
+.dataDatasetToggle input {
+  accent-color: var(--accent);
+}
+
+.dataDatasetGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dataDatasetToggle {
+  min-height: 38px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.dataDatasetToggle:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
 .inferencePathStack {
   display: grid;
   gap: 10px;
@@ -1423,6 +1482,14 @@ html[data-theme="dark"] .preprocessZThumb {
 }
 
 @media (max-width: 860px) {
+  .dataCardRow {
+    grid-template-columns: 1fr;
+  }
+
+  .dataDatasetGrid {
+    grid-template-columns: 1fr;
+  }
+
   .preprocessSaveMapRow {
     grid-template-columns: 1fr;
     align-items: stretch;
