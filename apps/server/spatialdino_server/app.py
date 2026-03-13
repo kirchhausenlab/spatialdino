@@ -331,6 +331,8 @@ def _list_inference_tiff_paths(input_path: Path) -> list[Path]:
     tiff_paths: list[Path] = []
     with os.scandir(input_path) as entries:
         for entry in entries:
+            if entry.name.startswith("."):
+                continue
             if not entry.is_file():
                 continue
             if not entry.name.lower().endswith((".tif", ".tiff")):
@@ -349,6 +351,8 @@ def _list_child_directories(input_path: Path) -> list[Path]:
     child_dirs: list[Path] = []
     with os.scandir(input_path) as entries:
         for entry in entries:
+            if entry.name.startswith("."):
+                continue
             if not entry.is_dir():
                 continue
             child_dirs.append(Path(entry.path))

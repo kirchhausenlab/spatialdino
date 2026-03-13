@@ -231,6 +231,22 @@ class AppTests(unittest.TestCase):
             },
         )
 
+    def test_validate_inference_input_folder_ignores_hidden_tiffs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            tifffile.imwrite(input_dir / "a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(input_dir / "b.tiff", np.ones((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(input_dir / ".hidden_bad.tif", np.ones((5, 6, 7), dtype=np.uint8))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_inference_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["fileCount"], 2)
+        self.assertEqual(payload["shape"], {"x": 4, "y": 3, "z": 2})
+
     def test_validate_inference_input_folder_rejects_missing_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -320,6 +336,26 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "no_subfolders")
         self.assertEqual(payload["message"], "Input folder contains no subfolders.")
+
+    def test_validate_process_features_input_folder_ignores_hidden_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            hidden_dir = input_dir / ".hidden_sample"
+            hidden_dir.mkdir()
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_process_features_input_folder(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["subfolderCount"], 2)
+        self.assertEqual(payload["subfolderNames"], ["sample_a", "sample_b"])
 
     def test_validate_process_features_input_folder_rejects_missing_lr_feats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -651,6 +687,30 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
         self.assertEqual(payload["message"], "Subfolder sample_b is missing probmap/instance_seg.tif.")
+
+    def test_validate_tracking_input_folder_ignores_hidden_subfolders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                sample_dir = input_dir / name
+                sample_dir.mkdir()
+                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
+                (sample_dir / "voronoi-otsu").mkdir()
+                tifffile.imwrite(sample_dir / "voronoi-otsu" / "instance_seg.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            hidden_dir = input_dir / ".hidden_sample"
+            hidden_dir.mkdir()
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.validate_tracking_input_folder(
+                    str(input_dir),
+                    segmentation_filename=app_module.VORONOI_OTSU_SEGMENTATION_FILENAME,
+                )
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["subfolderCount"], 2)
 
     def test_build_tracking_launch_config_accepts_valid_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

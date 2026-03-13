@@ -689,6 +689,71 @@ button {
   color: var(--text);
 }
 
+.parameterHelpLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.parameterHelpTrigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+}
+
+.parameterHelpTrigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.parameterHelpTooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 56px));
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, var(--surface) 82%, var(--surface-2));
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    visibility 160ms ease;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.parameterHelpTrigger:hover .parameterHelpTooltip,
+.parameterHelpTrigger:focus-visible .parameterHelpTooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
 .inferenceFieldLabel.isStrong {
   font-weight: 700;
 }
@@ -703,6 +768,27 @@ button {
   gap: 8px;
   padding-top: 4px;
   border-top: 1px solid var(--border);
+}
+
+.inferenceOptionalToggleRow {
+  display: flex;
+  justify-content: center;
+}
+
+.inferenceOptionalSection {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.postProcessingParameterGroup {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-2));
 }
 
 .inferenceFormRow {

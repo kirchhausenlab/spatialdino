@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import ParameterHelpLabel from "../components/ParameterHelpLabel";
 import { useJobs } from "../components/JobsProvider";
 import ServerDirectoryPicker from "../components/ServerDirectoryPicker";
 import { getClientId } from "../lib/clientId";
@@ -146,6 +147,45 @@ const TRACKING_SEGMENTATION_OPTIONS: Array<{
   },
 ];
 
+const POST_PROCESSING_PARAMETER_HELP = {
+  inputFolder: "Folder containing the timepoints or feature outputs to process.",
+  segmentationSource: "Choose which segmentation branch tracking should read from each timepoint.",
+  selectGpu: "Choose the GPU that will run this post-processing step.",
+  saveHighResolutionFeatures: "Write one full-resolution feature volume per channel for each subfolder.",
+  saveFormat: "Choose whether the generated outputs are saved as NumPy arrays or TIFF volumes.",
+  savePca: "Export PCA-compressed feature volumes alongside the main outputs.",
+  components: "Set how many principal components to keep in the PCA export.",
+  voronoiOtsu: "Tune the classical Voronoi-Otsu segmentation pipeline.",
+  gaussianBlurSigma: "Smooth the image before seed detection.",
+  rollingBallRadius: "Set the background-removal scale used before thresholding.",
+  densityEstimationToggle: "Run density estimation now instead of reusing an existing density file.",
+  trainingTimepoint: "Select the timepoint used to fit the probability-map density model.",
+  segmentationTif: "Reference segmentation used to label cells while fitting densities.",
+  validMaskTif: "Optional mask that limits which pixels are used during density fitting.",
+  densityEstimationSettings: "Configure how class densities are estimated for probability-map segmentation.",
+  method: "Choose the density estimator used to model feature distributions.",
+  densityGridSize: "Set the resolution of the density grid used by the estimator.",
+  histogramSigma: "Smooth the GPU-histogram density estimate in grid units.",
+  kdeBandwidth: "Override KDE smoothing width; leave blank to choose it automatically.",
+  sampling: "Control how many feature samples are drawn for density fitting.",
+  maxSamplesPerClass: "Cap the number of samples taken from each class.",
+  randomSeed: "Make random sampling reproducible.",
+  probabilityMapEstimation: "Tune the pass that turns densities into probability maps.",
+  featureBatch: "Number of feature chunks processed at once during estimation.",
+  bgProbabilityThreshold: "Minimum background probability used to mark voxels as background.",
+  fgProbabilityThreshold: "Minimum foreground probability used to accept a cell candidate.",
+  matchWindow: "Set the maximum per-frame search distance for track matching.",
+  maxXyDistance: "Largest allowed XY displacement between linked detections.",
+  maxZDistance: "Largest allowed Z displacement between linked detections.",
+  distanceLogic: "Weight and shortcut rules used when resolving candidate matches.",
+  zDistanceWeight: "Multiplier applied to Z distance when scoring matches.",
+  immediateAssignmentDistance: "Distance below which a candidate is assigned immediately.",
+  votingThresholds: "Tune the overlap-and-voting acceptance rules for track linking.",
+  voteThresholds: "Comma-separated vote cutoffs checked in order.",
+  minDice: "Minimum Dice overlap required for a match.",
+  minCorr: "Minimum intensity correlation required for a match.",
+} as const;
+
 function getWorkflowLabel(workflow: WorkflowOption | null): string {
   if (!workflow) return "Post-processing";
   return WORKFLOW_OPTIONS.find((option) => option.value === workflow)?.label ?? "Post-processing";
@@ -209,6 +249,9 @@ export default function PostProcessingPage() {
   const [trackingVoteThresholds, setTrackingVoteThresholds] = useState("320,300,280,260");
   const [trackingDiceThreshold, setTrackingDiceThreshold] = useState("0.5");
   const [trackingCorrThreshold, setTrackingCorrThreshold] = useState("0.5");
+  const [voronoiOptionalOpen, setVoronoiOptionalOpen] = useState(false);
+  const [probabilityMapOptionalOpen, setProbabilityMapOptionalOpen] = useState(false);
+  const [trackingOptionalOpen, setTrackingOptionalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
 
@@ -701,8 +744,48 @@ export default function PostProcessingPage() {
 
       {inputStepVisible ? (
         <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} input folder`}>
+          {trackingSelected ? (
+            <>
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel
+                    label="Segmentation source"
+                    description={POST_PROCESSING_PARAMETER_HELP.segmentationSource}
+                  />
+                </div>
+                <select
+                  className="inferenceSelect"
+                  value={trackingSegmentationSource}
+                  onChange={(event) =>
+                    setTrackingSegmentationSource(event.target.value as TrackingSegmentationSource)
+                  }
+                >
+                  {TRACKING_SEGMENTATION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {parametersVisible ? (
+                <div className="inferenceOptionalToggleRow">
+                  <button
+                    type="button"
+                    className="pickerPrimaryButton"
+                    aria-expanded={trackingOptionalOpen}
+                    onClick={() => setTrackingOptionalOpen((current) => !current)}
+                  >
+                    Optional parameters
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+
           <DirectoryFieldRow
-            label="Input folder"
+            label={
+              <ParameterHelpLabel label="Input folder" description={POST_PROCESSING_PARAMETER_HELP.inputFolder} />
+            }
             path={inputPath}
             buttonLabel="Choose directory"
             emptyLabel="No directory selected yet"
@@ -721,25 +804,6 @@ export default function PostProcessingPage() {
               </button>
             }
           />
-
-          {trackingSelected ? (
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Segmentation source:</div>
-              <select
-                className="inferenceSelect"
-                value={trackingSegmentationSource}
-                onChange={(event) =>
-                  setTrackingSegmentationSource(event.target.value as TrackingSegmentationSource)
-                }
-              >
-                {TRACKING_SEGMENTATION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
 
           {validationLoading ? (
             <ValidationMessage tone="neutral">Validating input folder...</ValidationMessage>
@@ -760,10 +824,16 @@ export default function PostProcessingPage() {
               gpuError={gpuError}
               selectedGpuIndex={selectedGpuIndex}
               onSelectGpu={setSelectedGpuIndex}
+              helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
             />
 
             <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Save high-resolution features:</div>
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel
+                  label="Save high-resolution features"
+                  description={POST_PROCESSING_PARAMETER_HELP.saveHighResolutionFeatures}
+                />
+              </div>
               <label className="inferenceCheckboxLabel">
                 <input
                   type="checkbox"
@@ -774,7 +844,9 @@ export default function PostProcessingPage() {
               </label>
               {saveHighResolutionFeatures ? (
                 <>
-                  <div className="inferenceInlineLabel isStrong">Save format:</div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
+                  </div>
                   <select
                     className="inferenceSelect inferenceCompactSelect"
                     value={highResolutionSaveFormat}
@@ -795,16 +867,22 @@ export default function PostProcessingPage() {
             ) : null}
 
             <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Save PCA:</div>
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Save PCA" description={POST_PROCESSING_PARAMETER_HELP.savePca} />
+              </div>
               <label className="inferenceCheckboxLabel">
                 <input type="checkbox" checked={savePca} onChange={(event) => setSavePca(event.target.checked)} />
                 <span>Enabled</span>
               </label>
               {savePca ? (
                 <>
-                  <div className="inferenceInlineLabel isStrong">Components:</div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Components" description={POST_PROCESSING_PARAMETER_HELP.components} />
+                  </div>
                   <PostProcessingNumberInput value={pcaComponents} onChange={setPcaComponents} min={1} step={1} />
-                  <div className="inferenceInlineLabel isStrong">Save format:</div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
+                  </div>
                   <select
                     className="inferenceSelect inferenceCompactSelect"
                     value={pcaSaveFormat}
@@ -845,20 +923,51 @@ export default function PostProcessingPage() {
                 gpuError={gpuError}
                 selectedGpuIndex={selectedGpuIndex}
                 onSelectGpu={setSelectedGpuIndex}
+                helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
               />
 
-              <div className="inferenceFormRow">
-                <div className="inferenceFieldLabel">Voronoi-Otsu:</div>
-                <div className="inferenceInlineLabel isStrong">Gaussian blur sigma</div>
-                <PostProcessingNumberInput value={gaussianBlurSigma} onChange={setGaussianBlurSigma} min={0} step={1} />
-                <div className="inferenceInlineLabel isStrong">Rolling ball radius</div>
-                <PostProcessingNumberInput
-                  value={rollingBallRadius}
-                  onChange={setRollingBallRadius}
-                  min={0}
-                  step={0.1}
-                />
+              <div className="inferenceOptionalToggleRow">
+                <button
+                  type="button"
+                  className="pickerPrimaryButton"
+                  aria-expanded={voronoiOptionalOpen}
+                  aria-controls="voronoi-optional-parameters"
+                  onClick={() => setVoronoiOptionalOpen((current) => !current)}
+                >
+                  Optional parameters
+                </button>
               </div>
+
+              {voronoiOptionalOpen ? (
+                <div id="voronoi-optional-parameters" className="inferenceOptionalSection">
+                  <div className="inferenceFormRow">
+                    <div className="inferenceFieldLabel">
+                      <ParameterHelpLabel
+                        label="Gaussian blur sigma"
+                        description={POST_PROCESSING_PARAMETER_HELP.gaussianBlurSigma}
+                      />
+                    </div>
+                    <PostProcessingNumberInput
+                      value={gaussianBlurSigma}
+                      onChange={setGaussianBlurSigma}
+                      min={0}
+                      step={1}
+                    />
+                    <div className="inferenceInlineLabel isStrong">
+                      <ParameterHelpLabel
+                        label="Rolling ball radius"
+                        description={POST_PROCESSING_PARAMETER_HELP.rollingBallRadius}
+                      />
+                    </div>
+                    <PostProcessingNumberInput
+                      value={rollingBallRadius}
+                      onChange={setRollingBallRadius}
+                      min={0}
+                      step={0.1}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -878,157 +987,252 @@ export default function PostProcessingPage() {
                   gpuError={gpuError}
                   selectedGpuIndex={selectedGpuIndex}
                   onSelectGpu={setSelectedGpuIndex}
+                  helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
                 />
 
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Density estimation:</div>
-                  <label className="inferenceCheckboxLabel">
-                    <input
-                      type="checkbox"
-                      checked={runDensityEstimation}
-                      onChange={(event) => setRunDensityEstimation(event.target.checked)}
-                    />
-                    <span>Run before probability map estimation</span>
-                  </label>
-                </div>
-
-                {runDensityEstimation ? (
-                  <>
-                    <div className="inferenceFormRow">
-                      <div className="inferenceFieldLabel">Training timepoint:</div>
-                      <select
-                        className="inferenceSelect"
-                        value={densityEstimationTimepoint}
-                        onChange={(event) => setDensityEstimationTimepoint(event.target.value)}
-                      >
-                        {validatedSubfolderNames.map((name) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
+                <div className="postProcessingParameterGroup">
+                  <div className="inferenceFormRow">
+                    <div className="inferenceFieldLabel">
+                      <ParameterHelpLabel
+                        label="Density estimation"
+                        description={POST_PROCESSING_PARAMETER_HELP.densityEstimationToggle}
+                      />
                     </div>
-
-                    <DirectoryFieldRow
-                      label="Segmentation TIFF"
-                      path={segTifPath}
-                      buttonLabel="Choose file"
-                      emptyLabel="No file selected yet"
-                      onChoose={() => {
-                        setPickerTarget("seg_tif");
-                        setPickerOpen(true);
-                      }}
-                    />
-
-                    <DirectoryFieldRow
-                      label="Valid mask TIFF"
-                      path={validMaskTifPath}
-                      buttonLabel="Choose file"
-                      emptyLabel="No file selected yet"
-                      onChoose={() => {
-                        setPickerTarget("valid_mask");
-                        setPickerOpen(true);
-                      }}
-                      action={
-                        validMaskTifPath ? (
-                          <button
-                            type="button"
-                            className="pickerSecondaryButton"
-                            onClick={() => setValidMaskTifPath(null)}
-                          >
-                            Clear
-                          </button>
-                        ) : null
-                      }
-                    />
-                  </>
-                ) : (
-                  <div className={probmapDensitiesExists ? "sidebarHint" : "sidebarWarning"}>
-                    {probmapDensitiesExists
-                      ? `Probability map estimation will load ${probmapDensitiesPath ?? "probmap_densities.npz"} from the input folder root.`
-                      : "probmap_densities.npz was not found in the input folder root. Run density estimation first."}
+                    <label className="inferenceCheckboxLabel">
+                      <input
+                        type="checkbox"
+                        checked={runDensityEstimation}
+                        onChange={(event) => setRunDensityEstimation(event.target.checked)}
+                      />
+                      <span>Run before probability map estimation</span>
+                    </label>
                   </div>
-                )}
 
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Density estimation:</div>
-                  <div className="inferenceInlineLabel isStrong">Method</div>
-                  <select
-                    className="inferenceSelect inferenceCompactSelect"
-                    value={probabilityMapDensityMethod}
-                    onChange={(event) =>
-                      setProbabilityMapDensityMethod(event.target.value as "gpu-hist" | "kde")
-                    }
-                  >
-                    <option value="gpu-hist">GPU histogram</option>
-                    <option value="kde">KDE</option>
-                  </select>
-                  <div className="inferenceInlineLabel isStrong">Density grid size</div>
-                  <PostProcessingNumberInput
-                    value={probabilityMapKdePoints}
-                    onChange={setProbabilityMapKdePoints}
-                    min={2}
-                    step={1}
-                  />
-                  {probabilityMapDensityMethod === "gpu-hist" ? (
+                  {runDensityEstimation ? (
                     <>
-                      <div className="inferenceInlineLabel isStrong">Histogram sigma</div>
-                      <PostProcessingNumberInput
-                        value={probabilityMapHistSigmaBins}
-                        onChange={setProbabilityMapHistSigmaBins}
-                        min={0.1}
-                        step={0.1}
+                      <div className="inferenceFormRow">
+                        <div className="inferenceFieldLabel">
+                          <ParameterHelpLabel
+                            label="Training timepoint"
+                            description={POST_PROCESSING_PARAMETER_HELP.trainingTimepoint}
+                          />
+                        </div>
+                        <select
+                          className="inferenceSelect"
+                          value={densityEstimationTimepoint}
+                          onChange={(event) => setDensityEstimationTimepoint(event.target.value)}
+                        >
+                          {validatedSubfolderNames.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <DirectoryFieldRow
+                        label={
+                          <ParameterHelpLabel
+                            label="Segmentation TIFF"
+                            description={POST_PROCESSING_PARAMETER_HELP.segmentationTif}
+                          />
+                        }
+                        path={segTifPath}
+                        buttonLabel="Choose file"
+                        emptyLabel="No file selected yet"
+                        onChoose={() => {
+                          setPickerTarget("seg_tif");
+                          setPickerOpen(true);
+                        }}
+                      />
+
+                      <DirectoryFieldRow
+                        label={
+                          <ParameterHelpLabel
+                            label="Valid mask TIFF"
+                            description={POST_PROCESSING_PARAMETER_HELP.validMaskTif}
+                          />
+                        }
+                        path={validMaskTifPath}
+                        buttonLabel="Choose file"
+                        emptyLabel="No file selected yet"
+                        onChoose={() => {
+                          setPickerTarget("valid_mask");
+                          setPickerOpen(true);
+                        }}
+                        action={
+                          validMaskTifPath ? (
+                            <button
+                              type="button"
+                              className="pickerSecondaryButton"
+                              onClick={() => setValidMaskTifPath(null)}
+                            >
+                              Clear
+                            </button>
+                          ) : null
+                        }
                       />
                     </>
                   ) : (
-                    <>
-                      <div className="inferenceInlineLabel isStrong">KDE bandwidth</div>
-                      <PostProcessingTextInput
-                        value={probabilityMapKdeBandwidth}
-                        onChange={setProbabilityMapKdeBandwidth}
-                        placeholder="auto"
-                      />
-                    </>
+                    <div className={probmapDensitiesExists ? "sidebarHint" : "sidebarWarning"}>
+                      {probmapDensitiesExists
+                        ? `Probability map estimation will load ${probmapDensitiesPath ?? "probmap_densities.npz"} from the input folder root.`
+                        : "probmap_densities.npz was not found in the input folder root. Run density estimation first."}
+                    </div>
                   )}
                 </div>
 
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Sampling:</div>
-                  <div className="inferenceInlineLabel isStrong">Max samples per class</div>
-                  <PostProcessingNumberInput
-                    value={probabilityMapKdeMaxSamples}
-                    onChange={setProbabilityMapKdeMaxSamples}
-                    min={1}
-                    step={1}
-                  />
-                  <div className="inferenceInlineLabel isStrong">Random seed</div>
-                  <PostProcessingNumberInput value={probabilityMapSeed} onChange={setProbabilityMapSeed} min={0} step={1} />
+                <div className="inferenceOptionalToggleRow">
+                  <button
+                    type="button"
+                    className="pickerPrimaryButton"
+                    aria-expanded={probabilityMapOptionalOpen}
+                    aria-controls="probability-map-optional-parameters"
+                    onClick={() => setProbabilityMapOptionalOpen((current) => !current)}
+                  >
+                    Optional parameters
+                  </button>
                 </div>
 
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel">Probability map estimation:</div>
-                  <div className="inferenceInlineLabel isStrong">Feature batch</div>
-                  <PostProcessingNumberInput
-                    value={probabilityMapFeatureBatch}
-                    onChange={setProbabilityMapFeatureBatch}
-                    min={1}
-                    step={1}
-                  />
-                  <div className="inferenceInlineLabel isStrong">BG probability threshold</div>
-                  <PostProcessingNumberInput
-                    value={probabilityMapBgThreshold}
-                    onChange={setProbabilityMapBgThreshold}
-                    min={0}
-                    step={0.01}
-                  />
-                  <div className="inferenceInlineLabel isStrong">FG probability threshold</div>
-                  <PostProcessingNumberInput
-                    value={probabilityMapFgThreshold}
-                    onChange={setProbabilityMapFgThreshold}
-                    min={0}
-                    step={0.01}
-                  />
-                </div>
+                {probabilityMapOptionalOpen ? (
+                  <div id="probability-map-optional-parameters" className="inferenceOptionalSection">
+                    <div className="inferenceFormRow">
+                      <div className="inferenceFieldLabel">
+                        <ParameterHelpLabel
+                          label="Density estimation"
+                          description={POST_PROCESSING_PARAMETER_HELP.densityEstimationSettings}
+                        />
+                      </div>
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel label="Method" description={POST_PROCESSING_PARAMETER_HELP.method} />
+                      </div>
+                      <select
+                        className="inferenceSelect inferenceCompactSelect"
+                        value={probabilityMapDensityMethod}
+                        onChange={(event) =>
+                          setProbabilityMapDensityMethod(event.target.value as "gpu-hist" | "kde")
+                        }
+                      >
+                        <option value="gpu-hist">GPU histogram</option>
+                        <option value="kde">KDE</option>
+                      </select>
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel
+                          label="Density grid size"
+                          description={POST_PROCESSING_PARAMETER_HELP.densityGridSize}
+                        />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapKdePoints}
+                        onChange={setProbabilityMapKdePoints}
+                        min={2}
+                        step={1}
+                      />
+                      {probabilityMapDensityMethod === "gpu-hist" ? (
+                        <>
+                          <div className="inferenceInlineLabel isStrong">
+                            <ParameterHelpLabel
+                              label="Histogram sigma"
+                              description={POST_PROCESSING_PARAMETER_HELP.histogramSigma}
+                            />
+                          </div>
+                          <PostProcessingNumberInput
+                            value={probabilityMapHistSigmaBins}
+                            onChange={setProbabilityMapHistSigmaBins}
+                            min={0.1}
+                            step={0.1}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <div className="inferenceInlineLabel isStrong">
+                            <ParameterHelpLabel
+                              label="KDE bandwidth"
+                              description={POST_PROCESSING_PARAMETER_HELP.kdeBandwidth}
+                            />
+                          </div>
+                          <PostProcessingTextInput
+                            value={probabilityMapKdeBandwidth}
+                            onChange={setProbabilityMapKdeBandwidth}
+                            placeholder="auto"
+                          />
+                        </>
+                      )}
+                    </div>
+
+                    <div className="inferenceFormRow">
+                      <div className="inferenceFieldLabel">
+                        <ParameterHelpLabel label="Sampling" description={POST_PROCESSING_PARAMETER_HELP.sampling} />
+                      </div>
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel
+                          label="Max samples per class"
+                          description={POST_PROCESSING_PARAMETER_HELP.maxSamplesPerClass}
+                        />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapKdeMaxSamples}
+                        onChange={setProbabilityMapKdeMaxSamples}
+                        min={1}
+                        step={1}
+                      />
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel label="Random seed" description={POST_PROCESSING_PARAMETER_HELP.randomSeed} />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapSeed}
+                        onChange={setProbabilityMapSeed}
+                        min={0}
+                        step={1}
+                      />
+                    </div>
+
+                    <div className="inferenceFormRow">
+                      <div className="inferenceFieldLabel">
+                        <ParameterHelpLabel
+                          label="Probability map estimation"
+                          description={POST_PROCESSING_PARAMETER_HELP.probabilityMapEstimation}
+                        />
+                      </div>
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel
+                          label="Feature batch"
+                          description={POST_PROCESSING_PARAMETER_HELP.featureBatch}
+                        />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapFeatureBatch}
+                        onChange={setProbabilityMapFeatureBatch}
+                        min={1}
+                        step={1}
+                      />
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel
+                          label="BG probability threshold"
+                          description={POST_PROCESSING_PARAMETER_HELP.bgProbabilityThreshold}
+                        />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapBgThreshold}
+                        onChange={setProbabilityMapBgThreshold}
+                        min={0}
+                        step={0.01}
+                      />
+                      <div className="inferenceInlineLabel isStrong">
+                        <ParameterHelpLabel
+                          label="FG probability threshold"
+                          description={POST_PROCESSING_PARAMETER_HELP.fgProbabilityThreshold}
+                        />
+                      </div>
+                      <PostProcessingNumberInput
+                        value={probabilityMapFgThreshold}
+                        onChange={setProbabilityMapFgThreshold}
+                        min={0}
+                        step={0.01}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </>
           ) : null}
@@ -1057,65 +1261,101 @@ export default function PostProcessingPage() {
             the selected input folder while keeping exported <code>z</code> coordinates as-is.
           </div>
 
-          <div className="inferenceFormRows">
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Match window:</div>
-              <div className="inferenceInlineLabel isStrong">Max XY distance</div>
-              <PostProcessingNumberInput
-                value={trackingMaxDistanceXy}
-                onChange={setTrackingMaxDistanceXy}
-                min={0.1}
-                step={0.1}
-              />
-              <div className="inferenceInlineLabel">voxels</div>
-              <div className="inferenceInlineLabel isStrong">Max Z distance</div>
-              <PostProcessingNumberInput
-                value={trackingMaxDistanceZ}
-                onChange={setTrackingMaxDistanceZ}
-                min={0.1}
-                step={0.1}
-              />
-              <div className="inferenceInlineLabel">voxels</div>
-            </div>
+          {trackingOptionalOpen ? (
+            <div id="tracking-optional-parameters" className="inferenceOptionalSection">
+              <div className="inferenceFormRows">
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel label="Match window" description={POST_PROCESSING_PARAMETER_HELP.matchWindow} />
+                  </div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Max XY distance" description={POST_PROCESSING_PARAMETER_HELP.maxXyDistance} />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingMaxDistanceXy}
+                    onChange={setTrackingMaxDistanceXy}
+                    min={0.1}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel">voxels</div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Max Z distance" description={POST_PROCESSING_PARAMETER_HELP.maxZDistance} />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingMaxDistanceZ}
+                    onChange={setTrackingMaxDistanceZ}
+                    min={0.1}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel">voxels</div>
+                </div>
 
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Distance logic:</div>
-              <div className="inferenceInlineLabel isStrong">Z distance weight</div>
-              <PostProcessingNumberInput
-                value={trackingZDistanceWeight}
-                onChange={setTrackingZDistanceWeight}
-                min={0.1}
-                step={0.1}
-              />
-              <div className="inferenceInlineLabel isStrong">Immediate assignment distance</div>
-              <PostProcessingNumberInput
-                value={trackingMinDistanceToRemoveCand}
-                onChange={setTrackingMinDistanceToRemoveCand}
-                min={0}
-                step={0.1}
-              />
-            </div>
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Distance logic"
+                      description={POST_PROCESSING_PARAMETER_HELP.distanceLogic}
+                    />
+                  </div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel
+                      label="Z distance weight"
+                      description={POST_PROCESSING_PARAMETER_HELP.zDistanceWeight}
+                    />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingZDistanceWeight}
+                    onChange={setTrackingZDistanceWeight}
+                    min={0.1}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel
+                      label="Immediate assignment distance"
+                      description={POST_PROCESSING_PARAMETER_HELP.immediateAssignmentDistance}
+                    />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingMinDistanceToRemoveCand}
+                    onChange={setTrackingMinDistanceToRemoveCand}
+                    min={0}
+                    step={0.1}
+                  />
+                </div>
 
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">Voting thresholds:</div>
-              <div className="inferenceInlineLabel isStrong">Vote thresholds</div>
-              <PostProcessingTextInput value={trackingVoteThresholds} onChange={setTrackingVoteThresholds} />
-              <div className="inferenceInlineLabel isStrong">Min Dice</div>
-              <PostProcessingNumberInput
-                value={trackingDiceThreshold}
-                onChange={setTrackingDiceThreshold}
-                min={0}
-                step={0.01}
-              />
-              <div className="inferenceInlineLabel isStrong">Min Corr</div>
-              <PostProcessingNumberInput
-                value={trackingCorrThreshold}
-                onChange={setTrackingCorrThreshold}
-                min={-1}
-                step={0.01}
-              />
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Voting thresholds"
+                      description={POST_PROCESSING_PARAMETER_HELP.votingThresholds}
+                    />
+                  </div>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Vote thresholds" description={POST_PROCESSING_PARAMETER_HELP.voteThresholds} />
+                  </div>
+                  <PostProcessingTextInput value={trackingVoteThresholds} onChange={setTrackingVoteThresholds} />
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Min Dice" description={POST_PROCESSING_PARAMETER_HELP.minDice} />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingDiceThreshold}
+                    onChange={setTrackingDiceThreshold}
+                    min={0}
+                    step={0.01}
+                  />
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Min Corr" description={POST_PROCESSING_PARAMETER_HELP.minCorr} />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingCorrThreshold}
+                    onChange={setTrackingCorrThreshold}
+                    min={-1}
+                    step={0.01}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
+          ) : null}
 
           <div className="validationActions">
             <button
@@ -1173,7 +1413,7 @@ function DirectoryFieldRow({
   onChoose,
   action,
 }: {
-  label: string;
+  label: ReactNode;
   path: string | null;
   buttonLabel: string;
   emptyLabel: string;
@@ -1200,16 +1440,20 @@ function GpuSelectionRow({
   gpuError,
   selectedGpuIndex,
   onSelectGpu,
+  helpDescription,
 }: {
   optionsLoading: boolean;
   availableGpus: GpuOption[];
   gpuError: string | null;
   selectedGpuIndex: number | null;
   onSelectGpu: (gpuIndex: number | null) => void;
+  helpDescription: string;
 }) {
   return (
     <div className="inferenceFormRow">
-      <div className="inferenceFieldLabel">Select GPU:</div>
+      <div className="inferenceFieldLabel">
+        <ParameterHelpLabel label="Select GPU" description={helpDescription} />
+      </div>
       <div className="inferenceCheckboxGroup">
         {optionsLoading ? <div className="sidebarHint">Loading GPUs...</div> : null}
         {!optionsLoading && availableGpus.length === 0 && !gpuError ? (
