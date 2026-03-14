@@ -1,27 +1,23 @@
-# SpatialDINO
-
-_Automated detection and tracking of cellular interactions using self-supervised deep learning_
+# SpatialDINO: A Self-Supervised 3D Vision Transformer that enables Segmentation and Tracking in Crowded Cellular Environments
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-312/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
 [![DINOv2](https://img.shields.io/badge/DINOv2-Facebook%20AI-blue.svg)](https://github.com/facebookresearch/dinov2)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Ruff](https://img.shields.io/badge/Ruff-linter-orange.svg)](https://docs.astral.sh/ruff/)
-[![TOML](https://img.shields.io/badge/TOML-configuration-lightgrey.svg)](https://toml.io/en/)
 
-## 👥 Authors
+**SpatialDINO** brings a self-supervised foundation model for analyzing 3D fluorescence microscopy images by adapting DINOv2-style joint-embedding training to learn dense volumetric features directly from unlabeled 3D datasets. By exploiting true 3D context rather than slice-wise “2.5D” aggregation, it enables automated detection and segmentation in crowded, anisotropic, low-contrast volume and enables tracking in 4D time-lapse data. SpatialDINO generalizes across targets and imaging conditions without voxel-level annotation or retraining.
 
-[Alex Lavaee\*](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain\*](https://www.linkedin.com/in/arkashj/), [Gustavo Scanavachi\*](https://scholar.google.com/citations?user=w4oASWoAAAAJ&hl=pt-BR), [Jose Inacio Costa-Filho\*](https://scholar.google.com/citations?user=oZdz4lEAAAAJ&hl=en), [Adam Ingemansson](https://kirchhausen.hms.harvard.edu/people/adam-ingemansson-bs), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
+[Paper](https://www.biorxiv.org/content/10.64898/2025.12.31.697247v2) [Bibtex](#bibtex)
 
-_Equal contribution_
+Authors: [Alex Lavaee\*](https://www.linkedin.com/in/alexlavaee/), [Arkash Jain\*](https://www.linkedin.com/in/arkashj/), [Gustavo Scanavachi\*](https://scholar.google.com/citations?user=w4oASWoAAAAJ&hl=pt-BR), [Jose Inacio Costa-Filho\*](https://scholar.google.com/citations?user=oZdz4lEAAAAJ&hl=en), [Adam Ingemansson](https://kirchhausen.hms.harvard.edu/people/adam-ingemansson-bs), [Tom Kirchhausen](https://cellbio.hms.harvard.edu/faculty-staff/tomas-kirchhausen)
 
-**SpatialDINO** uses deep learning to detect, segment, and track biological objects in 3D light-sheet microscopy data.
+_* Equal contribution_
 
 ---
 
 ## 📂 Public Data Access
 
-All datasets and pre-trained models are publicly available on AWS S3. All datasets are also available via [Mirante4D](https://kirchhausenlab.github.io/llsm_viewer/).
+All datasets and pre-trained models are publicly available through AWS S3. The datasets can also be accessed with [Mirante4D](https://kirchhausenlab.github.io/llsm_viewer/).
 
 ### Download Commands
 
@@ -45,7 +41,7 @@ aws s3 ls s3://spatialdino/ --no-sign-request
 
 ---
 
-## Get started
+## Getting started
 
 ### 1. Install uv
 
@@ -241,14 +237,16 @@ torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
 
 ---
 
-## 🆘 Support
+## Support
 
-- **Issues**: [GitHub Issues](https://github.com/kirchhausenlab/spatialdino/issues)
-- **Contact**: Alex Lavaee ([alavaee@bu.edu](mailto:alavaee@bu.edu)), Arkash Jain ([arkashjain17@gmail.com](mailto:arkashjain17@gmail.com))
+- **Issues**: [SpatialDINO Issues](https://github.com/kirchhausenlab/spatialdino/issues)
+- **Contact**: Jose Inacio Costa-Filho ([joseinacio@tklab.hms.harvard.edu](mailto:joseinacio@tklab.hms.harvard.edu)), Tom Kirchhausen ([kirchhausen@crystal.harvard.edu](mailto:kirchhausen@crystal.harvard.edu))
 
 ---
 
-## 📄 Citation
+## Citation
+
+### Bibtex
 
 ```bibtex
 @article {spatialdino2025,
