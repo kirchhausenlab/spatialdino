@@ -27,6 +27,11 @@ DEFAULT_PCA_BATCH_BYTES = 256 * 1024 * 1024
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Process saved spatialDINO features.")
     parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
+    parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Folder where processed outputs are written. Defaults to the input folder.",
+    )
     parser.add_argument("--save-pca", action="store_true", help="Save PCA volumes inside each sample folder.")
     parser.add_argument("--pca-components", type=int, default=3, help="Number of PCA components to save.")
     parser.add_argument("--pca-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif")
@@ -261,7 +266,8 @@ def validate_folder(subfolder: Path) -> tuple[Path, Path]:
 
 
 def process_subfolder(
-    subfolder: Path,
+    input_subfolder: Path,
+    output_subfolder: Path,
     *,
     save_pca: bool,
     pca_components: int,
@@ -271,7 +277,7 @@ def process_subfolder(
     device: torch.device,
     io_workers: int,
 ) -> None:
-    lr_path, volume_path = validate_folder(subfolder)
+    lr_path, volume_path = validate_folder(input_subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
         raise ValueError(f"{lr_path} must be a 4D array with shape [Z, Y, X, C].")
@@ -279,7 +285,7 @@ def process_subfolder(
     target_shape = read_tiff_shape(volume_path)
     if save_pca:
         export_pca(
-            subfolder,
+            output_subfolder,
             lr_feats,
             target_shape=target_shape,
             n_components=pca_components,
@@ -288,7 +294,7 @@ def process_subfolder(
         )
     if save_high_resolution_features:
         export_high_resolution_features(
-            subfolder,
+            output_subfolder,
             lr_feats,
             target_shape=target_shape,
             save_format=high_resolution_format,
@@ -310,6 +316,9 @@ def main() -> None:
     input_path = Path(args.input_path).expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
+    output_path = Path(args.output_path).expanduser().resolve() if args.output_path else input_path
+    if output_path.exists() and not output_path.is_dir():
+        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Process-features requires one GPU.")
@@ -326,8 +335,10 @@ def main() -> None:
 
     for index, subfolder in enumerate(subfolders, start=1):
         print(f"[process-features] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
+        destination_subfolder = subfolder if output_path == input_path else output_path / subfolder.name
         process_subfolder(
             subfolder,
+            destination_subfolder,
             save_pca=bool(args.save_pca),
             pca_components=int(args.pca_components),
             pca_format=args.pca_format,

@@ -313,6 +313,7 @@ class RunInferenceRequest(BaseModel):
 
 class RunProcessFeaturesRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
+    output_path: str = Field(..., min_length=1)
     gpu_index: int | None = None
     save_high_resolution_features: bool = False
     high_resolution_save_format: str = Field(".tif", min_length=1)
@@ -323,13 +324,14 @@ class RunProcessFeaturesRequest(BaseModel):
 
 class RunSegmentationRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
-    output_path: str = Field(..., min_length=1)
+    output_path: str | None = None
     gpu_index: int | None = None
     mode: str = Field("voronoi_otsu", min_length=1)
     enable_voronoi_otsu: bool = True
     gaussian_blur_sigma: int = Field(3, ge=0)
     rolling_ball_radius: float = Field(10.0, ge=0.0)
     run_density_estimation: bool = True
+    run_stage_2: bool = True
     training_timepoint: str | None = None
     seg_tif: str | None = None
     valid_mask_tif: str | None = None
@@ -347,6 +349,7 @@ class RunSegmentationRequest(BaseModel):
 class RunTrackingRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     segmentation_path: str = Field(..., min_length=1)
+    output_path: str = Field(..., min_length=1)
     max_distance_xy: float = Field(20.0, gt=0.0)
     max_distance_z: float = Field(10.0, gt=0.0)
     z_distance_weight: float = Field(2.5, gt=0.0)
@@ -706,6 +709,23 @@ def _invalid_process_features_run(reason_code: str, message: str) -> dict[str, A
     }
 
 
+def _validate_post_processing_output_path(
+    raw_output_path: str,
+    *,
+    input_path: Path,
+    label: str,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    output_path = _resolve_allowed_inference_path(raw_output_path)
+    if output_path.exists() and not output_path.is_dir():
+        return _invalid_process_features_run("output_not_directory", f"{label} path is not a folder."), None
+    if _is_relative_to(output_path, input_path):
+        return _invalid_process_features_run(
+            "output_inside_input",
+            f"{label} folder cannot be the inference output folder, or a subfolder of it.",
+        ), None
+    return None, output_path
+
+
 def _overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -> dict[str, Any]:
     message = "Output folder is not empty. Confirm overwrite to erase its contents and continue."
     return {
@@ -771,6 +791,14 @@ def _build_process_features_launch_config(
         return _invalid_process_features_run("invalid_pca_format", "PCA save format must be one of: .npy, .tif."), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_error, output_path = _validate_post_processing_output_path(
+        payload.output_path,
+        input_path=input_path,
+        label="Output",
+    )
+    if output_error is not None:
+        return output_error, None
+
     subfolder_count = int(input_validation["subfolderCount"])
     return (
         {
@@ -780,6 +808,7 @@ def _build_process_features_launch_config(
         },
         {
             "input_path": input_path,
+            "output_path": output_path,
             "gpu_index": requested_gpu,
             "save_pca": bool(payload.save_pca),
             "pca_components": int(payload.pca_components),
@@ -814,27 +843,26 @@ def _build_segmentation_launch_config(
         return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
-    output_path = _resolve_allowed_inference_path(payload.output_path)
-    if output_path.exists() and not output_path.is_dir():
-        return _invalid_process_features_run("output_not_directory", "Output path is not a folder."), None
-
     subfolder_count = int(input_validation["subfolderCount"])
-    launch_config: dict[str, Any] = {
-        "input_path": input_path,
-        "output_path": output_path,
-        "gpu_index": requested_gpu,
-        "mode": segmentation_mode,
-        "subfolder_count": subfolder_count,
-    }
 
     if segmentation_mode == SEGMENTATION_MODE_VORONOI_OTSU:
-        launch_config.update(
-            {
-                "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
-                "rolling_ball_radius": float(payload.rolling_ball_radius),
-                "enable_voronoi_otsu": True,
-            }
+        output_error, output_path = _validate_post_processing_output_path(
+            payload.output_path or "",
+            input_path=input_path,
+            label="Segmentation output",
         )
+        if output_error is not None:
+            return output_error, None
+        launch_config: dict[str, Any] = {
+            "input_path": input_path,
+            "output_path": output_path,
+            "gpu_index": requested_gpu,
+            "mode": segmentation_mode,
+            "subfolder_count": subfolder_count,
+            "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
+            "rolling_ball_radius": float(payload.rolling_ball_radius),
+            "enable_voronoi_otsu": True,
+        }
         return (
             {
                 "valid": True,
@@ -851,63 +879,86 @@ def _build_segmentation_launch_config(
         ), None
 
     run_density_estimation = bool(payload.run_density_estimation)
+    run_stage_2 = bool(payload.run_stage_2)
     densities_path = input_path / PROBABILITY_MAP_DENSITIES_FILENAME
     training_timepoint = (payload.training_timepoint or "").strip() or None
     subfolder_names = set(input_validation.get("subfolderNames", []))
     seg_tif_path: Path | None = None
     valid_mask_tif_path: Path | None = None
+    output_path: Path | None = None
+
+    if not run_density_estimation and not run_stage_2:
+        return _invalid_process_features_run(
+            "no_probability_map_stages_selected",
+            "Choose at least one stage: Run stage 1 and/or Run stage 2.",
+        ), None
+
+    if run_stage_2:
+        output_error, output_path = _validate_post_processing_output_path(
+            payload.output_path or "",
+            input_path=input_path,
+            label="Segmentation output",
+        )
+        if output_error is not None:
+            return output_error, None
+    else:
+        output_path = densities_path
 
     if run_density_estimation:
         if training_timepoint is None:
             return _invalid_process_features_run(
                 "missing_training_timepoint",
-                "Choose one timepoint for density estimation.",
+                "Choose one training timepoint for Stage 1.",
             ), None
         if training_timepoint not in subfolder_names:
             return _invalid_process_features_run(
                 "invalid_training_timepoint",
-                "Selected density-estimation timepoint is not part of the validated input folder.",
+                "Selected Stage 1 training timepoint is not part of the validated input folder.",
             ), None
         seg_tif_raw = (payload.seg_tif or "").strip()
         if not seg_tif_raw:
-            return _invalid_process_features_run("missing_seg_tif", "Choose a segmentation mask TIFF."), None
+            return _invalid_process_features_run("missing_seg_tif", "Choose an annotated FG/BG mask."), None
         seg_tif_path = _resolve_allowed_inference_path(seg_tif_raw)
         if not seg_tif_path.is_file():
-            return _invalid_process_features_run("missing_seg_tif", "Segmentation mask TIFF does not exist."), None
+            return _invalid_process_features_run("missing_seg_tif", "Annotated FG/BG mask does not exist."), None
         valid_mask_raw = (payload.valid_mask_tif or "").strip()
         if valid_mask_raw:
             valid_mask_tif_path = _resolve_allowed_inference_path(valid_mask_raw)
             if not valid_mask_tif_path.is_file():
                 return _invalid_process_features_run(
                     "missing_valid_mask_tif",
-                    "Valid-mask TIFF does not exist.",
+                    "Valid voxels mask does not exist.",
                 ), None
-    elif not densities_path.is_file():
+    elif run_stage_2 and not densities_path.is_file():
         return _invalid_process_features_run(
             "missing_probmap_densities",
             f"Could not find {PROBABILITY_MAP_DENSITIES_FILENAME} in the input folder root.",
         ), None
 
-    progress_total = subfolder_count + (2 if run_density_estimation else 0)
-    launch_config.update(
-        {
-            "run_density_estimation": run_density_estimation,
-            "training_timepoint": training_timepoint,
-            "seg_tif": seg_tif_path,
-            "valid_mask_tif": valid_mask_tif_path,
-            "densities_path": densities_path,
-            "density_method": payload.density_method,
-            "feature_batch": int(payload.feature_batch),
-            "kde_points": int(payload.kde_points),
-            "kde_max_samples": int(payload.kde_max_samples),
-            "kde_bandwidth": float(payload.kde_bandwidth) if payload.kde_bandwidth is not None else None,
-            "hist_sigma_bins": float(payload.hist_sigma_bins),
-            "bg_prob_threshold": float(payload.bg_prob_threshold),
-            "fg_prob_threshold": float(payload.fg_prob_threshold),
-            "seed": int(payload.seed),
-            "progress_total": progress_total,
-        }
-    )
+    progress_total = (2 if run_density_estimation else 0) + (subfolder_count if run_stage_2 else 0)
+    launch_config: dict[str, Any] = {
+        "input_path": input_path,
+        "output_path": output_path,
+        "gpu_index": requested_gpu,
+        "mode": segmentation_mode,
+        "subfolder_count": subfolder_count,
+        "run_density_estimation": run_density_estimation,
+        "run_stage_2": run_stage_2,
+        "training_timepoint": training_timepoint,
+        "seg_tif": seg_tif_path,
+        "valid_mask_tif": valid_mask_tif_path,
+        "densities_path": densities_path,
+        "density_method": payload.density_method,
+        "feature_batch": int(payload.feature_batch),
+        "kde_points": int(payload.kde_points),
+        "kde_max_samples": int(payload.kde_max_samples),
+        "kde_bandwidth": float(payload.kde_bandwidth) if payload.kde_bandwidth is not None else None,
+        "hist_sigma_bins": float(payload.hist_sigma_bins),
+        "bg_prob_threshold": float(payload.bg_prob_threshold),
+        "fg_prob_threshold": float(payload.fg_prob_threshold),
+        "seed": int(payload.seed),
+        "progress_total": progress_total,
+    }
     return (
         {
             "valid": True,
@@ -936,6 +987,13 @@ def _build_tracking_launch_config(
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
     segmentation_path = _resolve_allowed_inference_path(payload.segmentation_path)
+    output_error, output_path = _validate_post_processing_output_path(
+        payload.output_path,
+        input_path=input_path,
+        label="Output",
+    )
+    if output_error is not None:
+        return output_error, None
     subfolder_count = int(input_validation["subfolderCount"])
     try:
         vote_thresholds = _parse_tracking_vote_thresholds(payload.vote_thresholds)
@@ -950,6 +1008,7 @@ def _build_tracking_launch_config(
         {
             "input_path": input_path,
             "segmentation_path": segmentation_path,
+            "output_path": output_path,
             "max_distance_xy": float(payload.max_distance_xy),
             "max_distance_z": float(payload.max_distance_z),
             "z_distance_weight": float(payload.z_distance_weight),
@@ -1435,6 +1494,8 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         "scripts/post_processing/process_features.py",
         "--input-path",
         str(launch_config["input_path"]),
+        "--output-path",
+        str(launch_config["output_path"]),
         "--pca-components",
         str(launch_config["pca_components"]),
         "--pca-format",
@@ -1456,8 +1517,6 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             "scripts/post_processing/probability_map.py",
             "--input-path",
             str(launch_config["input_path"]),
-            "--output-path",
-            str(launch_config["output_path"]),
             "--densities-path",
             str(launch_config["densities_path"]),
             "--device",
@@ -1479,6 +1538,10 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             "--seed",
             str(launch_config["seed"]),
         ]
+        if launch_config.get("run_stage_2", True):
+            command.extend(["--output-path", str(launch_config["output_path"]), "--run-stage-2"])
+        else:
+            command.append("--skip-stage-2")
         if launch_config.get("kde_bandwidth") is not None:
             command.extend(["--kde-bandwidth", str(launch_config["kde_bandwidth"])])
         if launch_config.get("run_density_estimation"):
@@ -1514,6 +1577,8 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         str(launch_config["input_path"]),
         "--segmentation-path",
         str(launch_config["segmentation_path"]),
+        "--output-path",
+        str(launch_config["output_path"]),
         "--max-distance-xy",
         str(launch_config["max_distance_xy"]),
         "--max-distance-z",
@@ -2581,6 +2646,7 @@ def run_process_features(
         return {"submitted": False, **validation}
 
     input_path = Path(launch_config["input_path"])
+    output_path = Path(launch_config["output_path"])
     label = f"Process features {input_path.name}".strip()
     job = jobs_api.JobState(
         job_id=str(uuid.uuid4()),
@@ -2591,8 +2657,8 @@ def run_process_features(
         total=int(launch_config["subfolder_count"]),
         current="Queued",
         label=label,
-        save_dir=str(input_path),
-        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+        save_dir=str(output_path.parent),
+        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
     )
     jobs_api.register_job(job)
 
@@ -2658,6 +2724,7 @@ def run_tracking(
         return {"submitted": False, **validation}
 
     input_path = Path(launch_config["input_path"])
+    output_path = Path(launch_config["output_path"])
     label = f"Tracking {input_path.name}".strip()
     job = jobs_api.JobState(
         job_id=str(uuid.uuid4()),
@@ -2668,8 +2735,8 @@ def run_tracking(
         total=int(launch_config["progress_total"]),
         current="Queued",
         label=label,
-        save_dir=str(input_path),
-        datasets=[{"source_dir": str(input_path), "save_to": input_path.name or str(input_path)}],
+        save_dir=str(output_path.parent),
+        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
     )
     jobs_api.register_job(job)
 

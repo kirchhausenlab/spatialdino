@@ -557,6 +557,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "processed-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -565,6 +566,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 save_high_resolution_features=True,
                 high_resolution_save_format=".tif",
@@ -590,11 +592,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["subfolder_count"], 1)
         self.assertEqual(launch_config["high_resolution_save_format"], ".tif")
         self.assertEqual(launch_config["pca_save_format"], ".tif")
+        self.assertEqual(launch_config["output_path"], output_dir)
+
+        command = app_module._build_process_features_command(launch_config)
+        self.assertIn("scripts/post_processing/process_features.py", command)
+        self.assertIn("--output-path", command)
+        self.assertIn(str(output_dir), command)
 
     def test_build_process_features_launch_config_rejects_missing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
+            output_dir = root / "processed-output"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
@@ -603,6 +612,7 @@ class AppTests(unittest.TestCase):
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
+                output_path=str(output_dir),
                 gpu_index=0,
                 save_high_resolution_features=False,
                 save_pca=False,
@@ -909,6 +919,7 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             segmentation_dir = root / "segmentations"
+            output_dir = root / "tracking-output"
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
@@ -921,6 +932,7 @@ class AppTests(unittest.TestCase):
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
                 segmentation_path=str(segmentation_dir),
+                output_path=str(output_dir),
                 max_distance_xy=24.0,
                 max_distance_z=12.0,
                 z_distance_weight=2.0,
@@ -949,10 +961,13 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["corr_threshold"], 0.4)
         self.assertFalse(launch_config["invert_z"])
         self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
+        self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("scripts/post_processing/tracking.py", command)
         self.assertIn(str(segmentation_dir), command)
+        self.assertIn("--output-path", command)
+        self.assertIn(str(output_dir), command)
         self.assertIn("--max-distance-xy", command)
         self.assertIn("--max-distance-z", command)
         self.assertIn("--z-distance-weight", command)
@@ -967,6 +982,7 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             segmentation_dir = root / "segmentations"
+            output_dir = root / "tracking-output"
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
@@ -979,6 +995,7 @@ class AppTests(unittest.TestCase):
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
                 segmentation_path=str(segmentation_dir),
+                output_path=str(output_dir),
                 max_distance_xy=20.0,
                 max_distance_z=10.0,
                 z_distance_weight=2.5,
@@ -1008,6 +1025,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["corr_threshold"], 0.55)
         self.assertTrue(launch_config["invert_z"])
         self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
+        self.assertEqual(launch_config["output_path"], output_dir)
         command = app_module._build_tracking_command(launch_config)
         self.assertIn("--invert-z", command)
         self.assertNotIn("--no-invert-z", command)
@@ -1016,7 +1034,7 @@ class AppTests(unittest.TestCase):
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "tracking")
             self.assertEqual(job.total, 3)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "features"}])
+            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "tracking-output"}])
 
     def test_update_tracking_job_progress_from_output_tracks_preparation_and_pairs(self) -> None:
         job = jobs_api.JobState(
@@ -1098,6 +1116,7 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             segmentation_dir = root / "segmentations"
+            output_dir = root / "tracking-output"
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
@@ -1110,6 +1129,7 @@ class AppTests(unittest.TestCase):
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
                 segmentation_path=str(segmentation_dir),
+                output_path=str(output_dir),
                 vote_thresholds="320,0,280",
             )
 

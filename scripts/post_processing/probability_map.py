@@ -34,11 +34,12 @@ class TimepointPaths:
 @dataclass(frozen=True)
 class ProbabilityMapParams:
     run_density_estimation: bool
+    run_stage_2: bool
     training_timepoint: str | None
     seg_tif: Path | None
     valid_mask_tif: Path | None
     densities_path: Path
-    output_path: Path
+    output_path: Path | None
     density_method: str
     feature_batch: int
     kde_points: int
@@ -64,12 +65,15 @@ class PackedDens:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run probability-map post-processing from lr_feats.npy.")
     parser.add_argument("--input-path", required=True, help="Folder containing per-timepoint subfolders.")
-    parser.add_argument("--output-path", required=True, help="Folder where segmentation masks are written.")
+    parser.add_argument("--output-path", default=None, help="Folder where segmentation masks are written.")
     parser.add_argument(
         "--run-density-estimation",
         action="store_true",
-        help="Run Stage 1+2 (density estimation) before probability-map estimation.",
+        help="Run Stage 1 density estimation before applying probability maps.",
     )
+    parser.add_argument("--run-stage-2", dest="run_stage_2", action="store_true", help="Run Stage 2 classification.")
+    parser.add_argument("--skip-stage-2", dest="run_stage_2", action="store_false", help="Skip Stage 2 classification.")
+    parser.set_defaults(run_stage_2=True)
     parser.add_argument(
         "--training-timepoint",
         default=None,
@@ -87,7 +91,7 @@ def parse_args() -> argparse.Namespace:
         help=f"Path to the saved densities cache. Default: <input-path>/{DEFAULT_DENSITIES_FILENAME}",
     )
     parser.add_argument("--device", default=None, help="'cuda' or 'cpu' (auto if omitted).")
-    parser.add_argument("--feature-batch", type=int, default=32, help="Feature batch size for Stage 3 classification.")
+    parser.add_argument("--feature-batch", type=int, default=32, help="Feature batch size for Stage 2 classification.")
     parser.add_argument("--kde-points", type=int, default=512, help="Density grid size.")
     parser.add_argument("--kde-max-samples", type=int, default=200000, help="Max samples per class in Stage 1.")
     parser.add_argument("--kde-bandwidth", type=float, default=None, help="Manual KDE bandwidth; omit for auto.")
@@ -95,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         "--density-method",
         choices=["kde", "gpu-hist"],
         default="gpu-hist",
-        help="Stage 2 density estimator.",
+        help="Stage 1 density estimator.",
     )
     parser.add_argument(
         "--hist-sigma-bins",
@@ -782,16 +786,26 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
     input_path = input_path.expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
-    output_path = params.output_path.expanduser().resolve()
-    if output_path.exists() and not output_path.is_dir():
-        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
+    output_path = params.output_path.expanduser().resolve() if params.output_path is not None else None
+    if params.run_stage_2:
+        if output_path is None:
+            raise ValueError("Stage 2 requires an output folder.")
+        if output_path.exists() and not output_path.is_dir():
+            raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
     device = resolve_device(params.device_name)
-    timepoints = discover_timepoints(input_path, exclude_paths=(output_path,))
+    exclude_paths = (output_path,) if output_path is not None else ()
+    timepoints = discover_timepoints(input_path, exclude_paths=exclude_paths)
     print(f"[probmap] Using device {device}", flush=True)
     print(f"[probmap] Found {len(timepoints)} subfolders", flush=True)
-    ensure_dir(output_path)
+    if output_path is not None:
+        ensure_dir(output_path)
 
     x1_all, f1_all, x2_all, f2_all = load_or_compute_densities(timepoints, params, device=device)
+    if not params.run_stage_2:
+        print("[probmap] Skipping Stage 2 classification", flush=True)
+        print("[probmap] Done", flush=True)
+        return params.densities_path
+
     packed_densities = pack_densities(x1_all, f1_all, x2_all, f2_all, device=device)
 
     for index, timepoint in enumerate(timepoints, start=1):
@@ -816,7 +830,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
 def main() -> None:
     args = parse_args()
     input_path = Path(args.input_path).expanduser().resolve()
-    output_path = Path(args.output_path).expanduser().resolve()
+    output_path = Path(args.output_path).expanduser().resolve() if args.output_path else None
     densities_path = (
         Path(args.densities_path).expanduser().resolve()
         if args.densities_path
@@ -826,6 +840,7 @@ def main() -> None:
     valid_mask_tif = Path(args.valid_mask_tif).expanduser().resolve() if args.valid_mask_tif else None
     params = ProbabilityMapParams(
         run_density_estimation=bool(args.run_density_estimation),
+        run_stage_2=bool(args.run_stage_2),
         training_timepoint=args.training_timepoint,
         seg_tif=seg_tif,
         valid_mask_tif=valid_mask_tif,

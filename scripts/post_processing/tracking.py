@@ -148,6 +148,11 @@ def parse_args() -> argparse.Namespace:
         help="Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
     )
     parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Folder where tracks.csv will be written. Defaults to the input folder.",
+    )
+    parser.add_argument(
         "--max-distance-xy",
         type=float,
         default=20.0,
@@ -1118,10 +1123,13 @@ def validate_timepoint_shapes(prepared_timepoints: list[PreparedTimepoint], *, r
     return expected_z0
 
 
-def run_tracking(input_path: Path, *, segmentation_path: Path, params: TrackingParams) -> Path:
+def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path | None = None, params: TrackingParams) -> Path:
     segmentation_path = segmentation_path.expanduser().resolve()
     if not segmentation_path.is_dir():
         raise FileNotFoundError(f"Segmentation folder does not exist or is not a directory: {segmentation_path}")
+    output_dir = input_path if output_path is None else output_path.expanduser().resolve()
+    if output_dir.exists() and not output_dir.is_dir():
+        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_dir}")
 
     discovered = discover_experiment(input_path, segmentation_path=segmentation_path)
     if len(discovered) < 2:
@@ -1183,11 +1191,11 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, params: TrackingP
     tracks = build_tracks(prepared_timepoints, pair_results)
     matlab_tracks = build_matlab_style_tracks(tracks)
     output_rows = build_export_rows(matlab_tracks, z0=z0, invert_z=bool(params.invert_z))
-    output_path = input_path / "tracks.csv"
-    save_tracks_csv(output_rows, output_path=output_path)
-    print(f"[tracking] Saved tracks to {output_path}", flush=True)
+    tracks_csv_path = output_dir / "tracks.csv"
+    save_tracks_csv(output_rows, output_path=tracks_csv_path)
+    print(f"[tracking] Saved tracks to {tracks_csv_path}", flush=True)
     print("[tracking] Done", flush=True)
-    return output_path
+    return tracks_csv_path
 
 
 def main() -> None:
@@ -1213,6 +1221,7 @@ def main() -> None:
     run_tracking(
         input_path,
         segmentation_path=segmentation_path,
+        output_path=Path(args.output_path).expanduser().resolve() if args.output_path else None,
         params=TrackingParams(
             max_distance_xy=float(args.max_distance_xy),
             max_distance_z=float(args.max_distance_z),

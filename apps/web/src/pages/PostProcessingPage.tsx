@@ -39,6 +39,7 @@ type PostProcessingValidationResult = PostProcessingValidationSuccess | PostProc
 
 type ProcessFeaturesRunRequest = {
   input_path: string;
+  output_path: string;
   gpu_index: number | null;
   save_high_resolution_features: boolean;
   high_resolution_save_format: SaveFormat;
@@ -49,12 +50,13 @@ type ProcessFeaturesRunRequest = {
 
 type SegmentationRunRequest = {
   input_path: string;
-  output_path: string;
+  output_path: string | null;
   gpu_index: number | null;
   mode: SegmentationMode;
   gaussian_blur_sigma: number;
   rolling_ball_radius: number;
   run_density_estimation: boolean;
+  run_stage_2: boolean;
   training_timepoint: string | null;
   seg_tif: string | null;
   valid_mask_tif: string | null;
@@ -72,6 +74,7 @@ type SegmentationRunRequest = {
 type TrackingRunRequest = {
   input_path: string;
   segmentation_path: string;
+  output_path: string;
   max_distance_xy: number;
   max_distance_z: number;
   z_distance_weight: number;
@@ -133,10 +136,15 @@ const SEGMENTATION_OPTIONS: Array<{
   },
 ];
 
+const INFERENCE_OUTPUT_FOLDER_DESCRIPTION = "folder containing the outputs of a SpatialDINO run";
+
 const POST_PROCESSING_PARAMETER_HELP = {
-  inputFolder: "Folder containing the timepoints or feature outputs to process.",
-  outputFolder: "Folder where segmentation masks are saved as one <timepoint>.tif file per validated subfolder.",
-  featuresFolder: "Folder containing the tracking timepoints with lr_feats.npy and volume_unnorm.tif in each subfolder.",
+  inferenceOutputFolder: INFERENCE_OUTPUT_FOLDER_DESCRIPTION,
+  processFeaturesOutputFolder:
+    "Folder where Process features saves PCA volumes and/or high-resolution features in one subfolder per timepoint.",
+  segmentationOutputFolder:
+    "Folder where segmentation masks are saved as one <timepoint>.tif file per validated subfolder.",
+  trackingOutputFolder: "Folder where tracking saves tracks.csv.",
   segmentationFolder: "Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
   selectGpu: "Choose the GPU that will run this post-processing step.",
   saveHighResolutionFeatures: "Write one full-resolution feature volume per channel for each subfolder.",
@@ -148,8 +156,9 @@ const POST_PROCESSING_PARAMETER_HELP = {
   rollingBallRadius: "Set the background-removal scale used before thresholding.",
   densityEstimationToggle: "Run density estimation now instead of reusing an existing density file.",
   trainingTimepoint: "Select the timepoint used to fit the probability-map density model.",
-  segmentationTif: "Reference segmentation used to label cells while fitting densities.",
-  validMaskTif: "Optional mask that limits which pixels are used during density fitting.",
+  segmentationTif:
+    "Annotated binary foreground/background mask used in Stage 1 to fit FG/BG probability distributions over spatialDINO features.",
+  validMaskTif: "Optional mask that limits Stage 1 density fitting to valid voxels only.",
   densityEstimationSettings: "Configure how class densities are estimated for probability-map segmentation.",
   method: "Choose the density estimator used to model feature distributions.",
   densityGridSize: "Set the resolution of the density grid used by the estimator.",
@@ -196,10 +205,14 @@ export default function PostProcessingPage() {
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowOption | null>(null);
   const [selectedSegmentationMode, setSelectedSegmentationMode] = useState<SegmentationMode>("voronoi_otsu");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerTarget, setPickerTarget] = useState<"input" | "output" | "tracking_segmentation" | "seg_tif" | "valid_mask">("input");
+  const [pickerTarget, setPickerTarget] = useState<
+    "input" | "process_output" | "segmentation_output" | "tracking_segmentation" | "tracking_output" | "seg_tif" | "valid_mask"
+  >("input");
   const [inputPath, setInputPath] = useState<string | null>(null);
+  const [processFeaturesOutputPath, setProcessFeaturesOutputPath] = useState<string | null>(null);
   const [segmentationOutputPath, setSegmentationOutputPath] = useState<string | null>(null);
   const [trackingSegmentationPath, setTrackingSegmentationPath] = useState<string | null>(null);
+  const [trackingOutputPath, setTrackingOutputPath] = useState<string | null>(null);
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationResult, setValidationResult] = useState<PostProcessingValidationResult | null>(null);
   const [trackingSegmentationValidationLoading, setTrackingSegmentationValidationLoading] = useState(false);
@@ -218,6 +231,7 @@ export default function PostProcessingPage() {
   const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
   const [rollingBallRadius, setRollingBallRadius] = useState("10");
   const [runDensityEstimation, setRunDensityEstimation] = useState(true);
+  const [runProbabilityMapStage2, setRunProbabilityMapStage2] = useState(true);
   const [densityEstimationTimepoint, setDensityEstimationTimepoint] = useState<string>("");
   const [segTifPath, setSegTifPath] = useState<string | null>(null);
   const [validMaskTifPath, setValidMaskTifPath] = useState<string | null>(null);
@@ -296,8 +310,10 @@ export default function PostProcessingPage() {
     selectedWorkflow,
     selectedSegmentationMode,
     inputPath,
+    processFeaturesOutputPath,
     segmentationOutputPath,
     trackingSegmentationPath,
+    trackingOutputPath,
     selectedGpuIndex,
     saveHighResolutionFeatures,
     highResolutionSaveFormat,
@@ -339,8 +355,43 @@ export default function PostProcessingPage() {
   const trackingSegmentationValidated = trackingSegmentationValidationResult?.valid === true;
   const parametersVisible = trackingSelected ? inputValidated && trackingSegmentationValidated : inputValidated;
   const validatedSubfolderNames = inputValidated ? validationResult.subfolderNames ?? [] : [];
+  const showDensityEstimationTimepoint = validatedSubfolderNames.length > 1;
   const probmapDensitiesPath = inputValidated ? validationResult.probmapDensitiesPath ?? null : null;
   const probmapDensitiesExists = inputValidated ? Boolean(validationResult.probmapDensitiesExists) : false;
+  const inputValidationSuccessMessage = validationResult?.valid
+    ? `Validated inference output folder. Found ${validationResult.subfolderCount} subfolder${
+        validationResult.subfolderCount === 1 ? "" : "s"
+      }.`
+    : null;
+  const trackingSegmentationValidationSuccessMessage = trackingSegmentationValidationResult?.valid
+    ? `Validated segmentation output folder. Found ${trackingSegmentationValidationResult.subfolderCount} mask file${
+        trackingSegmentationValidationResult.subfolderCount === 1 ? "" : "s"
+      }.`
+    : null;
+  const pickerTitle =
+    pickerTarget === "input"
+      ? "Choose the inference output folder"
+      : pickerTarget === "process_output" || pickerTarget === "tracking_output"
+        ? "Choose the output folder"
+        : pickerTarget === "segmentation_output" || pickerTarget === "tracking_segmentation"
+          ? "Choose the segmentation output folder"
+          : pickerTarget === "seg_tif"
+            ? "Choose the annotated FG/BG mask"
+            : "Choose the valid voxels mask";
+  const pickerInitialPath =
+    pickerTarget === "input"
+      ? inputPath
+      : pickerTarget === "process_output"
+        ? processFeaturesOutputPath ?? inputPath
+        : pickerTarget === "segmentation_output"
+          ? segmentationOutputPath
+          : pickerTarget === "tracking_segmentation"
+            ? trackingSegmentationPath ?? inputPath
+            : pickerTarget === "tracking_output"
+              ? trackingOutputPath ?? trackingSegmentationPath ?? inputPath
+              : pickerTarget === "seg_tif"
+                ? parentPathForPicker(segTifPath) ?? inputPath
+                : parentPathForPicker(validMaskTifPath) ?? inputPath;
 
   useEffect(() => {
     if (!probabilityMapSelected) return;
@@ -440,7 +491,7 @@ export default function PostProcessingPage() {
   }
 
   function buildProcessFeaturesRunRequest(): ProcessFeaturesRunRequest | null {
-    if (!inputPath) return null;
+    if (!inputPath || !processFeaturesOutputPath) return null;
 
     const parsedPcaComponents = Number.parseInt(pcaComponents.trim(), 10);
     if (savePca && (!Number.isFinite(parsedPcaComponents) || parsedPcaComponents < 1)) {
@@ -449,6 +500,7 @@ export default function PostProcessingPage() {
 
     return {
       input_path: inputPath,
+      output_path: processFeaturesOutputPath,
       gpu_index: selectedGpuIndex,
       save_high_resolution_features: saveHighResolutionFeatures,
       high_resolution_save_format: highResolutionSaveFormat,
@@ -500,6 +552,14 @@ export default function PostProcessingPage() {
   }
 
   async function handleProcessFeaturesRun() {
+    if (!inputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an inference output folder." });
+      return;
+    }
+    if (!processFeaturesOutputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an output folder." });
+      return;
+    }
     const request = buildProcessFeaturesRunRequest();
     if (!request) {
       setRunFeedback({ tone: "error", message: "Enter a valid positive integer for the number of PCA components." });
@@ -522,11 +582,7 @@ export default function PostProcessingPage() {
 
   async function handleSegmentationRun() {
     if (!inputPath) {
-      setRunFeedback({ tone: "error", message: "Choose an input folder." });
-      return;
-    }
-    if (!segmentationOutputPath) {
-      setRunFeedback({ tone: "error", message: "Choose an output folder." });
+      setRunFeedback({ tone: "error", message: "Choose an inference output folder." });
       return;
     }
     if (selectedGpuIndex === null) {
@@ -535,6 +591,10 @@ export default function PostProcessingPage() {
     }
 
     if (selectedSegmentationMode === "voronoi_otsu") {
+      if (!segmentationOutputPath) {
+        setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
+        return;
+      }
       const parsedGaussianBlurSigma = Number.parseInt(gaussianBlurSigma.trim(), 10);
       if (!Number.isFinite(parsedGaussianBlurSigma) || parsedGaussianBlurSigma < 0) {
         setRunFeedback({ tone: "error", message: "Enter a valid nonnegative integer for Gaussian blur sigma." });
@@ -555,6 +615,7 @@ export default function PostProcessingPage() {
         gaussian_blur_sigma: parsedGaussianBlurSigma,
         rolling_ball_radius: parsedRollingBallRadius,
         run_density_estimation: false,
+        run_stage_2: true,
         training_timepoint: null,
         seg_tif: null,
         valid_mask_tif: null,
@@ -570,6 +631,18 @@ export default function PostProcessingPage() {
       });
       return;
     }
+
+    if (!runDensityEstimation && !runProbabilityMapStage2) {
+      setRunFeedback({ tone: "error", message: "Choose at least one stage: Run stage 1 and/or Run stage 2." });
+      return;
+    }
+    if (runProbabilityMapStage2 && !segmentationOutputPath) {
+      setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
+      return;
+    }
+
+    const selectedTrainingTimepoint =
+      validatedSubfolderNames.length === 1 ? validatedSubfolderNames[0] ?? "" : densityEstimationTimepoint;
 
     const parsedFeatureBatch = Number.parseInt(probabilityMapFeatureBatch.trim(), 10);
     if (!Number.isFinite(parsedFeatureBatch) || parsedFeatureBatch < 1) {
@@ -626,31 +699,32 @@ export default function PostProcessingPage() {
     }
 
     if (runDensityEstimation) {
-      if (!densityEstimationTimepoint) {
-        setRunFeedback({ tone: "error", message: "Choose one training timepoint for density estimation." });
+      if (!selectedTrainingTimepoint) {
+        setRunFeedback({ tone: "error", message: "Choose one training timepoint for Stage 1." });
         return;
       }
       if (!segTifPath) {
-        setRunFeedback({ tone: "error", message: "Choose a segmentation mask TIFF for density estimation." });
+        setRunFeedback({ tone: "error", message: "Choose an annotated FG/BG mask for Stage 1." });
         return;
       }
-    } else if (!probmapDensitiesExists) {
+    } else if (runProbabilityMapStage2 && !probmapDensitiesExists) {
       setRunFeedback({
         tone: "error",
-        message: "probmap_densities.npz was not found in the input folder root. Run density estimation first.",
+        message: "probmap_densities.npz was not found in the inference output folder root. Run Stage 1 first.",
       });
       return;
     }
 
     await submitRun("/api/post-processing/segmentation/run", {
       input_path: inputPath,
-      output_path: segmentationOutputPath,
+      output_path: runProbabilityMapStage2 ? segmentationOutputPath : null,
       gpu_index: selectedGpuIndex,
       mode: "probability_map",
       gaussian_blur_sigma: 3,
       rolling_ball_radius: 10,
       run_density_estimation: runDensityEstimation,
-      training_timepoint: runDensityEstimation ? densityEstimationTimepoint : null,
+      run_stage_2: runProbabilityMapStage2,
+      training_timepoint: runDensityEstimation ? selectedTrainingTimepoint : null,
       seg_tif: runDensityEstimation ? segTifPath : null,
       valid_mask_tif: runDensityEstimation ? validMaskTifPath : null,
       density_method: probabilityMapDensityMethod,
@@ -667,11 +741,15 @@ export default function PostProcessingPage() {
 
   async function handleTrackingRun() {
     if (!inputPath) {
-      setRunFeedback({ tone: "error", message: "Choose a features folder." });
+      setRunFeedback({ tone: "error", message: "Choose an inference output folder." });
       return;
     }
     if (!trackingSegmentationPath) {
-      setRunFeedback({ tone: "error", message: "Choose a segmentation folder." });
+      setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
+      return;
+    }
+    if (!trackingOutputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an output folder." });
       return;
     }
 
@@ -723,6 +801,7 @@ export default function PostProcessingPage() {
     await submitRun("/api/post-processing/tracking/run", {
       input_path: inputPath,
       segmentation_path: trackingSegmentationPath,
+      output_path: trackingOutputPath,
       max_distance_xy: parsedMaxDistanceXy,
       max_distance_z: parsedMaxDistanceZ,
       z_distance_weight: parsedZDistanceWeight,
@@ -784,16 +863,12 @@ export default function PostProcessingPage() {
       ) : null}
 
       {inputStepVisible ? (
-        <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} input folder`}>
+        <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} folder selection`}>
           <DirectoryFieldRow
             label={
               <ParameterHelpLabel
-                label={trackingSelected ? "Features folder" : "Input folder"}
-                description={
-                  trackingSelected
-                    ? POST_PROCESSING_PARAMETER_HELP.featuresFolder
-                    : POST_PROCESSING_PARAMETER_HELP.inputFolder
-                }
+                label="Inference output folder"
+                description={POST_PROCESSING_PARAMETER_HELP.inferenceOutputFolder}
               />
             }
             path={inputPath}
@@ -816,11 +891,29 @@ export default function PostProcessingPage() {
           />
 
           {validationLoading ? (
-            <ValidationMessage tone="neutral">
-              {trackingSelected ? "Validating features folder..." : "Validating input folder..."}
-            </ValidationMessage>
+            <ValidationMessage tone="neutral">Validating inference output folder...</ValidationMessage>
+          ) : validationResult?.valid && inputValidationSuccessMessage ? (
+            <ValidationMessage tone="success">{inputValidationSuccessMessage}</ValidationMessage>
           ) : validationResult ? (
-            <ValidationMessage tone={validationResult.valid ? "success" : "error"}>{validationResult.message}</ValidationMessage>
+            <ValidationMessage tone="error">{validationResult.message}</ValidationMessage>
+          ) : null}
+
+          {processFeaturesSelected ? (
+            <DirectoryFieldRow
+              label={
+                <ParameterHelpLabel
+                  label="Output folder"
+                  description={POST_PROCESSING_PARAMETER_HELP.processFeaturesOutputFolder}
+                />
+              }
+              path={processFeaturesOutputPath}
+              buttonLabel="Choose directory"
+              emptyLabel="No directory selected yet"
+              onChoose={() => {
+                setPickerTarget("process_output");
+                setPickerOpen(true);
+              }}
+            />
           ) : null}
 
           {trackingSelected ? (
@@ -828,7 +921,7 @@ export default function PostProcessingPage() {
               <DirectoryFieldRow
                 label={
                   <ParameterHelpLabel
-                    label="Segmentation folder"
+                    label="Segmentation output folder"
                     description={POST_PROCESSING_PARAMETER_HELP.segmentationFolder}
                   />
                 }
@@ -851,12 +944,25 @@ export default function PostProcessingPage() {
                 }
               />
 
+              <DirectoryFieldRow
+                label={
+                  <ParameterHelpLabel label="Output folder" description={POST_PROCESSING_PARAMETER_HELP.trackingOutputFolder} />
+                }
+                path={trackingOutputPath}
+                buttonLabel="Choose directory"
+                emptyLabel="No directory selected yet"
+                onChoose={() => {
+                  setPickerTarget("tracking_output");
+                  setPickerOpen(true);
+                }}
+              />
+
               {trackingSegmentationValidationLoading ? (
-                <ValidationMessage tone="neutral">Validating segmentation folder...</ValidationMessage>
+                <ValidationMessage tone="neutral">Validating segmentation output folder...</ValidationMessage>
+              ) : trackingSegmentationValidationResult?.valid && trackingSegmentationValidationSuccessMessage ? (
+                <ValidationMessage tone="success">{trackingSegmentationValidationSuccessMessage}</ValidationMessage>
               ) : trackingSegmentationValidationResult ? (
-                <ValidationMessage tone={trackingSegmentationValidationResult.valid ? "success" : "error"}>
-                  {trackingSegmentationValidationResult.message}
-                </ValidationMessage>
+                <ValidationMessage tone="error">{trackingSegmentationValidationResult.message}</ValidationMessage>
               ) : null}
 
               {parametersVisible ? (
@@ -867,7 +973,7 @@ export default function PostProcessingPage() {
                     aria-expanded={trackingOptionalOpen}
                     onClick={() => setTrackingOptionalOpen((current) => !current)}
                   >
-                    Optional parameters
+                    Advanced options
                   </button>
                 </div>
               ) : null}
@@ -980,12 +1086,17 @@ export default function PostProcessingPage() {
 
           <div className="inferencePathStack">
             <DirectoryFieldRow
-              label={<ParameterHelpLabel label="Output folder" description={POST_PROCESSING_PARAMETER_HELP.outputFolder} />}
+              label={
+                <ParameterHelpLabel
+                  label="Segmentation output folder"
+                  description={POST_PROCESSING_PARAMETER_HELP.segmentationOutputFolder}
+                />
+              }
               path={segmentationOutputPath}
               buttonLabel="Choose directory"
               emptyLabel="No directory selected yet"
               onChoose={() => {
-                setPickerTarget("output");
+                setPickerTarget("segmentation_output");
                 setPickerOpen(true);
               }}
             />
@@ -1010,7 +1121,7 @@ export default function PostProcessingPage() {
                   aria-controls="voronoi-optional-parameters"
                   onClick={() => setVoronoiOptionalOpen((current) => !current)}
                 >
-                  Optional parameters
+                  Advanced options
                 </button>
               </div>
 
@@ -1049,12 +1160,6 @@ export default function PostProcessingPage() {
 
           {probabilityMapSelected ? (
             <>
-              <div className="sidebarHint">
-                Density estimation runs on one selected training timepoint, saves{" "}
-                <code>probmap_densities.npz</code> in the input folder root, and probability map estimation writes one
-                final instance mask per timepoint into the selected output folder as <code>&lt;timepoint&gt;.tif</code>.
-              </div>
-
               <div className="inferenceFormRows">
                 <GpuSelectionRow
                   optionsLoading={optionsLoading}
@@ -1065,50 +1170,53 @@ export default function PostProcessingPage() {
                   helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
                 />
 
+                <div className="postProcessingStageTitle">Stage 1: Probability density map estimation</div>
+
                 <div className="postProcessingParameterGroup">
+                  <div className="postProcessingStageDescription">
+                    Use an annotated binary mask to construct Foreground/Background (FG/BG) probability distributions
+                    for the spatialDINO features.
+                  </div>
+
                   <div className="inferenceFormRow">
-                    <div className="inferenceFieldLabel">
-                      <ParameterHelpLabel
-                        label="Density estimation"
-                        description={POST_PROCESSING_PARAMETER_HELP.densityEstimationToggle}
-                      />
-                    </div>
                     <label className="inferenceCheckboxLabel">
                       <input
                         type="checkbox"
                         checked={runDensityEstimation}
                         onChange={(event) => setRunDensityEstimation(event.target.checked)}
                       />
-                      <span>Run before probability map estimation</span>
+                      <span>Run stage 1</span>
                     </label>
                   </div>
 
                   {runDensityEstimation ? (
                     <>
-                      <div className="inferenceFormRow">
-                        <div className="inferenceFieldLabel">
-                          <ParameterHelpLabel
-                            label="Training timepoint"
-                            description={POST_PROCESSING_PARAMETER_HELP.trainingTimepoint}
-                          />
+                      {showDensityEstimationTimepoint ? (
+                        <div className="inferenceFormRow">
+                          <div className="inferenceFieldLabel">
+                            <ParameterHelpLabel
+                              label="Training timepoint"
+                              description={POST_PROCESSING_PARAMETER_HELP.trainingTimepoint}
+                            />
+                          </div>
+                          <select
+                            className="inferenceSelect"
+                            value={densityEstimationTimepoint}
+                            onChange={(event) => setDensityEstimationTimepoint(event.target.value)}
+                          >
+                            {validatedSubfolderNames.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
                         </div>
-                        <select
-                          className="inferenceSelect"
-                          value={densityEstimationTimepoint}
-                          onChange={(event) => setDensityEstimationTimepoint(event.target.value)}
-                        >
-                          {validatedSubfolderNames.map((name) => (
-                            <option key={name} value={name}>
-                              {name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      ) : null}
 
                       <DirectoryFieldRow
                         label={
                           <ParameterHelpLabel
-                            label="Segmentation TIFF"
+                            label="Annotated FG/BG mask"
                             description={POST_PROCESSING_PARAMETER_HELP.segmentationTif}
                           />
                         }
@@ -1124,7 +1232,7 @@ export default function PostProcessingPage() {
                       <DirectoryFieldRow
                         label={
                           <ParameterHelpLabel
-                            label="Valid mask TIFF"
+                            label="Valid voxels mask (Optional)"
                             description={POST_PROCESSING_PARAMETER_HELP.validMaskTif}
                           />
                         }
@@ -1148,13 +1256,33 @@ export default function PostProcessingPage() {
                         }
                       />
                     </>
-                  ) : (
+                  ) : runProbabilityMapStage2 ? (
                     <div className={probmapDensitiesExists ? "sidebarHint" : "sidebarWarning"}>
                       {probmapDensitiesExists
-                        ? `Probability map estimation will load ${probmapDensitiesPath ?? "probmap_densities.npz"} from the input folder root.`
-                        : "probmap_densities.npz was not found in the input folder root. Run density estimation first."}
+                        ? `Stage 2 will load ${probmapDensitiesPath ?? "probmap_densities.npz"} from the inference output folder root.`
+                        : "probmap_densities.npz was not found in the inference output folder root. Run Stage 1 first."}
                     </div>
-                  )}
+                  ) : null}
+                </div>
+
+                <div className="postProcessingStageTitle">Stage 2: Apply probability maps</div>
+
+                <div className="postProcessingParameterGroup">
+                  <div className="postProcessingStageDescription">
+                    Apply the probability maps from Stage 1 on a full movie to produce FG/BG masks, which are then
+                    turned into instance segmentation masks via Connected Component Labeling.
+                  </div>
+
+                  <div className="inferenceFormRow">
+                    <label className="inferenceCheckboxLabel">
+                      <input
+                        type="checkbox"
+                        checked={runProbabilityMapStage2}
+                        onChange={(event) => setRunProbabilityMapStage2(event.target.checked)}
+                      />
+                      <span>Run stage 2</span>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="inferenceOptionalToggleRow">
@@ -1165,7 +1293,7 @@ export default function PostProcessingPage() {
                     aria-controls="probability-map-optional-parameters"
                     onClick={() => setProbabilityMapOptionalOpen((current) => !current)}
                   >
-                    Optional parameters
+                    Advanced options
                   </button>
                 </div>
 
@@ -1330,10 +1458,11 @@ export default function PostProcessingPage() {
       {parametersVisible && trackingSelected ? (
         <section className="datasetCard inferenceFormCard" aria-label="Tracking parameters">
           <div className="sidebarHint">
-            Tracking reads each features subfolder&apos;s <code>lr_feats.npy</code> and <code>volume_unnorm.tif</code>,
-            matches them against <code>&lt;segmentation folder&gt;/&lt;timepoint&gt;.tif</code>, follows the original
+            Tracking reads each inference output subfolder&apos;s <code>lr_feats.npy</code> and{" "}
+            <code>volume_unnorm.tif</code>, matches them against{" "}
+            <code>&lt;segmentation output folder&gt;/&lt;timepoint&gt;.tif</code>, follows the original
             overlap-and-voting tracker, and writes a single final-format <code>tracks.csv</code> into the selected
-            features folder while keeping exported <code>z</code> coordinates as-is.
+            output folder while keeping exported <code>z</code> coordinates as-is.
           </div>
 
           {trackingOptionalOpen ? (
@@ -1449,39 +1578,21 @@ export default function PostProcessingPage() {
 
       <ServerDirectoryPicker
         open={pickerOpen}
-        title={
-          pickerTarget === "input"
-            ? trackingSelected
-              ? "Choose the features folder"
-              : "Choose the input folder"
-            : pickerTarget === "output"
-              ? "Choose the output folder"
-              : pickerTarget === "tracking_segmentation"
-                ? "Choose the segmentation folder"
-            : pickerTarget === "seg_tif"
-              ? "Choose the segmentation TIFF"
-              : "Choose the valid-mask TIFF"
-        }
+        title={pickerTitle}
         selectionMode={pickerTarget === "seg_tif" || pickerTarget === "valid_mask" ? "file" : "directory"}
-        initialPath={
-          pickerTarget === "input"
-            ? inputPath
-            : pickerTarget === "output"
-              ? segmentationOutputPath
-              : pickerTarget === "tracking_segmentation"
-                ? trackingSegmentationPath ?? inputPath
-            : pickerTarget === "seg_tif"
-              ? parentPathForPicker(segTifPath) ?? inputPath
-              : parentPathForPicker(validMaskTifPath) ?? inputPath
-        }
+        initialPath={pickerInitialPath}
         onClose={() => setPickerOpen(false)}
         onSelect={(path) => {
           if (pickerTarget === "input") {
             setInputPath(path);
-          } else if (pickerTarget === "output") {
+          } else if (pickerTarget === "process_output") {
+            setProcessFeaturesOutputPath(path);
+          } else if (pickerTarget === "segmentation_output") {
             setSegmentationOutputPath(path);
           } else if (pickerTarget === "tracking_segmentation") {
             setTrackingSegmentationPath(path);
+          } else if (pickerTarget === "tracking_output") {
+            setTrackingOutputPath(path);
           } else if (pickerTarget === "seg_tif") {
             setSegTifPath(path);
           } else {

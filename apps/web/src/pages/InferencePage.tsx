@@ -159,9 +159,10 @@ type OverwritePromptState = {
 
 const DEFAULT_UPSAMPLE_FACTOR = "3";
 const DEFAULT_ANISOTROPY = { x: "1.0", y: "1.0", z: "1.0" };
+const INFERENCE_OUTPUT_FOLDER_DESCRIPTION = "folder containing the outputs of a SpatialDINO run";
 const INFERENCE_PARAMETER_HELP = {
-  inputFolder: "Dataset directory containing the volumes to process.",
-  outputFolder: "Directory where inference outputs and metadata will be written.",
+  inputFolder: "Folder containing the raw data volumes to process.",
+  outputFolder: INFERENCE_OUTPUT_FOLDER_DESCRIPTION,
   selectGpus: "Choose which detected GPUs will run the inference job.",
   modelWeights: "Select the pretrained checkpoint used to encode the input volumes.",
   route: "Pick the attention implementation; streaming uses less memory on large volumes.",
@@ -318,7 +319,7 @@ export default function InferencePage() {
     globalHistMax,
   ]);
 
-  const pickerTitle = pickerTarget === "output" ? "Choose the output folder" : "Choose the input folder";
+  const pickerTitle = pickerTarget === "output" ? "Choose the inference output folder" : "Choose the raw data folder";
   const pickerInitialPath = pickerTarget === "output" ? outputPath : inputPath;
   const validatedDataset = validationResult?.valid ? validationResult : null;
   const parametersVisible = validatedDataset !== null;
@@ -539,7 +540,7 @@ export default function InferencePage() {
   async function handleRunInference() {
     const request = buildRunRequest(false);
     if (!request) {
-      setRunFeedback({ tone: "error", message: "Choose both an input folder and an output folder." });
+      setRunFeedback({ tone: "error", message: "Choose both a raw data folder and an inference output folder." });
       return;
     }
     await submitInference(request);
@@ -557,7 +558,7 @@ export default function InferencePage() {
 
     const request = buildRunRequest(false);
     if (!request) {
-      setCommandPreviewError("Choose both an input folder and an output folder.");
+      setCommandPreviewError("Choose both a raw data folder and an inference output folder.");
       return;
     }
 
@@ -655,10 +656,10 @@ export default function InferencePage() {
         </header>
       </section>
 
-      <section className="datasetCard inferenceInputCard" aria-label="Input folder">
+      <section className="datasetCard inferenceInputCard" aria-label="Raw data folder">
         <DirectoryFieldRow
           label={
-            <ParameterHelpLabel label="Input folder" description={INFERENCE_PARAMETER_HELP.inputFolder} />
+            <ParameterHelpLabel label="Raw data folder" description={INFERENCE_PARAMETER_HELP.inputFolder} />
           }
           path={inputPath}
           onChoose={() => setPickerTarget("input")}
@@ -675,12 +676,12 @@ export default function InferencePage() {
         />
 
         {validationLoading ? (
-          <ValidationMessage tone="neutral">Validating input folder...</ValidationMessage>
+          <ValidationMessage tone="neutral">Validating raw data folder...</ValidationMessage>
         ) : validationError ? (
           <ValidationMessage tone="error">{validationError}</ValidationMessage>
         ) : validatedDataset ? (
           <ValidationMessage tone="success">
-            {`${validatedDataset.message} ${validatedDataset.fileCount} files. Shape: x=${validatedDataset.shape.x}, y=${validatedDataset.shape.y}, z=${validatedDataset.shape.z}.`}
+            {`Validated raw data folder. ${validatedDataset.fileCount} files. Shape: x=${validatedDataset.shape.x}, y=${validatedDataset.shape.y}, z=${validatedDataset.shape.z}.`}
           </ValidationMessage>
         ) : validationResult && !validationResult.valid ? (
           <ValidationMessage tone="error">{validationResult.message}</ValidationMessage>
@@ -691,7 +692,12 @@ export default function InferencePage() {
         <section className="datasetCard inferenceFormCard" aria-label="Inference parameters">
           <div className="inferencePathStack">
             <DirectoryFieldRow
-              label={<ParameterHelpLabel label="Output folder" description={INFERENCE_PARAMETER_HELP.outputFolder} />}
+              label={
+                <ParameterHelpLabel
+                  label="Inference output folder"
+                  description={INFERENCE_PARAMETER_HELP.outputFolder}
+                />
+              }
               path={outputPath}
               onChoose={() => setPickerTarget("output")}
             />
@@ -702,23 +708,29 @@ export default function InferencePage() {
               <div className="inferenceFieldLabel">
                 <ParameterHelpLabel label="Select GPUs" description={INFERENCE_PARAMETER_HELP.selectGpus} />
               </div>
-              <div className="inferenceCheckboxGroup">
-                {availableGpus.map((gpu) => (
-                  <label key={gpu.index} className="inferenceCheckboxLabel">
-                    <input
-                      type="checkbox"
-                      checked={selectedGpuIndices.includes(gpu.index)}
-                      onChange={() => {
-                        setSelectedGpuIndices((current) =>
-                          current.includes(gpu.index)
-                            ? current.filter((value) => value !== gpu.index)
-                            : [...current, gpu.index].sort((a, b) => a - b),
-                        );
-                      }}
-                    />
-                    <span>{`GPU ${gpu.index}`}</span>
-                  </label>
-                ))}
+              <div className="inferenceFieldBody">
+                <p className="inferenceFieldHint">
+                  A single GPU processes one timepoint at a time. Using more GPUs than timepoints does
+                  not bring any speed-up.
+                </p>
+                <div className="inferenceCheckboxGroup">
+                  {availableGpus.map((gpu) => (
+                    <label key={gpu.index} className="inferenceCheckboxLabel">
+                      <input
+                        type="checkbox"
+                        checked={selectedGpuIndices.includes(gpu.index)}
+                        onChange={() => {
+                          setSelectedGpuIndices((current) =>
+                            current.includes(gpu.index)
+                              ? current.filter((value) => value !== gpu.index)
+                              : [...current, gpu.index].sort((a, b) => a - b),
+                          );
+                        }}
+                      />
+                      <span>{`GPU ${gpu.index}`}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -765,7 +777,7 @@ export default function InferencePage() {
               aria-controls="inference-optional-parameters"
               onClick={() => setOptionalParametersOpen((current) => !current)}
             >
-              Optional parameters
+              Advanced options
             </button>
           </div>
 

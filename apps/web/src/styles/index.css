@@ -593,6 +593,16 @@ button {
   line-height: 1.6;
 }
 
+.dataPageDescription {
+  width: 100%;
+  max-width: none;
+}
+
+.dataPageDescription a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .preprocessPage {
   display: grid;
   gap: 10px;
@@ -850,11 +860,37 @@ button {
   background: color-mix(in srgb, var(--surface) 72%, var(--surface-2));
 }
 
+.postProcessingStageTitle {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.postProcessingStageDescription {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .inferenceFormRow {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.inferenceFieldBody {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 280px;
+}
+
+.inferenceFieldHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 .inferenceValidationState {

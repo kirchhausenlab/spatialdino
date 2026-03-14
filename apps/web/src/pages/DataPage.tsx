@@ -129,14 +129,15 @@ export default function DataPage() {
       <section className="validationCard inferenceIntroCard" aria-label="Public data overview">
         <div className="inferenceEyebrow">Downloads</div>
         <h1 className="inferenceTitle">Public data</h1>
-        <div className="placeholderDescription">
-          We provide the raw data used in the SpatialDINO paper examples for download. Once downloaded, it will be
-          saved inside the SpatialDINO folder, under <code>data/raw_data</code>.
+        <div className="placeholderDescription dataPageDescription">
+          Download the raw data used in the SpatialDINO paper examples. The downloaded files will be saved in the
+          SpatialDINO directory under <code>data/raw_data</code>.
           <br />
-          You can visualize the data using Mirante4D in{" "}
+          Visualize the data with{" "}
           <a href="https://kirchhausenlab.github.io/llsm_viewer/" target="_blank" rel="noreferrer">
-            https://kirchhausenlab.github.io/llsm_viewer/
+            Mirante4D
           </a>
+          .
         </div>
       </section>
 
