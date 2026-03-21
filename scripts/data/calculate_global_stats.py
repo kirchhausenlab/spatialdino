@@ -14,6 +14,7 @@ Usage::
 
 """
 
+import logging
 from typing import Final
 import hydra
 from hydra.utils import instantiate
@@ -26,6 +27,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from multiprocessing import cpu_count
+
+logger = logging.getLogger("calculate_global_stats")
 
 
 @hydra.main(version_base=None, config_path=str(CONFIG_PATH), config_name="config")

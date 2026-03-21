@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-20
+
+### Added
+- Comprehensive Google-style docstrings for all 20 scripts (data, train, inference, post-processing)
+- docs/scripts.md — full script reference with function signatures, descriptions, and CLI interfaces
+
+### Changed
+- README updated with version badge, project structure overview, post-processing section, and documentation links
+- Segmentation section in README updated from "Work in progress" to reference actual scripts
+
 ## [0.1.0] - 2026-03-20
 
 ### Added
@@ -41,5 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mypy for static type checking with strict optional and unused-ignore warnings
 - GitHub Actions CI workflow for lint, typecheck, and test jobs
 
-[Unreleased]: https://github.com/kirchhausenlab/spatialdino/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kirchhausenlab/spatialdino/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kirchhausenlab/spatialdino/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kirchhausenlab/spatialdino/releases/tag/v0.1.0
