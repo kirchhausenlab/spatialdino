@@ -87,7 +87,8 @@ class SSL(nn.Module):
         self.teacher.eval()
         return self
 
-    def forward_student(
+    # student forward
+    def forward(
         self,
         x: Dict[str, torch.Tensor],
         masks: Dict[str, Optional[torch.Tensor]],

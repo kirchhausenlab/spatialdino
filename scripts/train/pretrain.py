@@ -326,7 +326,7 @@ def train(
 
         dtype = DTYPE_MAPPING[config.dtype]
 
-        student_global_output, student_local_output = model.forward_student(
+        student_global_output, student_local_output = model_ddp(
             x={
                 "collated_global_crops": collated_global_crops,
                 "collated_local_crops": collated_local_crops,
