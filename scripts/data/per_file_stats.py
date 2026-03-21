@@ -14,6 +14,14 @@ from pathlib import Path
 
 
 def analyze_folder(path):
+    """Recursively compute the total size and TIF count under a directory.
+
+    Args:
+        path: Root directory to walk.
+
+    Returns:
+        Tuple of (total_size_bytes, tif_file_count).
+    """
     total_size = 0
     tif_count = 0
     for root, dirs, files in os.walk(path):
@@ -42,6 +50,12 @@ def expand_experiments(path):
 
 
 def main():
+    """Compute and print per-annotation-file statistics.
+
+    Reads every ``.txt`` file in the annotations directory, expands paths
+    into experiments, gathers size/TIF counts, and prints a summary to
+    stdout. Also writes a Markdown report to ``scripts/data/per_file_stats.md``.
+    """
     annotations_dir = Path("/nfs/scratch2/shared_image_recog_ml/annotations")
     txt_files = sorted(annotations_dir.glob("*.txt"))
     print(f"Found {len(txt_files)} annotation files.")

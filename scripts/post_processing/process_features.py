@@ -1,3 +1,16 @@
+"""PCA reduction and high-resolution feature export for spatialDINO outputs.
+
+Given a folder of per-sample subfolders each containing ``lr_feats.npy``
+(low-resolution features, shape [Z, Y, X, C]) and ``volume_unnorm.tif``
+(the original 3D volume), this script can:
+
+* Compute PCA on the feature channels and save upsampled PCA volumes.
+* Upsample every individual feature channel to the original volume
+  resolution and save it as a separate file.
+
+Both outputs are written as TIFF or NumPy files, controlled via CLI flags.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -25,6 +38,11 @@ DEFAULT_PCA_BATCH_BYTES = 256 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for feature processing.
+
+    Returns:
+        Namespace with input/output paths, PCA settings, and I/O options.
+    """
     parser = argparse.ArgumentParser(description="Process saved spatialDINO features.")
     parser.add_argument(
         "--input-path", required=True, help="Folder containing per-sample subfolders."
@@ -66,12 +84,31 @@ def parse_args() -> argparse.Namespace:
 
 
 def list_subfolders(input_path: Path) -> list[Path]:
+    """Return all immediate subdirectories of *input_path*, sorted case-insensitively.
+
+    Args:
+        input_path: Parent directory to scan.
+
+    Returns:
+        Sorted list of subdirectory paths.
+    """
     subfolders = [path for path in input_path.iterdir() if path.is_dir()]
     subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
     return subfolders
 
 
 def read_tiff_shape(path: Path) -> tuple[int, int, int]:
+    """Read the spatial shape of a 3D TIFF volume without loading its data.
+
+    Args:
+        path: Path to a 3D TIFF file.
+
+    Returns:
+        Tuple of (Z, Y, X) dimensions.
+
+    Raises:
+        ValueError: If the file is not a valid 3D volume.
+    """
     with tifffile.TiffFile(path) as tif:
         if not tif.series:
             raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
@@ -82,6 +119,14 @@ def read_tiff_shape(path: Path) -> tuple[int, int, int]:
 
 
 def choose_pca_batch_size(channel_count: int) -> int:
+    """Choose the number of voxels to process per batch during PCA.
+
+    Args:
+        channel_count: Number of feature channels.
+
+    Returns:
+        Batch size in voxels that fits within ``DEFAULT_PCA_BATCH_BYTES``.
+    """
     bytes_per_voxel = max(1, channel_count) * np.dtype(np.float32).itemsize
     return max(4096, DEFAULT_PCA_BATCH_BYTES // bytes_per_voxel)
 
@@ -89,6 +134,15 @@ def choose_pca_batch_size(channel_count: int) -> int:
 def choose_feature_chunk_size(
     target_shape: tuple[int, int, int], channel_count: int
 ) -> int:
+    """Choose how many channels to upsample at once during HR export.
+
+    Args:
+        target_shape: Target (Z, Y, X) volume dimensions.
+        channel_count: Total number of feature channels.
+
+    Returns:
+        Number of channels per upsampling chunk.
+    """
     voxels = max(1, math.prod(target_shape))
     bytes_per_channel = voxels * np.dtype(np.float32).itemsize
     return max(
@@ -97,6 +151,14 @@ def choose_feature_chunk_size(
 
 
 def ensure_contiguous(array: np.ndarray) -> np.ndarray:
+    """Return a C-contiguous copy of *array* if it is not already contiguous.
+
+    Args:
+        array: Input NumPy array.
+
+    Returns:
+        C-contiguous array (may be the same object if already contiguous).
+    """
     return array if array.flags.c_contiguous else np.ascontiguousarray(array)
 
 
@@ -107,6 +169,21 @@ def compute_pca_volume(
     n_components: int,
     device: torch.device,
 ) -> np.ndarray:
+    """Compute PCA on low-resolution features and project onto top components.
+
+    Uses a batched covariance approach to avoid loading all voxels into
+    GPU memory at once.  Eigendecomposition is performed on the full
+    covariance matrix and the top *n_components* eigenvectors are used
+    for projection.
+
+    Args:
+        lr_feats: Feature array of shape [Z, Y, X, C].
+        n_components: Number of principal components to keep.
+        device: Torch device for computation.
+
+    Returns:
+        Projected array of shape [Z, Y, X, n_components].
+    """
     flat_feats = ensure_contiguous(lr_feats.reshape(-1, lr_feats.shape[-1]))
     voxel_count, channel_count = flat_feats.shape
     if n_components > channel_count:
@@ -157,6 +234,16 @@ def upsample_channels(
     target_shape: tuple[int, int, int],
     device: torch.device,
 ) -> np.ndarray:
+    """Upsample a multi-channel 3D volume to *target_shape* via trilinear interpolation.
+
+    Args:
+        channels_zyx: Array of shape [C, Z, Y, X].
+        target_shape: Desired (Z, Y, X) output dimensions.
+        device: Torch device for interpolation.
+
+    Returns:
+        Upsampled array of shape [C, Z', Y', X'].
+    """
     input_tensor = torch.from_numpy(ensure_contiguous(channels_zyx)).to(
         device=device, dtype=torch.float32
     )
@@ -170,6 +257,14 @@ def upsample_channels(
 
 
 def normalize_channels_to_uint8(channels_zyx: np.ndarray) -> np.ndarray:
+    """Min-max normalize each channel independently and scale to 0-255 uint8.
+
+    Args:
+        channels_zyx: Array of shape [C, Z, Y, X].
+
+    Returns:
+        uint8 array of the same shape, with each channel in [0, 255].
+    """
     mins = channels_zyx.min(axis=(1, 2, 3), keepdims=True)
     maxs = channels_zyx.max(axis=(1, 2, 3), keepdims=True)
     scaled = (channels_zyx - mins) / (maxs - mins + 1e-6)
@@ -177,6 +272,13 @@ def normalize_channels_to_uint8(channels_zyx: np.ndarray) -> np.ndarray:
 
 
 def save_volume(path: Path, array: np.ndarray, save_format: str) -> None:
+    """Save a volume array to disk as either ``.npy`` or ``.tif``.
+
+    Args:
+        path: Destination file path.
+        array: Volume data to write.
+        save_format: ``".npy"`` or ``".tif"``.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if save_format == ".npy":
         np.save(path, array)
@@ -195,6 +297,11 @@ def save_volume(path: Path, array: np.ndarray, save_format: str) -> None:
 
 
 def wait_for_futures(futures: deque[Future[None]]) -> None:
+    """Block until all queued futures have completed.
+
+    Args:
+        futures: Deque of pending futures to drain.
+    """
     while futures:
         futures.popleft().result()
 
@@ -208,6 +315,16 @@ def submit_save_task(
     array: np.ndarray,
     save_format: str,
 ) -> None:
+    """Submit a save task to the thread pool, blocking if the queue is full.
+
+    Args:
+        executor: Thread pool used for async I/O.
+        futures: Deque tracking outstanding writes.
+        limit: Maximum number of outstanding futures before blocking.
+        path: Destination file path.
+        array: Data to save.
+        save_format: ``".npy"`` or ``".tif"``.
+    """
     futures.append(executor.submit(save_volume, path, array, save_format))
     if len(futures) >= limit:
         futures.popleft().result()
@@ -222,6 +339,16 @@ def export_pca(
     save_format: str,
     device: torch.device,
 ) -> None:
+    """Compute PCA, upsample, normalize to uint8, and save.
+
+    Args:
+        subfolder: Output directory for the PCA file(s).
+        lr_feats: Low-resolution features [Z, Y, X, C].
+        target_shape: High-resolution (Z, Y, X) dimensions.
+        n_components: Number of PCA components.
+        save_format: ``".npy"`` or ``".tif"``.
+        device: Torch device for computation.
+    """
     pca_lr = compute_pca_volume(lr_feats, n_components=n_components, device=device)
     pca_lr_channels = np.moveaxis(pca_lr, -1, 0)
     pca_hr_channels = upsample_channels(
@@ -259,6 +386,19 @@ def export_high_resolution_features(
     device: torch.device,
     io_workers: int,
 ) -> None:
+    """Upsample every feature channel to full resolution and save individually.
+
+    Channels are processed in memory-bounded chunks and written to the
+    ``hr_feats/`` subdirectory using a thread pool for overlapping I/O.
+
+    Args:
+        subfolder: Output directory (``hr_feats/`` is created inside it).
+        lr_feats: Low-resolution features [Z, Y, X, C].
+        target_shape: High-resolution (Z, Y, X) dimensions.
+        save_format: ``".npy"`` or ``".tif"``.
+        device: Torch device for interpolation.
+        io_workers: Number of I/O threads for parallel writes.
+    """
     channel_count = int(lr_feats.shape[-1])
     channel_width = max(3, len(str(channel_count - 1)))
     chunk_size = choose_feature_chunk_size(target_shape, channel_count)
@@ -294,6 +434,17 @@ def export_high_resolution_features(
 
 
 def validate_folder(subfolder: Path) -> tuple[Path, Path]:
+    """Check that a sample subfolder contains the required input files.
+
+    Args:
+        subfolder: Path to a per-sample directory.
+
+    Returns:
+        Tuple of (lr_feats path, volume_unnorm path).
+
+    Raises:
+        FileNotFoundError: If either expected file is missing.
+    """
     lr_path = subfolder / "lr_feats.npy"
     volume_path = subfolder / "volume_unnorm.tif"
     if not lr_path.is_file():
@@ -315,6 +466,19 @@ def process_subfolder(
     device: torch.device,
     io_workers: int,
 ) -> None:
+    """Process a single sample: optionally export PCA and/or HR features.
+
+    Args:
+        input_subfolder: Directory containing ``lr_feats.npy`` and ``volume_unnorm.tif``.
+        output_subfolder: Destination directory for outputs.
+        save_pca: Whether to export PCA volumes.
+        pca_components: Number of PCA components.
+        pca_format: Save format for PCA output.
+        save_high_resolution_features: Whether to export HR feature channels.
+        high_resolution_format: Save format for HR features.
+        device: Torch device.
+        io_workers: Number of I/O threads.
+    """
     lr_path, volume_path = validate_folder(input_subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
@@ -342,11 +506,24 @@ def process_subfolder(
 
 
 def iter_subfolders(input_path: Path) -> Iterable[Path]:
+    """Yield subfolders from *input_path* in sorted order.
+
+    Args:
+        input_path: Parent directory to iterate.
+
+    Yields:
+        Each subdirectory path.
+    """
     for subfolder in list_subfolders(input_path):
         yield subfolder
 
 
 def main() -> None:
+    """Entry point: parse arguments and process all sample subfolders.
+
+    Iterates over every subfolder in the input directory and runs PCA
+    export and/or high-resolution feature export as requested.
+    """
     args = parse_args()
     if not args.save_pca and not args.save_high_resolution_features:
         raise ValueError(

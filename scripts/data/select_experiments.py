@@ -1,3 +1,18 @@
+"""Filter saved experiments by fluorophore name and write a new path list.
+
+Reads the ``data_paths_3D.txt`` index produced by the save pipeline,
+resolves each entry back to its experiment root, loads its metadata, and
+checks whether the original acquisition path matches any of a predefined
+set of fluorophore names (dextran, lamp1, npc1, eea1, transferrin).
+Matching experiment paths are written to a new ``data_paths_3D.txt`` in
+the target save directory.
+
+Usage::
+
+    python select_experiments.py
+
+"""
+
 import re
 from pathlib import Path
 

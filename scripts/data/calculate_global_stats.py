@@ -1,3 +1,19 @@
+"""Compute dataset-wide mean and standard deviation for normalisation.
+
+Iterates over every sample in the training dataset, applies per-volume
+min-max normalisation (matching the training transform), and accumulates
+running sums to derive the global mean and standard deviation via the
+identity ``Var[X] = E[X^2] - (E[X])^2``.
+
+The resulting statistics can be used to set normalisation constants in the
+training configuration.
+
+Usage::
+
+    python calculate_global_stats.py
+
+"""
+
 from typing import Final
 import hydra
 from hydra.utils import instantiate
@@ -14,6 +30,11 @@ from multiprocessing import cpu_count
 
 @hydra.main(version_base=None, config_path=str(CONFIG_PATH), config_name="config")
 def main(cfg: DictConfig) -> None:
+    """Load the training dataset and compute global mean and std.
+
+    Args:
+        cfg: Hydra DictConfig containing dataset and transform settings.
+    """
     train_dataset = instantiate(
         cfg.data.dataset.train_dataset,
         transform=None,
@@ -35,6 +56,7 @@ def main(cfg: DictConfig) -> None:
         collate_fn=lambda x: x[0],  # Unwrap the single sample from the batch
     )
 
+    # Running accumulators for Welford-style one-pass mean/variance
     total_sum = 0.0
     total_sq_sum = 0.0
     total_voxels = 0
@@ -42,6 +64,7 @@ def main(cfg: DictConfig) -> None:
     for i, sample in enumerate(dataloader):
         mask = sample["metadata"]["mask"]
         vol = torch.from_numpy(sample["image"])
+        # Per-volume min-max normalisation (mirrors training transforms)
         min_val, max_val = get_min_max(vol, mask, MAX_VAL, THRESHOLD_DIVISOR)
         vol = vol.sub_(min_val).div_(max_val - min_val + EPS).clamp_(0.0, 1.0)
         flat_vol = vol.flatten()

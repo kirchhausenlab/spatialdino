@@ -1,3 +1,21 @@
+"""SinDer training: learning singular defect directions with neighbor loss.
+
+This script implements the SinDer (Singular Defect) training procedure. It
+fine-tunes lightweight per-layer epsilon parameters (injected via linear
+additions without modifying Q/K projections) to capture defect-sensitive
+directions in the feature space of a pretrained ViT backbone.
+
+Key design decisions:
+  - All backbone parameters are frozen; only the injected ``.epsilon``
+    parameters are optimized.
+  - A neighbor loss encourages each patch's defect score to be consistent
+    with its spatial neighbors, producing smooth anomaly maps.
+  - Gradients can optionally be zeroed for layers below the active one
+    (``limit_layers``) to restrict the optimization scope.
+  - Batches that yield no valid loss (e.g., too few masked patches) are
+    gracefully skipped.
+"""
+
 import datetime
 import logging
 import sys
@@ -36,6 +54,15 @@ logger = logging.getLogger("sinder")
 
 
 def main():
+    """Entry point for SinDer singular-defect-direction training.
+
+    Parses configuration, initializes distributed training, loads a
+    pretrained backbone, computes singular defect directions for each
+    transformer block, injects trainable epsilon parameters via
+    ``replace_linear_addition_noqk``, freezes all other weights, and
+    launches the training loop with SGD. Supports checkpoint resumption
+    and Weights & Biases logging.
+    """
     config = parse_config(CONFIG_PATH.joinpath("sinder.yaml"))
 
     output_dir = Path(config.output_dir)
@@ -132,15 +159,18 @@ def main():
         find_unused_parameters=config.find_unused_parameters,
     )
 
+    # Freeze all backbone parameters, then inject trainable epsilon parameters
     all_params = []
     for param in model.parameters():
         param.requires_grad = False
 
+    # Replace linear layers (excluding Q/K) with additive-epsilon variants
     replace_linear_addition_noqk(model, "model")
     for name, param in model.named_parameters():
         if ".epsilon" in name and param.requires_grad is True:
             all_params.append(param)
 
+    # Verify that only epsilon parameters are trainable
     grad_params = []
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -203,6 +233,30 @@ def train(
     loss_scaler: torch.amp.GradScaler | None = None,
     run: Run | None = None,
 ) -> dict[str, float]:
+    """Run the SinDer neighbor-loss training loop.
+
+    For each batch, computes a neighbor consistency loss that encourages
+    smooth spatial anomaly maps. Batches where the loss cannot be computed
+    (e.g., insufficient masked patches) are skipped. Gradients with NaN
+    values are detected and the step is skipped to maintain stability.
+
+    Args:
+        config: Hydra/OmegaConf configuration for the SinDer run.
+        step: Global step to resume from (0 for fresh training).
+        model: The backbone model with injected epsilon parameters.
+        model_ddp: DistributedDataParallel-wrapped model (unused in
+            forward but kept for API consistency).
+        optimizer: SGD optimizer over the epsilon parameters.
+        train_dataloader: WebDataset-backed streaming dataloader.
+        rank: Process rank in the distributed group.
+        world_size: Total number of distributed processes.
+        loss_scaler: Optional AMP GradScaler for mixed-precision training.
+        run: Optional Weights & Biases run for metric logging.
+
+    Returns:
+        Dictionary mapping metric names to their globally averaged values
+        across all processes.
+    """
     start_time = time.time()
     model.train()
 
@@ -253,7 +307,7 @@ def train(
             )
 
         if result is None:
-            # logger.info("No loss, skipping...")
+            # No valid loss for this batch (e.g., too few defect patches); skip
             if run is not None and (step + 1) % config.log_interval == 0:
                 run.log(
                     {
@@ -285,12 +339,15 @@ def train(
         else:
             loss.backward()
 
+        # Zero gradients for layers outside the optimization window to
+        # restrict updates to the top ``limit_layers`` blocks
         if config.limit_layers:
             with torch.no_grad():
                 for t in range(layer - config.limit_layers + 1):
                     for p in model.blocks[t].parameters():
                         p.grad = None
 
+        # Guard against NaN gradients which can destabilize training
         has_nan = False
         for name, param in model.named_parameters():
             if param.grad is not None and torch.isnan(param.grad).any():

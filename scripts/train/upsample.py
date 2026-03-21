@@ -1,3 +1,15 @@
+"""LiFT upsampler training for high-resolution feature map generation.
+
+This script trains a LiFT (Learnable Interpolation for Feature Transform)
+model that upsamples patch-level ViT features back to pixel-level resolution.
+A frozen pretrained ViT backbone acts as the feature extractor, while the
+LiFT decoder (a series of convolutional upsampling blocks) is trained to
+reconstruct dense feature maps at multiple spatial scales (L1, L2, L4).
+
+The pipeline uses distributed data-parallel training with AMP, AdamW with
+layerwise learning-rate decay, and WebDataset-based streaming I/O.
+"""
+
 import logging
 import os
 from datetime import timedelta
@@ -30,6 +42,14 @@ torch.autograd.set_detect_anomaly(True)
 
 
 def main() -> None:
+    """Entry point for LiFT upsampler training.
+
+    Parses configuration, initializes NCCL distributed training, loads and
+    freezes a pretrained ViT backbone, wraps it in a ``ViTExtractor`` for
+    multi-scale feature extraction, builds the LiFT decoder model, sets up
+    the optimizer/loss/scaler, and delegates to ``training_loop``. Optionally
+    resumes from a checkpoint and logs metrics to Weights & Biases.
+    """
     cfg = parse_config(CONFIG_PATH.joinpath("upsampler.yaml"))
 
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -53,11 +73,12 @@ def main() -> None:
     setup_logging(rank=local_rank)
     device = torch.device(local_rank)
 
+    # Load pretrained backbone and freeze all its parameters
     model = init_backbone(config=cfg)
     for p in model.parameters():
         p.requires_grad = False
     model = model.to(device)
-    model.eval()
+    model.eval()  # backbone stays in inference mode throughout training
     if cfg.lift_model.compile:
         logger.info("Compiling model")
         model = torch.compile(model, fullgraph=True, mode="reduce-overhead")
@@ -119,13 +140,15 @@ def main() -> None:
         loss = nn.L1Loss()
     else:
         loss = nn.CosineEmbeddingLoss()
+    # Compute multi-scale spatial dimensions for the upsampler targets:
+    # L1 = full patch grid, L2 = half resolution, L4 = quarter resolution
     imsize = cfg.lift_model.imsize
     patch = make_3tuple(cfg.lift_model.patch_size)
     L1 = (
         imsize[0] // patch[0],
         imsize[1] // patch[1],
         imsize[2] // patch[2],
-    )  # 64, 256, 256 -> 8, 32, 32
+    )  # e.g., 64, 256, 256 -> 8, 32, 32
     L2 = (L1[0] // 2, L1[1] // 2, L1[2] // 2)
     L4 = (L1[0] // 4, L1[1] // 4, L1[2] // 4)
 

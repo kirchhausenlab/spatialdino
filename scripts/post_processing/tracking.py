@@ -1,3 +1,19 @@
+"""Multi-object tracking across timepoints using spatialDINO features.
+
+Links segmented objects between consecutive timepoints by combining
+spatial proximity (anisotropic centroid distance), shape overlap
+(centroid-aligned Dice), and per-channel feature correlation.  The
+assignment logic proceeds in three stages:
+
+1. Distance pre-filter: immediately assigns very close centroids.
+2. Feature voting: iterates over decreasing vote thresholds, assigning
+   candidates that win a majority of per-feature correlation votes.
+3. Global closest: assigns remaining objects by nearest distance.
+
+The final tracks are exported as a CSV compatible with downstream
+analysis tools.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -20,6 +36,8 @@ DEFAULT_RAW_FILENAME = "volume_unnorm.tif"
 
 @dataclass
 class TimepointPaths:
+    """Resolved file paths for a single timepoint."""
+
     name: str
     folder: Path
     raw_path: Path
@@ -29,6 +47,12 @@ class TimepointPaths:
 
 @dataclass
 class LabelGeometry:
+    """Spatial geometry for a single segmented object (label).
+
+    Stores voxel coordinates, bounding box, centroid, and a cropped
+    binary mask for efficient overlap computation.
+    """
+
     label_id: int
     vox_coords: np.ndarray
     centroid: np.ndarray
@@ -41,6 +65,8 @@ class LabelGeometry:
 
 @dataclass
 class PreparedTimepoint:
+    """Fully loaded timepoint with geometries and intensity statistics."""
+
     index: int
     paths: TimepointPaths
     shape_yxz: tuple[int, int, int]
@@ -54,6 +80,8 @@ class PreparedTimepoint:
 
 @dataclass
 class CandidateVote:
+    """Accumulated feature-vote tally for one candidate-reference pair."""
+
     candidate_label: int
     wins: int = 0
     features: list[int] = field(default_factory=list)
@@ -63,12 +91,16 @@ class CandidateVote:
 
 @dataclass
 class RefSummary:
+    """Summary of all candidate votes for one reference label."""
+
     ref_label: int
     candidates: list[CandidateVote]
 
 
 @dataclass
 class AssignmentRecord:
+    """Record of a single reference-to-candidate assignment with its method."""
+
     ref_label: int
     candidate_label: int
     method: str
@@ -78,6 +110,8 @@ class AssignmentRecord:
 
 @dataclass
 class PairResult:
+    """Complete matching result for one consecutive timepoint pair."""
+
     t_ref: int
     t_cand: int
     initial_summary: list[RefSummary]
@@ -90,6 +124,8 @@ class PairResult:
 
 @dataclass
 class TrackPoint:
+    """Single observation in a track: one object at one timepoint."""
+
     timepoint: int
     label_id: int
     centroid: tuple[float, float, float]
@@ -99,6 +135,8 @@ class TrackPoint:
 
 @dataclass
 class Track:
+    """A linked sequence of observations spanning multiple timepoints."""
+
     track_id: int
     points: list[TrackPoint]
     start_time: int
@@ -107,6 +145,8 @@ class Track:
 
 @dataclass
 class RefCandidateMetrics:
+    """Spatial, shape, and feature metrics for one reference vs. its candidates."""
+
     ref_label: int
     candidate_ids: np.ndarray
     distances: np.ndarray
@@ -118,6 +158,8 @@ class RefCandidateMetrics:
 
 @dataclass(frozen=True)
 class AxisInterpolation:
+    """Precomputed trilinear interpolation indices and weights for one axis."""
+
     low: np.ndarray
     high: np.ndarray
     weight_low: np.ndarray
@@ -126,6 +168,8 @@ class AxisInterpolation:
 
 @dataclass(frozen=True)
 class TrackingParams:
+    """User-configurable parameters controlling the tracking pipeline."""
+
     max_distance_xy: float
     max_distance_z: float
     z_distance_weight: float
@@ -137,10 +181,17 @@ class TrackingParams:
 
 
 class PipelineError(RuntimeError):
+    """Raised when the tracking pipeline encounters an unrecoverable error."""
+
     pass
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the tracking pipeline.
+
+    Returns:
+        Namespace with paths, distance thresholds, and tracking parameters.
+    """
     parser = argparse.ArgumentParser(
         description="Track segmented objects across timepoints."
     )
@@ -219,6 +270,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_thresholds(text: str | None) -> tuple[int, ...] | None:
+    """Parse a comma-separated string of vote thresholds into a tuple.
+
+    Args:
+        text: Comma-separated integers, or ``None``/empty for default.
+
+    Returns:
+        Tuple of integer thresholds, or ``None`` if input is empty.
+    """
     if text is None or text.strip() == "":
         return None
     thresholds: list[int] = []
@@ -231,6 +290,14 @@ def parse_thresholds(text: str | None) -> tuple[int, ...] | None:
 
 
 def natural_sort_key(value: str) -> list[Any]:
+    """Generate a sort key that orders embedded numbers numerically.
+
+    Args:
+        value: String to generate the key for.
+
+    Returns:
+        List of alternating string/int segments for natural ordering.
+    """
     parts = re.split(r"(\d+)", value)
     key: list[Any] = []
     for part in parts:
@@ -244,6 +311,15 @@ def natural_sort_key(value: str) -> list[Any]:
 def list_subfolders(
     input_path: Path, *, exclude_paths: Iterable[Path] = ()
 ) -> list[Path]:
+    """List subdirectories of *input_path*, excluding specified paths.
+
+    Args:
+        input_path: Parent directory to scan.
+        exclude_paths: Paths to exclude.
+
+    Returns:
+        Naturally sorted list of subdirectory paths.
+    """
     excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
     subfolders = [
         path
@@ -255,6 +331,17 @@ def list_subfolders(
 
 
 def read_tiff_volume(path: str | Path) -> np.ndarray:
+    """Load a 3D TIFF volume and reorder axes from (Z, Y, X) to (Y, X, Z).
+
+    Args:
+        path: Path to the TIFF file.
+
+    Returns:
+        3D NumPy array with shape (Y, X, Z).
+
+    Raises:
+        PipelineError: If the volume is not 3D.
+    """
     array = np.asarray(tifffile.imread(path))
     if array.ndim != 3:
         raise PipelineError(
@@ -264,10 +351,31 @@ def read_tiff_volume(path: str | Path) -> np.ndarray:
 
 
 def mask_path_for_timepoint(segmentation_path: Path, *, timepoint_name: str) -> Path:
+    """Construct the expected segmentation mask path for a timepoint.
+
+    Args:
+        segmentation_path: Directory containing mask TIFFs.
+        timepoint_name: Name of the timepoint subfolder.
+
+    Returns:
+        Path to ``<timepoint_name>.tif`` inside *segmentation_path*.
+    """
     return segmentation_path / f"{timepoint_name}.tif"
 
 
 def validate_subfolder(subfolder: Path, *, segmentation_path: Path) -> TimepointPaths:
+    """Validate that a timepoint subfolder has all required files.
+
+    Args:
+        subfolder: Timepoint directory.
+        segmentation_path: Directory containing segmentation masks.
+
+    Returns:
+        Validated ``TimepointPaths`` instance.
+
+    Raises:
+        FileNotFoundError: If any required file is missing.
+    """
     raw_path = subfolder / DEFAULT_RAW_FILENAME
     segmentation_mask_path = mask_path_for_timepoint(
         segmentation_path, timepoint_name=subfolder.name
@@ -293,6 +401,15 @@ def validate_subfolder(subfolder: Path, *, segmentation_path: Path) -> Timepoint
 def discover_experiment(
     input_path: Path, *, segmentation_path: Path
 ) -> list[TimepointPaths]:
+    """Discover and validate all timepoint subfolders in the experiment.
+
+    Args:
+        input_path: Root directory with timepoint subfolders.
+        segmentation_path: Directory containing segmentation masks.
+
+    Returns:
+        List of validated ``TimepointPaths``.
+    """
     discovered: list[TimepointPaths] = []
     for subfolder in list_subfolders(input_path, exclude_paths=(segmentation_path,)):
         discovered.append(
@@ -302,6 +419,17 @@ def discover_experiment(
 
 
 def extract_label_geometries(segmentation_yxz: np.ndarray) -> dict[int, LabelGeometry]:
+    """Extract per-label geometry from a segmentation mask.
+
+    Computes centroids, bounding boxes, and cropped binary masks for
+    every non-zero label in the volume.
+
+    Args:
+        segmentation_yxz: Integer label volume of shape (Y, X, Z).
+
+    Returns:
+        Dictionary mapping label ID to its ``LabelGeometry``.
+    """
     flat = segmentation_yxz.ravel()
     foreground_indices = np.flatnonzero(flat != 0)
     if foreground_indices.size == 0:
@@ -352,6 +480,15 @@ def extract_label_geometries(segmentation_yxz: np.ndarray) -> dict[int, LabelGeo
 def compute_label_mean_intensities(
     segmentation_yxz: np.ndarray, raw_yxz: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute mean raw intensity per foreground label.
+
+    Args:
+        segmentation_yxz: Integer label volume.
+        raw_yxz: Raw intensity volume of the same shape.
+
+    Returns:
+        Tuple of (sorted label IDs, mean intensities per label).
+    """
     flat_labels = segmentation_yxz.ravel()
     flat_raw = raw_yxz.ravel()
     foreground = flat_labels != 0
@@ -371,6 +508,15 @@ def compute_label_mean_intensities(
 
 
 def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
+    """Load raw volume and segmentation, extract geometries and amplitudes.
+
+    Args:
+        index: 1-based timepoint index.
+        paths: File paths for this timepoint.
+
+    Returns:
+        Fully populated ``PreparedTimepoint``.
+    """
     raw_yxz = read_tiff_volume(paths.raw_path)
     segmentation_yxz = read_tiff_volume(paths.segmentation_path)
     if raw_yxz.shape != segmentation_yxz.shape:
@@ -412,6 +558,19 @@ def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
 
 
 def anisotropic_distance(a: np.ndarray, b: np.ndarray, zratio: float) -> float:
+    """Compute anisotropic Euclidean distance between two 3D centroids.
+
+    The Z component is weighted by *zratio* to account for anisotropic
+    voxel spacing.
+
+    Args:
+        a: First centroid (Y, X, Z).
+        b: Second centroid (Y, X, Z).
+        zratio: Weight factor applied to the squared Z difference.
+
+    Returns:
+        Weighted Euclidean distance.
+    """
     dyx = a[:2] - b[:2]
     dz = a[2] - b[2]
     return float(np.sqrt(np.sum(dyx**2) + zratio * (dz**2)))
@@ -424,6 +583,18 @@ def find_spatial_candidates(
     spatial_radius: tuple[float, float, float],
     zratio: float,
 ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Find candidate labels within a spatial bounding box of each reference.
+
+    Args:
+        ref_tp: Reference timepoint.
+        cand_tp: Candidate (next) timepoint.
+        spatial_radius: (Y, X, Z) radius for the bounding-box filter.
+        zratio: Anisotropy weight for the distance metric.
+
+    Returns:
+        Dict mapping each reference label to (candidate_ids, distances),
+        sorted by ascending distance.
+    """
     if cand_tp.label_ids.size == 0:
         return {
             int(ref_id): (
@@ -463,6 +634,19 @@ def compute_alignment_overlap(
     ref_geom: LabelGeometry,
     cand_geom: LabelGeometry,
 ) -> tuple[float, np.ndarray, np.ndarray, int]:
+    """Compute centroid-aligned Dice overlap between two label masks.
+
+    Translates the candidate mask so its centroid aligns with the
+    reference centroid, then computes the overlapping voxels.
+
+    Args:
+        ref_geom: Geometry of the reference label.
+        cand_geom: Geometry of the candidate label.
+
+    Returns:
+        Tuple of (dice_coefficient, ref_global_coords, cand_global_coords,
+        intersection_count).
+    """
     ref_shape = np.asarray(ref_geom.local_mask.shape, dtype=np.int32)
     cand_shape = np.asarray(cand_geom.local_mask.shape, dtype=np.int32)
     if np.any(ref_shape < 2) or np.any(cand_shape < 2):
@@ -523,6 +707,15 @@ def compute_alignment_overlap(
 
 
 def build_axis_interpolation(input_size: int, output_size: int) -> AxisInterpolation:
+    """Build precomputed linear interpolation tables for one axis.
+
+    Args:
+        input_size: Number of elements in the low-resolution axis.
+        output_size: Number of elements in the high-resolution axis.
+
+    Returns:
+        ``AxisInterpolation`` with index and weight arrays.
+    """
     if input_size <= 0 or output_size <= 0:
         raise PipelineError("Interpolation sizes must be positive.")
     src = (
@@ -546,6 +739,15 @@ def build_axis_maps(
     input_shape_yxz: tuple[int, int, int],
     output_shape_yxz: tuple[int, int, int],
 ) -> tuple[AxisInterpolation, AxisInterpolation, AxisInterpolation]:
+    """Build interpolation maps for all three axes (Y, X, Z).
+
+    Args:
+        input_shape_yxz: Low-resolution shape.
+        output_shape_yxz: High-resolution shape.
+
+    Returns:
+        Tuple of (Y, X, Z) ``AxisInterpolation`` objects.
+    """
     return (
         build_axis_interpolation(int(input_shape_yxz[0]), int(output_shape_yxz[0])),
         build_axis_interpolation(int(input_shape_yxz[1]), int(output_shape_yxz[1])),
@@ -559,6 +761,16 @@ def choose_feature_batch_size(
     *,
     n_features: int,
 ) -> int:
+    """Choose how many feature channels to load per batch.
+
+    Args:
+        ref_lr_shape_zyx: Reference low-resolution volume shape.
+        cand_lr_shape_zyx: Candidate low-resolution volume shape.
+        n_features: Total number of feature channels.
+
+    Returns:
+        Number of channels per batch that fits within the memory budget.
+    """
     max_voxels = max(int(np.prod(ref_lr_shape_zyx)), int(np.prod(cand_lr_shape_zyx)))
     bytes_per_channel_pair = max_voxels * np.dtype(np.float32).itemsize * 2
     return max(
@@ -573,6 +785,16 @@ def load_feature_chunk_internal_yxz(
     start: int,
     end: int,
 ) -> np.ndarray:
+    """Load a slice of feature channels and reorder to (C, Y, X, Z).
+
+    Args:
+        lr_feats: Memory-mapped features of shape [Z, Y, X, C].
+        start: First channel index (inclusive).
+        end: Last channel index (exclusive).
+
+    Returns:
+        Array of shape [end-start, Y, X, Z].
+    """
     chunk_zyxc = np.asarray(lr_feats[..., start:end], dtype=np.float32)
     if chunk_zyxc.ndim != 4:
         raise PipelineError(
@@ -586,6 +808,20 @@ def sample_feature_chunk_at_internal_coords(
     axis_maps: tuple[AxisInterpolation, AxisInterpolation, AxisInterpolation],
     coords_yxz: np.ndarray,
 ) -> np.ndarray:
+    """Sample feature values at high-res coordinates using trilinear interpolation.
+
+    Uses precomputed axis maps to perform efficient trilinear lookup
+    into the low-resolution feature volume at high-resolution voxel
+    coordinates.
+
+    Args:
+        feature_chunk_cyxz: Feature channels of shape [C, Y, X, Z].
+        axis_maps: Precomputed (Y, X, Z) interpolation tables.
+        coords_yxz: High-resolution coordinates, shape [N, 3].
+
+    Returns:
+        Sampled values of shape [C, N].
+    """
     if coords_yxz.size == 0:
         return np.empty((feature_chunk_cyxz.shape[0], 0), dtype=np.float32)
 
@@ -630,6 +866,15 @@ def sample_feature_chunk_at_internal_coords(
 
 
 def rowwise_correlation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Compute Pearson correlation for each pair of corresponding rows.
+
+    Args:
+        a: Array of shape [N, M].
+        b: Array of shape [N, M].
+
+    Returns:
+        1D array of length N with correlation coefficients (NaN where undefined).
+    """
     corr = np.full((a.shape[0],), np.nan, dtype=np.float32)
     if a.shape[1] <= 1:
         return corr
@@ -655,6 +900,22 @@ def compute_pair_metrics(
     spatial_radius: tuple[float, float, float],
     zratio: float,
 ) -> dict[int, RefCandidateMetrics]:
+    """Compute all matching metrics between a reference and candidate timepoint.
+
+    Finds spatial candidates, computes centroid-aligned Dice overlap,
+    then batches through feature channels to compute per-channel
+    correlation and MSE at overlapping voxels.
+
+    Args:
+        ref_tp: Reference (current) timepoint.
+        cand_tp: Candidate (next) timepoint.
+        n_features: Number of patch feature channels to compare.
+        spatial_radius: Bounding-box search radius (Y, X, Z).
+        zratio: Anisotropy weight for the distance metric.
+
+    Returns:
+        Dict mapping each reference label to its ``RefCandidateMetrics``.
+    """
     spatial = find_spatial_candidates(
         ref_tp,
         cand_tp,
@@ -776,6 +1037,21 @@ def build_summary_from_metrics(
     dice_threshold: float,
     corr_threshold: float,
 ) -> list[RefSummary]:
+    """Build vote summaries from metrics, applying Dice and correlation filters.
+
+    For each feature channel, the candidate with the lowest MSE (among
+    those passing both thresholds) receives a vote.  Candidates are then
+    ranked by total wins.
+
+    Args:
+        metrics_by_ref: Per-reference metrics dict.
+        available_candidates: Allowed candidate IDs per reference (``None`` = all).
+        dice_threshold: Minimum Dice overlap to be eligible for a vote.
+        corr_threshold: Minimum feature correlation to be eligible for a vote.
+
+    Returns:
+        List of ``RefSummary`` objects, one per reference label.
+    """
     summaries: list[RefSummary] = []
     for ref_id in sorted(metrics_by_ref):
         metrics = metrics_by_ref[ref_id]
@@ -844,6 +1120,16 @@ def _remove_assigned_from_candidate_pool(
     assigned_refs: Iterable[int],
     assigned_cands: Iterable[int],
 ) -> dict[int, set[int]]:
+    """Return a copy of the candidate pool with assigned labels removed.
+
+    Args:
+        candidate_pool: Current pool mapping reference IDs to candidate sets.
+        assigned_refs: Reference labels that have been assigned.
+        assigned_cands: Candidate labels that have been assigned.
+
+    Returns:
+        Updated pool without the assigned labels.
+    """
     assigned_refs_set = {int(value) for value in assigned_refs}
     assigned_cands_set = {int(value) for value in assigned_cands}
     out: dict[int, set[int]] = {}
@@ -871,6 +1157,24 @@ def run_assignment_logic(
     list[list[RefSummary]],
     list[dict[str, float]],
 ]:
+    """Execute the three-stage assignment pipeline.
+
+    1. Distance pre-filter: assigns pairs closer than *min_distance_to_remove_cand*.
+    2. Vote thresholds: iteratively assigns unambiguous winners above
+       each threshold (descending).
+    3. Global closest: assigns remaining unmatched labels by distance.
+
+    Args:
+        metrics_by_ref: Per-reference matching metrics.
+        min_distance_to_remove_cand: Immediate-assignment distance threshold.
+        vote_thresholds: Descending sequence of vote thresholds.
+        dice_threshold: Minimum Dice for voting eligibility.
+        corr_threshold: Minimum correlation for voting eligibility.
+
+    Returns:
+        Tuple of (assignments, initial_summary, summary_history,
+        distance_prefilter_info).
+    """
     all_ref_ids = sorted(metrics_by_ref)
     candidate_pool: dict[int, set[int]] = {
         ref_id: set(metrics.candidate_ids.tolist())
@@ -1060,6 +1364,18 @@ def run_assignment_logic(
 
 
 def label_row_index(timepoint: PreparedTimepoint, label_id: int) -> int:
+    """Find the row index of *label_id* in the timepoint's sorted label array.
+
+    Args:
+        timepoint: Prepared timepoint.
+        label_id: Label to look up.
+
+    Returns:
+        Index into ``timepoint.label_ids``.
+
+    Raises:
+        PipelineError: If the label is not found.
+    """
     row_index = int(np.searchsorted(timepoint.label_ids, label_id))
     if (
         row_index >= timepoint.label_ids.size
@@ -1072,6 +1388,19 @@ def label_row_index(timepoint: PreparedTimepoint, label_id: int) -> int:
 def build_tracks(
     prepared_timepoints: list[PreparedTimepoint], pair_results: list[PairResult]
 ) -> list[Track]:
+    """Assemble full tracks from pairwise assignment results.
+
+    Chains consecutive-pair assignments into multi-timepoint tracks.
+    Labels that appear only in the first or last timepoint without a
+    match are started as single-point tracks.
+
+    Args:
+        prepared_timepoints: All prepared timepoints in order.
+        pair_results: Pairwise assignment results for consecutive pairs.
+
+    Returns:
+        List of ``Track`` objects sorted by track ID.
+    """
     if not prepared_timepoints:
         return []
 
@@ -1154,6 +1483,14 @@ def build_tracks(
 
 
 def build_matlab_style_tracks(tracks: list[Track]) -> list[dict[str, Any]]:
+    """Convert ``Track`` objects to MATLAB-compatible dictionaries.
+
+    Args:
+        tracks: List of tracks.
+
+    Returns:
+        List of dicts with keys: track_id, start, x, y, z, A.
+    """
     matlab_tracks: list[dict[str, Any]] = []
     for track in tracks:
         if not track.points:
@@ -1181,6 +1518,16 @@ def build_matlab_style_tracks(tracks: list[Track]) -> list[dict[str, Any]]:
 def build_export_rows(
     matlab_tracks: Iterable[dict[str, Any]], *, z0: int, invert_z: bool
 ) -> list[dict[str, Any]]:
+    """Flatten MATLAB-style tracks into per-frame rows for CSV export.
+
+    Args:
+        matlab_tracks: Tracks in MATLAB dict format.
+        z0: Raw Z size for optional Z inversion.
+        invert_z: If True, export Z as ``z0 - z`` instead of ``z``.
+
+    Returns:
+        List of row dicts suitable for ``csv.DictWriter``.
+    """
     rows: list[dict[str, Any]] = []
     for track in matlab_tracks:
         x = np.asarray(track["x"], dtype=float)
@@ -1212,6 +1559,12 @@ def build_export_rows(
 
 
 def save_tracks_csv(rows: Iterable[dict[str, Any]], *, output_path: Path) -> None:
+    """Write track rows to a CSV file.
+
+    Args:
+        rows: Iterable of row dicts with standard track fields.
+        output_path: Destination CSV file path.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["track_id", "start", "t", "x", "y", "z", "A", "track_length"]
     with output_path.open("w", encoding="utf-8", newline="") as handle:
@@ -1222,6 +1575,14 @@ def save_tracks_csv(rows: Iterable[dict[str, Any]], *, output_path: Path) -> Non
 
 
 def default_vote_thresholds(n_features: int) -> tuple[int, ...]:
+    """Return default vote thresholds appropriate for the feature count.
+
+    Args:
+        n_features: Number of patch feature channels.
+
+    Returns:
+        Tuple of descending integer thresholds.
+    """
     thresholds = tuple(
         threshold for threshold in (400, 320, 300, 280, 260) if threshold <= n_features
     )
@@ -1233,6 +1594,18 @@ def default_vote_thresholds(n_features: int) -> tuple[int, ...]:
 def validate_timepoint_shapes(
     prepared_timepoints: list[PreparedTimepoint], *, require_same_raw_z_size: bool
 ) -> int:
+    """Verify that all timepoints share the same volume shape.
+
+    Args:
+        prepared_timepoints: All prepared timepoints.
+        require_same_raw_z_size: If True, also check raw Z sizes match.
+
+    Returns:
+        The common raw Z size.
+
+    Raises:
+        PipelineError: If shapes are inconsistent.
+    """
     if not prepared_timepoints:
         raise PipelineError("No prepared timepoints available.")
 
@@ -1259,6 +1632,20 @@ def run_tracking(
     output_path: Path | None = None,
     params: TrackingParams,
 ) -> Path:
+    """Run the full tracking pipeline and save results as CSV.
+
+    Discovers timepoints, prepares geometries, computes pairwise metrics
+    and assignments, builds tracks, and exports to ``tracks.csv``.
+
+    Args:
+        input_path: Root directory with timepoint subfolders.
+        segmentation_path: Directory with per-timepoint segmentation masks.
+        output_path: Destination directory (defaults to *input_path*).
+        params: Tracking hyperparameters.
+
+    Returns:
+        Path to the saved ``tracks.csv`` file.
+    """
     segmentation_path = segmentation_path.expanduser().resolve()
     if not segmentation_path.is_dir():
         raise FileNotFoundError(
@@ -1358,6 +1745,7 @@ def run_tracking(
 
 
 def main() -> None:
+    """Entry point: validate CLI arguments and run the tracking pipeline."""
     args = parse_args()
     if args.max_distance_xy <= 0:
         raise ValueError("Max XY distance must be greater than 0.")

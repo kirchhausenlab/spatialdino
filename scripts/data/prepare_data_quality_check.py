@@ -1,3 +1,17 @@
+"""Generate visual quality-check grids from lattice light-sheet experiments.
+
+Walks the data directory to find processed experiment channels, reads a
+representative TIF from each, computes the max-intensity Z projection,
+and tiles the results into numbered grid images (6x6 by default). Each
+grid is saved as a PNG alongside a CSV that maps cell indices to their
+source experiment and channel paths, enabling manual visual QC.
+
+Usage::
+
+    python prepare_data_quality_check.py
+
+"""
+
 from pathlib import Path
 import skimage.io as io
 import numpy as np
@@ -8,6 +22,14 @@ from spatialdino.data.utils import convert_16bit_to_8bit
 
 
 def main():
+    """Build numbered image grids for visual quality checking.
+
+    Discovers experiment channels under the data directory, reads a single
+    TIF per channel, computes a max-intensity projection, and places it into
+    a 6x6 grid figure. When the grid is full it is saved as a PNG along with
+    a CSV mapping each cell index to its source paths. The process repeats
+    for subsequent grids until all channels have been tiled.
+    """
     data_path = Path("/nfs/datasync4/AO-LLSM")
     # grid_save_path = Path("./grids")
     grid_save_path = Path("/nfs/scratch2/shared_image_recog_ml/save_grid_dir")

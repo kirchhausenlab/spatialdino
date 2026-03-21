@@ -1,3 +1,20 @@
+"""Distributed GPU deskewing of lattice light-sheet microscopy TIF stacks.
+
+Lattice light-sheet data is acquired at an oblique angle and must be
+geometrically corrected (deskewed) before downstream analysis. This script
+loads raw TIF volumes, builds an affine deskew transform on the GPU, and
+applies it in parallel across multiple GPUs using PyTorch
+DistributedDataParallel. A binary mask is used to fill invalid border
+voxels with the median intensity of the masked region.
+
+Configuration is read from ``deskew.yaml`` via Hydra/OmegaConf.
+
+Usage::
+
+    torchrun --nproc_per_node=<N> deskew.py
+
+"""
+
 import argparse
 import logging
 from pathlib import Path
@@ -31,6 +48,15 @@ logger = logging.getLogger("deskew")
 
 
 def main() -> None:
+    """Run distributed deskewing of lattice light-sheet TIF volumes.
+
+    Reads configuration from ``deskew.yaml``, initialises distributed
+    processes, computes the affine deskew matrix from the first frame,
+    builds a validity mask, then iterates over all frames via a
+    DistributedSampler-backed DataLoader. Each deskewed volume is saved
+    as a TIF file with border voxels filled by the median of the masked
+    region.
+    """
     config = parse_config(CONFIG_PATH.joinpath("deskew.yaml"))
     local_rank, rank, world_size = dist.setup(
         distributed=config.distributed,
@@ -59,6 +85,7 @@ def main() -> None:
     save_path = Path(config.save_path)
     save_path.mkdir(parents=True, exist_ok=True)
 
+    # Compute the deskew transform from the first volume's geometry
     raw_volume = io.imread(fnames[0]).astype(np.float32)
     output_shape, deskew_matrix = get_deskew_transform(raw_volume)
     affine_transform = build_affine_transform()
@@ -66,6 +93,9 @@ def main() -> None:
 
     deskew_matrix = torch.from_numpy(deskew_matrix).to(device, non_blocking=True)
 
+    # Build a validity mask by deskewing a dummy all-ones volume alongside
+    # the real data; voxels that map outside the original field of view
+    # will have interpolated values < 1, marking them as invalid.
     dummy_volume = np.ones_like(raw_volume)
     C = 1 if raw_volume.ndim == 3 else raw_volume.shape[0]
     inp = np.stack([raw_volume, dummy_volume], axis=0)
@@ -80,7 +110,7 @@ def main() -> None:
     # split back into data and mask
     vol = warped[:, :C]  # [B, C, Z_out, Y_out, X_out]
     mask_warped = warped[:, C:]  # [B, 1, Z_out, Y_out, X_out]
-    # build a boolean "valid" mask
+    # Threshold at 0.99 to account for interpolation artifacts
     valid = mask_warped > 0.99  # True where original data was sampled
     mask = ~valid
     mask = mask.squeeze_(0).squeeze_(0).cpu().numpy()  # [Z_out, Y_out, X_out]

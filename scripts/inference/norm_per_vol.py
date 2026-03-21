@@ -1,3 +1,12 @@
+"""Compute global histogram normalization bounds across volumes.
+
+Reads all TIFF volumes specified in the inference config, crops and
+optionally rescales them to isotropic resolution, then computes robust
+min/max intensity values by thresholding the cumulative histogram of
+non-zero voxels.  The resulting bounds are saved to a text file and can
+be fed back into inference for consistent cross-volume normalisation.
+"""
+
 import logging
 from pathlib import Path
 
@@ -24,6 +33,14 @@ logger = logging.getLogger("inference_3d")
 
 
 def main() -> None:
+    """Compute and save global histogram normalization bounds.
+
+    Loads every TIFF volume listed in the config, applies cropping,
+    median filling, and optional isotropic rescaling, then builds a
+    histogram of all non-zero voxel intensities.  The lower and upper
+    intensity thresholds (determined by a cumulative-sum cutoff) are
+    written to ``norm_per_vol.txt`` in the configured save directory.
+    """
     config = parse_config(CONFIG_PATH.joinpath("inference.yaml"))  # type: ignore
     fnames = natsorted(list(Path(config.file_path).glob("*.tif")))  # type: ignore
     file_start = int(getattr(config, "file_start", 0) or 0)
@@ -72,9 +89,12 @@ def main() -> None:
 
         vols.append(raw_volume)
 
+    # Stack all volumes along Z and build a single histogram.
     vols = np.concatenate(vols, axis=0)
     data = torch.from_numpy(vols)
     max_val = data.max().item()
+    # Fraction of total non-zero voxels used as the cumulative-sum cutoff
+    # to determine the robust min/max intensity values.
     threshold_divisor = 1.0 / 5000
     bins = 65536
 

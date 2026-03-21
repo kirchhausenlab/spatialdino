@@ -1,3 +1,17 @@
+"""Build WebDataset tar shards from lattice light-sheet microscopy TIF experiments.
+
+This script discovers experiment directories from a text file of data paths,
+reads TIF stacks, chunks them into 2D or 3D patches, and writes the results
+as WebDataset tar shards suitable for distributed training. Parallel
+processing is handled via ``loky`` reusable executors, and duplicate
+experiments are tracked through an ``experiments.txt`` ledger.
+
+Usage::
+
+    python save.py --save_3d --data_paths_txt paths.txt --save_path /out
+
+"""
+
 import glob
 import hashlib
 import logging
@@ -41,6 +55,15 @@ logging.basicConfig(
 
 
 class Experiment(TypedDict):
+    """Typed dictionary representing a single discovered experiment.
+
+    Attributes:
+        tif_files: List of paths to individual TIF files in the experiment.
+        name: Unique experiment identifier (MD5 hash of the directory path).
+        path: Root directory of the experiment channel.
+        metadata: Camera, channel, and wavelength info parsed from filenames.
+    """
+
     tif_files: List[Path]
     name: str
     path: Path
@@ -49,6 +72,35 @@ class Experiment(TypedDict):
 
 @dataclass
 class DataExtractor:
+    """Discover experiments and write chunked image data to WebDataset shards.
+
+    The extractor scans directories listed in a text file, filters them by a
+    regex pattern, reads TIF stacks, chunks them into 2D or 3D patches, and
+    writes the patches as WebDataset tar archives using parallel workers.
+
+    Attributes:
+        save_2d: If True, save data as 2D image patches.
+        save_3d: If True, save data as 3D volumetric patches.
+        auto_crop: Use k-means-based auto-cropping for 3D data.
+        z_flatten_mode: How to flatten Z slices when saving 2D data.
+        z_chunk_size: Chunk depth (-1 means no chunking along Z).
+        y_chunk_size: Chunk height (-1 means no chunking along Y).
+        x_chunk_size: Chunk width (-1 means no chunking along X).
+        dz: Voxel spacing in Z.
+        dy: Voxel spacing in Y.
+        dx: Voxel spacing in X.
+        found_experiments_limit: Maximum number of experiments to process.
+        min_tif_files: Minimum TIF count for a directory to qualify as an experiment.
+        max_workers: Number of parallel workers for file processing.
+        experiment_filter_pattern: Regex pattern to filter experiment directories.
+        k: Number of clusters for auto-crop k-means.
+        lower_percentile: Lower intensity percentile for auto-crop.
+        upper_percentile: Upper intensity percentile for auto-crop.
+        min_bbox_ratio: Minimum bounding-box ratio for auto-crop.
+        max_bbox_ratio: Maximum bounding-box ratio for auto-crop.
+        median_filter_size: Median filter kernel size for auto-crop.
+    """
+
     save_2d: bool
     save_3d: bool
     auto_crop: bool
@@ -71,6 +123,7 @@ class DataExtractor:
     median_filter_size: int = 3
 
     def __post_init__(self):
+        """Validate configuration and set derived attributes."""
         if self.save_2d and self.save_3d:
             raise ValueError("Only one of save_2d or save_3d should be True.")
         if not self.save_2d and not self.save_3d:
@@ -108,6 +161,19 @@ class DataExtractor:
         experiment_filter_pattern: re.Pattern,
         existing_experiments: Set[str],
     ) -> List[Experiment]:
+        """Discover experiment directories from a list of data paths.
+
+        Args:
+            data_paths: Candidate directories to scan for TIF files.
+            found_experiments_limit: Stop after finding this many experiments.
+            min_tif_files: Minimum TIF file count for a valid experiment.
+            use_deskewed_data: If True, look for TIFs in ``**/DS/`` subdirectories.
+            experiment_filter_pattern: Regex to match against directory paths.
+            existing_experiments: Set of experiment names already processed (skipped).
+
+        Returns:
+            A list of Experiment dicts for newly discovered experiments.
+        """
         experiments = DataExtractor._extract_experiments(
             data_paths=data_paths,
             found_experiments_limit=found_experiments_limit,
@@ -122,6 +188,15 @@ class DataExtractor:
     def _experiment_directory_matches_pattern(
         directory: str, pattern: re.Pattern
     ) -> bool:
+        """Check whether a directory path matches the given regex pattern.
+
+        Args:
+            directory: Absolute directory path string to test.
+            pattern: Compiled regex pattern.
+
+        Returns:
+            True if the pattern matches anywhere in the directory string.
+        """
         return re.search(pattern, directory) is not None
 
     @staticmethod
@@ -133,6 +208,19 @@ class DataExtractor:
         experiment_filter_pattern: re.Pattern,
         existing_experiments: Set[str],
     ) -> List[Experiment]:
+        """Internal helper that walks data paths and builds Experiment records.
+
+        Args:
+            data_paths: Candidate directories to scan.
+            found_experiments_limit: Maximum experiments to return.
+            use_deskewed_data: If True, search for TIFs under ``**/DS/``.
+            min_tif_files: Minimum TIF file count required.
+            experiment_filter_pattern: Regex to filter directories.
+            existing_experiments: Already-processed experiment names to skip.
+
+        Returns:
+            List of new Experiment dicts.
+        """
         experiments = []
         for channel_dir in data_paths:
             if len(experiments) == found_experiments_limit:
@@ -186,6 +274,17 @@ class DataExtractor:
 
     @staticmethod
     def get_experiment_metadata(tif_file_name: str) -> Dict[str, str]:
+        """Parse camera, channel, and wavelength from a TIF filename.
+
+        Filename parts are split on ``_`` and matched heuristically by
+        substring (e.g. ``Cam``, ``ch``, ``nm``).
+
+        Args:
+            tif_file_name: Stem of a TIF file (no extension).
+
+        Returns:
+            Dict with optional keys ``camera``, ``channel``, ``wavelength``.
+        """
         metadata_parts = tif_file_name.split("_")
         metadata = {}
         for part in metadata_parts:
@@ -209,6 +308,13 @@ class DataExtractor:
     def __call__(
         self, data_paths_txt: Path, save_path: Path, maxsize: int = int(1e9)
     ) -> None:
+        """Run the full extraction pipeline: discover, chunk, and write shards.
+
+        Args:
+            data_paths_txt: Text file with one experiment directory per line.
+            save_path: Output directory for WebDataset tar shards.
+            maxsize: Maximum byte size per tar shard (default ~1 GB).
+        """
         start_time = time.perf_counter()
         save_path.mkdir(parents=True, exist_ok=True)
         if not data_paths_txt.exists():
@@ -361,6 +467,40 @@ def _data_iterator(
     max_bbox_ratio: float = 0.6,
     median_filter_size: int = 3,
 ) -> List[Dict[str, Any]]:
+    """Process a single TIF file and return a batch of WebDataset sample dicts.
+
+    Reads the TIF, applies 2D or 3D chunking (with optional auto-crop),
+    deduplicates chunks via the shared ``keys`` proxy, and returns a list of
+    dicts ready to be written to a shard.
+
+    Args:
+        save_2d: Save as 2D patches.
+        save_3d: Save as 3D voxel patches.
+        auto_crop: Use auto-crop for 3D data.
+        tif_file: Path to the TIF file.
+        z_flatten_mode: Z-projection mode for 2D saving.
+        z_chunk_size: Chunk depth.
+        y_chunk_size: Chunk height.
+        x_chunk_size: Chunk width.
+        dz: Voxel spacing in Z.
+        dy: Voxel spacing in Y.
+        dx: Voxel spacing in X.
+        wavelength: Emission wavelength in nm.
+        experiment_path: Root directory of the experiment.
+        experiment_name: Unique experiment identifier.
+        experiment_metadata: Camera/channel/wavelength metadata dict.
+        keys: Shared multiprocessing dict proxy for deduplication.
+        k: Number of clusters for auto-crop.
+        lower_percentile: Lower percentile for auto-crop.
+        upper_percentile: Upper percentile for auto-crop.
+        min_bbox_ratio: Minimum bounding-box ratio for auto-crop.
+        max_bbox_ratio: Maximum bounding-box ratio for auto-crop.
+        median_filter_size: Median filter kernel size for auto-crop.
+
+    Returns:
+        List of sample dicts with ``__key__``, ``values.npy``, and
+        ``metadata.pth`` entries.
+    """
     image_data, metadata = process_file(
         tif_file=tif_file,
         base_path=experiment_path,
@@ -438,6 +578,16 @@ def _batch_chunks(
     experiment_name: str,
     keys: DictProxy,
 ) -> List[Dict[str, Any]]:
+    """Convert image chunks into WebDataset sample dicts, deduplicating by key.
+
+    Args:
+        chunks: Generator yielding Image2D or Image3D typed dicts.
+        experiment_name: Unique experiment identifier used to build sample keys.
+        keys: Shared multiprocessing dict proxy tracking already-written keys.
+
+    Returns:
+        List of sample dicts suitable for ``wds.ShardWriter.write()``.
+    """
     batch = []
     for idx, chunk in enumerate(chunks):
         wavelength = chunk["metadata"]["wavelength"]
@@ -464,6 +614,16 @@ def _batch_chunks(
 
 
 def process_file(tif_file: Path, base_path: Path) -> Tuple[np.ndarray, dict]:
+    """Read a TIF file and return its image data with basic metadata.
+
+    Args:
+        tif_file: Path to the TIF file (relative to ``base_path``).
+        base_path: Root experiment directory.
+
+    Returns:
+        Tuple of (image_array, metadata_dict) where metadata contains the
+        frame number and full file path.
+    """
     file_name = tif_file.name
     frame = extract_frame(file_name)
     path = base_path.joinpath(tif_file)
@@ -473,6 +633,15 @@ def process_file(tif_file: Path, base_path: Path) -> Tuple[np.ndarray, dict]:
 
 
 def extract_tif_file_image(file_name: Path) -> np.ndarray:
+    """Load a TIF image stack from disk.
+
+    Args:
+        file_name: Path to the TIF file.
+
+    Returns:
+        NumPy array of shape (Z, Y, X). dtype is float32 for deskewed
+        data or uint16 for raw/skewed data.
+    """
     data = io.imread(
         file_name
     )  # (Z, Y, X), dtype = np.float32 if deskewed, uint16 if skewed
@@ -480,6 +649,14 @@ def extract_tif_file_image(file_name: Path) -> np.ndarray:
 
 
 def extract_frame(file_name: str) -> int:
+    """Extract the frame/time-point index from a TIF filename.
+
+    Args:
+        file_name: Name of the TIF file (with or without extension).
+
+    Returns:
+        Integer frame number parsed from the filename.
+    """
     return utils.extract_frame(file_name)
 
 
@@ -490,6 +667,18 @@ def chunk_2d_images(
     y_chunk_size: int,
     x_chunk_size: int,
 ) -> Generator[Image2D, None, None]:
+    """Yield non-empty 2D patches from an image array using a sliding grid.
+
+    Args:
+        image_data: 3D array of shape (Y, X, C) in colour-mode format.
+        stack: Z-stack index to record in metadata.
+        base_metadata: Metadata dict to copy into each patch.
+        y_chunk_size: Patch height in pixels (-1 for full height).
+        x_chunk_size: Patch width in pixels (-1 for full width).
+
+    Yields:
+        Image2D typed dicts for each non-empty patch.
+    """
     if image_data.ndim != 3:
         raise ValueError(f"Expected 3D array (y,x,c), got shape {image_data.shape}")
     y, x, _ = image_data.shape
@@ -534,6 +723,28 @@ def chunk_3d_images_auto_crop(
     max_bbox_ratio: float = 0.6,
     median_filter_size: int = 3,
 ) -> Generator[Image3D, None, None]:
+    """Yield 3D voxel patches using k-means-based automatic crop detection.
+
+    Bright regions are located via intensity percentile thresholding and
+    k-means clustering; the resulting bounding boxes define the patches.
+
+    Args:
+        image_data: 3D array of shape (Z, Y, X).
+        base_metadata: Metadata dict to copy into each patch.
+        stack: Stack index to record in metadata.
+        z_chunk_size: Chunk depth (unused directly; crop params drive sizing).
+        y_chunk_size: Chunk height (unused directly).
+        x_chunk_size: Chunk width (unused directly).
+        k: Number of k-means clusters.
+        lower_percentile: Lower intensity percentile for thresholding.
+        upper_percentile: Upper intensity percentile for thresholding.
+        min_bbox_ratio: Minimum bounding-box-to-image ratio.
+        max_bbox_ratio: Maximum bounding-box-to-image ratio.
+        median_filter_size: Median filter kernel size for denoising.
+
+    Yields:
+        Image3D typed dicts for each detected crop region.
+    """
     if image_data.ndim != 3:
         raise ValueError(f"Expected 3D array (z,y,x), got shape {image_data.shape}")
     crop_params = utils.auto_extract_crop_params(
@@ -584,6 +795,19 @@ def chunk_3d_images(
     y_chunk_size: int,
     x_chunk_size: int,
 ) -> Generator[Image3D, None, None]:
+    """Yield 3D voxel patches from a volume using a regular sliding grid.
+
+    Args:
+        image_data: 3D array of shape (Z, Y, X).
+        stack: Stack index to record in metadata.
+        base_metadata: Metadata dict to copy into each patch.
+        z_chunk_size: Chunk depth (-1 for full depth).
+        y_chunk_size: Chunk height (-1 for full height).
+        x_chunk_size: Chunk width (-1 for full width).
+
+    Yields:
+        Image3D typed dicts for each voxel patch.
+    """
     z, y, x = image_data.shape
 
     # Adjust chunk sizes if -1 is provided

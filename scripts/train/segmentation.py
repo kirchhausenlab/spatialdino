@@ -1,3 +1,17 @@
+"""U-Net decoder training with pixel reconstruction and Soft NCuts loss.
+
+This script trains a segmentation model that pairs a frozen (or fine-tunable)
+ViT backbone with a lightweight U-Net decoder. Two complementary losses drive
+training:
+  - Pixel loss: Measures per-pixel reconstruction error (L1, L2, or
+    Charbonnier) between the decoder output and a remapped input image.
+  - Soft NCuts loss: A differentiable normalized-cuts objective that
+    encourages spatially coherent, intensity-aware segmentation maps.
+
+The pipeline supports distributed training, mixed-precision, gradient clipping,
+learning-rate scheduling via ReduceLROnPlateau, and WebDataset streaming I/O.
+"""
+
 import datetime
 import logging
 import math
@@ -35,6 +49,14 @@ logger = logging.getLogger("segmentation")
 
 
 def main():
+    """Entry point for segmentation decoder training.
+
+    Parses configuration, sets up distributed training, builds the
+    segmentation model (backbone + U-Net decoder), creates the
+    WebDataset data pipeline with segmentation-specific transforms,
+    and launches the training loop. Supports checkpoint resumption
+    and Weights & Biases logging.
+    """
     config = parse_config(CONFIG_PATH.joinpath("segmentation.yaml"))  # type: ignore
 
     output_dir = Path(config.output_dir)
@@ -193,6 +215,28 @@ def train(
     loss_scaler: torch.amp.GradScaler | None = None,  # type: ignore
     run: Run | None = None,
 ) -> dict[str, float]:
+    """Run the segmentation training loop.
+
+    Each step computes a weighted sum of pixel reconstruction loss and Soft
+    NCuts loss. A ReduceLROnPlateau scheduler adapts the learning rate based
+    on the total loss. Metrics are logged locally and optionally to W&B.
+
+    Args:
+        config: Hydra/OmegaConf configuration for the segmentation run.
+        step: Global step to resume from (0 for fresh training).
+        model: The segmentation model (backbone + decoder).
+        model_ddp: DistributedDataParallel-wrapped model for the forward pass.
+        optimizer: Optimizer instance for parameter updates.
+        train_dataloader: WebDataset-backed streaming dataloader.
+        rank: Process rank in the distributed group.
+        world_size: Total number of distributed processes.
+        loss_scaler: Optional AMP GradScaler for mixed-precision training.
+        run: Optional Weights & Biases run for metric logging.
+
+    Returns:
+        Dictionary mapping metric names to their globally averaged values
+        across all processes.
+    """
     start_time = time.time()
     model.train()
 
@@ -253,8 +297,10 @@ def train(
             enabled=config.use_amp,
         )
 
+        # Remap the input image to serve as the reconstruction target
         target = remap_image(image=image_batch)
 
+        # Compute pixel-level reconstruction loss from the decoder output
         pred = out["decoder_recon"]
         if config.pix_loss_type == "l1":
             pix_loss = (pred - target).abs()
@@ -271,6 +317,7 @@ def train(
 
         loss += config.pix_loss_weight * pix_loss
 
+        # Compute Soft NCuts loss from the segmentation head output
         pred = out["decoder_ncuts"]
         n_cuts_loss = soft_n_cuts_loss_fn(
             labels=pred,

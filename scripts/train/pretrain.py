@@ -1,3 +1,18 @@
+"""DINOv2-style self-supervised pretraining with DINO, iBOT, and KoLeo losses.
+
+This script orchestrates distributed self-supervised pretraining of a Vision
+Transformer backbone using the DINOv2 framework. It combines three complementary
+losses:
+  - DINO loss: CLS-token distillation between student and teacher networks.
+  - iBOT loss: Masked patch-token prediction via a teacher-student framework.
+  - KoLeo loss: Kozachenko-Leonenko entropy regularizer for uniform feature
+    distribution.
+
+The training uses an exponential moving average (EMA) teacher, multi-crop
+augmentation (global + local crops), mixed-precision support, gradient
+accumulation, and WebDataset-based streaming data loading.
+"""
+
 import datetime
 import logging
 import math
@@ -42,6 +57,13 @@ logger = logging.getLogger("pretrain")
 
 
 def main():
+    """Entry point for DINOv2 self-supervised pretraining.
+
+    Parses configuration, initializes distributed training, builds the SSL
+    model and optimizer, constructs the WebDataset data pipeline with
+    multi-crop transforms, and launches the training loop. Optionally
+    resumes from a checkpoint and logs metrics to Weights & Biases.
+    """
     config = parse_config(CONFIG_PATH.joinpath("pretrain.yaml"))
 
     output_dir = Path(config.output_dir)
@@ -92,6 +114,7 @@ def main():
     global_crop_size = make_3tuple(config.global_crop_size)
     patch_size = make_3tuple(config.patch_size)
 
+    # Compute the number of patches along each spatial dimension
     grid_size = tuple(
         global_crop_size[i] // patch_size[i] for i in range(len(global_crop_size))
     )
@@ -230,6 +253,31 @@ def train(
     loss_scaler: torch.amp.GradScaler | None = None,
     run: Run | None = None,
 ) -> dict[str, float]:
+    """Run the main self-supervised pretraining loop.
+
+    Iterates over the training data, computing DINO CLS-token loss, iBOT
+    masked-patch loss, and KoLeo regularization (each gated by config
+    weights). Applies learning-rate, weight-decay, momentum, and
+    teacher-temperature schedules per step, performs gradient accumulation,
+    and updates the teacher via EMA.
+
+    Args:
+        config: Hydra/OmegaConf configuration for the pretraining run.
+        step: Global optimizer step to resume from (0 for fresh training).
+        model: The underlying SSL model (student + teacher).
+        model_ddp: DistributedDataParallel-wrapped model used for the
+            student forward pass.
+        optimizer: Optimizer instance for parameter updates.
+        train_dataloader: WebDataset-backed streaming dataloader.
+        rank: Process rank in the distributed group.
+        world_size: Total number of distributed processes.
+        loss_scaler: Optional AMP GradScaler for mixed-precision training.
+        run: Optional Weights & Biases run for metric logging.
+
+    Returns:
+        Dictionary mapping metric names to their globally averaged values
+        across all processes.
+    """
     start_time = time.time()
     model.train()
 
@@ -259,6 +307,7 @@ def train(
     metric_logger.add_meter("lr", SmoothedValue(window_size=1, fmt="{value:.6f}"))
     header = "Pretraining"
 
+    # Determine which loss components are active based on config weights
     do_dino = config.dino_loss_weight > 0
     do_ibot = config.ibot_loss_weight > 0
     do_koleo = config.koleo_loss_weight > 0
@@ -295,6 +344,7 @@ def train(
         if iteration >= config.max_steps:
             break
 
+        # Only update model weights after accumulating accum_iter gradients
         update = (iteration + 1) % accum_iter == 0
 
         lr = lr_schedule[step]
@@ -302,6 +352,8 @@ def train(
         mom = momentum_schedule[step]
         teacher_temp = teacher_temp_schedule[step]
         last_layer_lr = last_layer_lr_schedule[step]
+        # Apply scheduler one iteration before the update step so the
+        # optimizer uses the new LR/WD when it steps
         if (iteration + 2) % accum_iter == 0:
             apply_optim_scheduler(optimizer, lr, wd, last_layer_lr)
 
@@ -357,6 +409,7 @@ def train(
             enabled=config.use_amp,
         )
 
+        # Normalization factors: total cross-view pairs for DINO loss averaging
         n_local_crops_loss_terms = max(config.n_local_crops * config.n_global_crops, 1)
         n_global_crops_loss_terms = (config.n_global_crops - 1) * config.n_global_crops
 
@@ -433,6 +486,7 @@ def train(
             # perform teacher EMA update
             model.update_teacher(teacher_momentum=mom)
 
+        # All-reduce losses across GPUs and compute per-process averages
         if dist.get_world_size() > 1:
             for v in loss_dict.values():
                 torch.distributed.all_reduce(v)

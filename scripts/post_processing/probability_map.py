@@ -1,3 +1,16 @@
+"""Two-stage probability-map classification for spatialDINO features.
+
+Stage 1 (density estimation): Collects upsampled feature samples from
+a training timepoint with known foreground/background labels, then fits
+per-channel density curves (KDE or GPU histogram) for each class.
+
+Stage 2 (classification): For every timepoint, evaluates each voxel
+against the fitted densities to compute per-channel foreground and
+background probabilities, then uses majority voting across channels to
+produce a semantic segmentation which is converted to instance labels
+via connected-component labeling.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -25,6 +38,8 @@ DEFAULT_Z_CHUNK_SIZE = 4
 
 @dataclass(frozen=True)
 class TimepointPaths:
+    """Resolved file paths for a single timepoint subfolder."""
+
     name: str
     subfolder: Path
     lr_path: Path
@@ -33,6 +48,8 @@ class TimepointPaths:
 
 @dataclass(frozen=True)
 class ProbabilityMapParams:
+    """All user-configurable parameters for the probability-map pipeline."""
+
     run_density_estimation: bool
     run_stage_2: bool
     training_timepoint: str | None
@@ -54,6 +71,12 @@ class ProbabilityMapParams:
 
 @dataclass(frozen=True)
 class PackedDens:
+    """Packed foreground and background density curves for GPU evaluation.
+
+    Each field is a 2D tensor of shape [n_features, max_curve_length].
+    ``len1``/``len2`` hold the actual (non-padded) lengths per feature.
+    """
+
     x1: Tensor
     f1: Tensor
     len1: Tensor
@@ -63,6 +86,11 @@ class PackedDens:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the probability-map pipeline.
+
+    Returns:
+        Namespace with paths, density estimation settings, and thresholds.
+    """
     parser = argparse.ArgumentParser(
         description="Run probability-map post-processing from lr_feats.npy."
     )
@@ -169,14 +197,27 @@ def parse_args() -> argparse.Namespace:
 
 
 def ensure_contiguous(array: np.ndarray) -> np.ndarray:
+    """Return a C-contiguous copy of *array* if it is not already contiguous."""
     return array if array.flags.c_contiguous else np.ascontiguousarray(array)
 
 
 def ensure_dir(path: Path) -> None:
+    """Create *path* and all parent directories if they do not exist."""
     path.mkdir(parents=True, exist_ok=True)
 
 
 def read_tiff_volume(path: Path) -> np.ndarray:
+    """Load a 3D TIFF volume into memory.
+
+    Args:
+        path: Path to the TIFF file.
+
+    Returns:
+        3D NumPy array with shape (Z, Y, X).
+
+    Raises:
+        ValueError: If the file is not a valid 3D volume.
+    """
     with tifffile.TiffFile(path) as tif:
         if not tif.series:
             raise ValueError(f"{path} does not contain a readable TIFF volume.")
@@ -187,6 +228,14 @@ def read_tiff_volume(path: Path) -> np.ndarray:
 
 
 def read_tiff_shape(path: Path) -> tuple[int, int, int]:
+    """Read the spatial shape of a 3D TIFF volume without loading voxel data.
+
+    Args:
+        path: Path to a 3D TIFF file.
+
+    Returns:
+        Tuple of (Z, Y, X) dimensions.
+    """
     with tifffile.TiffFile(path) as tif:
         if not tif.series:
             raise ValueError(f"{path} does not contain a readable TIFF volume.")
@@ -199,6 +248,17 @@ def read_tiff_shape(path: Path) -> tuple[int, int, int]:
 def load_valid_mask(
     valid_mask_tif: Path, *, shape_zyx: tuple[int, int, int]
 ) -> np.ndarray:
+    """Load a binary valid-region mask from a TIFF file.
+
+    Accepts either a 2D mask (broadcast along Z) or a full 3D mask.
+
+    Args:
+        valid_mask_tif: Path to the mask TIFF.
+        shape_zyx: Expected (Z, Y, X) shape of the volume.
+
+    Returns:
+        Boolean array of shape *shape_zyx*.
+    """
     with tifffile.TiffFile(valid_mask_tif) as tif:
         if not tif.series:
             raise ValueError(
@@ -224,6 +284,15 @@ def load_valid_mask(
 def list_subfolders(
     input_path: Path, *, exclude_paths: Iterable[Path] = ()
 ) -> list[Path]:
+    """List subdirectories of *input_path*, excluding specified paths.
+
+    Args:
+        input_path: Parent directory to scan.
+        exclude_paths: Paths to exclude from the result.
+
+    Returns:
+        Sorted list of subdirectory paths.
+    """
     excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
     subfolders = [
         path
@@ -237,6 +306,19 @@ def list_subfolders(
 def discover_timepoints(
     input_path: Path, *, exclude_paths: Iterable[Path] = ()
 ) -> list[TimepointPaths]:
+    """Discover all timepoint subfolders and validate required files.
+
+    Args:
+        input_path: Root directory containing timepoint subfolders.
+        exclude_paths: Paths to skip during discovery.
+
+    Returns:
+        List of validated ``TimepointPaths`` objects.
+
+    Raises:
+        FileNotFoundError: If any subfolder is missing required files.
+        ValueError: If no subfolders are found.
+    """
     discovered: list[TimepointPaths] = []
     for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
         lr_path = subfolder / "lr_feats.npy"
@@ -259,6 +341,14 @@ def discover_timepoints(
 
 
 def build_feature_names(channel_count: int) -> list[str]:
+    """Generate zero-padded feature names like ``feature_000``, ``feature_001``, etc.
+
+    Args:
+        channel_count: Number of feature channels.
+
+    Returns:
+        List of string names, one per channel.
+    """
     width = max(3, len(str(max(0, channel_count - 1))))
     return [f"feature_{index:0{width}d}" for index in range(channel_count)]
 
@@ -268,6 +358,19 @@ def reorder_lists_to_current(
     saved_names: Sequence[str],
     lists: Sequence[Sequence[np.ndarray]],
 ) -> list[list[np.ndarray]]:
+    """Reorder cached density arrays to match the current feature ordering.
+
+    Args:
+        current_names: Feature names from the current run.
+        saved_names: Feature names stored in the cached densities file.
+        lists: Sequences of per-feature arrays to reorder (e.g. x1, f1, x2, f2).
+
+    Returns:
+        Reordered copy of each input sequence.
+
+    Raises:
+        RuntimeError: If names cannot be aligned.
+    """
     if len(current_names) != len(saved_names):
         raise RuntimeError(
             "Feature count mismatch between cached densities and current run."
@@ -302,6 +405,16 @@ def save_densities_npz(
     f2_all: Sequence[np.ndarray],
     feature_names: Sequence[str],
 ) -> None:
+    """Save density curves to a compressed NumPy archive.
+
+    Args:
+        path: Destination ``.npz`` file path.
+        x1_all: Background density grid points per feature.
+        f1_all: Background density values per feature.
+        x2_all: Foreground density grid points per feature.
+        f2_all: Foreground density values per feature.
+        feature_names: Feature identifiers (used for reordering on load).
+    """
     ensure_dir(path.parent)
     np.savez_compressed(
         path,
@@ -318,6 +431,14 @@ def load_densities_npz(
 ) -> tuple[
     list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray], list[str]
 ]:
+    """Load density curves from a compressed NumPy archive.
+
+    Args:
+        path: Path to the ``.npz`` file.
+
+    Returns:
+        Tuple of (x1_all, f1_all, x2_all, f2_all, feature_names).
+    """
     loaded = np.load(path, allow_pickle=True)
     x1_all = [np.asarray(value, dtype=np.float32) for value in loaded["x1"]]
     f1_all = [np.asarray(value, dtype=np.float32) for value in loaded["f1"]]
@@ -328,6 +449,17 @@ def load_densities_npz(
 
 
 def resolve_device(device_name: str | None) -> torch.device:
+    """Resolve a device name string to a ``torch.device``, auto-detecting CUDA.
+
+    Args:
+        device_name: ``"cuda"``, ``"cpu"``, or ``None`` for auto-detection.
+
+    Returns:
+        Resolved torch device.
+
+    Raises:
+        RuntimeError: If CUDA is requested but unavailable.
+    """
     if device_name:
         device = torch.device(device_name)
     else:
@@ -341,12 +473,26 @@ def resolve_device(device_name: str | None) -> torch.device:
 
 
 class UpsampledFeatureSampler:
+    """Lazy upsampler that samples features at high-resolution coordinates.
+
+    Instead of materialising the entire upsampled feature volume, this
+    class uses ``grid_sample`` to interpolate low-resolution features at
+    requested Z-slices, keeping GPU memory usage bounded.
+    """
+
     def __init__(
         self,
         lr_feats: np.ndarray,
         target_shape: tuple[int, int, int],
         device: torch.device,
     ):
+        """Initialise the sampler.
+
+        Args:
+            lr_feats: Low-resolution features of shape [Z, Y, X, C].
+            target_shape: High-resolution (Z, Y, X) dimensions.
+            device: Torch device for interpolation.
+        """
         if lr_feats.ndim != 4:
             raise ValueError("lr_feats.npy must be a 4D array with shape [Z, Y, X, C].")
         self.lr_feats = lr_feats
@@ -358,6 +504,7 @@ class UpsampledFeatureSampler:
         self._feature_range_cache: tuple[int, int, Tensor] | None = None
 
     def _build_xy_grid(self) -> Tensor:
+        """Build a normalised 2D (X, Y) coordinate grid for grid_sample."""
         _, y_size, x_size = self.target_shape
         x_coords = (
             (torch.arange(x_size, device=self.device, dtype=torch.float32) + 0.5)
@@ -373,6 +520,7 @@ class UpsampledFeatureSampler:
         return torch.stack((xx, yy), dim=-1)
 
     def _grid_for_z_indices(self, z_indices: Sequence[int]) -> Tensor:
+        """Build or retrieve a cached 5D grid for the given Z indices."""
         key = tuple(int(index) for index in z_indices)
         cached = self._grid_cache.get(key)
         if cached is not None:
@@ -393,6 +541,16 @@ class UpsampledFeatureSampler:
     def sample_feature_range(
         self, start: int, end: int, z_indices: Sequence[int]
     ) -> Tensor:
+        """Sample features channels [start, end) at the given Z slices.
+
+        Args:
+            start: First channel index (inclusive).
+            end: Last channel index (exclusive).
+            z_indices: High-resolution Z-slice indices to sample.
+
+        Returns:
+            Tensor of shape [end-start, len(z_indices), Y, X].
+        """
         if start < 0 or end > self.channel_count or start >= end:
             raise ValueError("Invalid feature range requested.")
         input_tensor = self._get_feature_range_tensor(start, end)
@@ -407,9 +565,15 @@ class UpsampledFeatureSampler:
         return sampled.squeeze(0)
 
     def clear_feature_range_cache(self) -> None:
+        """Release the cached feature-range tensor to free GPU memory."""
         self._feature_range_cache = None
 
     def feature_range_min_max(self, start: int, end: int) -> tuple[Tensor, Tensor]:
+        """Compute per-channel min and max for features [start, end).
+
+        Returns:
+            Tuple of (mins, maxs) tensors, each shaped [C, 1, 1, 1].
+        """
         input_tensor = self._get_feature_range_tensor(start, end)
         mins_t = input_tensor.amin(dim=(0, 2, 3, 4)).view(-1, 1, 1, 1)
         maxs_t = input_tensor.amax(dim=(0, 2, 3, 4)).view(-1, 1, 1, 1)
@@ -418,6 +582,7 @@ class UpsampledFeatureSampler:
         return mins_t, maxs_t
 
     def _get_feature_range_tensor(self, start: int, end: int) -> Tensor:
+        """Load and cache the LR feature tensor for channels [start, end)."""
         cached = self._feature_range_cache
         if cached is not None and cached[0] == start and cached[1] == end:
             return cached[2]
@@ -440,6 +605,15 @@ def compute_feature_min_max_from_lr(
     *,
     feature_batch: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-channel min and max from the low-resolution feature volume.
+
+    Args:
+        lr_feats: Feature array of shape [Z, Y, X, C].
+        feature_batch: Number of channels to process per batch.
+
+    Returns:
+        Tuple of (mins, maxs) arrays, each of length C.
+    """
     # Using lr_feats ranges avoids a second full pass over the upsampled HR volume.
     if lr_feats.ndim != 4:
         raise ValueError("lr_feats.npy must be a 4D array with shape [Z, Y, X, C].")
@@ -461,6 +635,16 @@ def compute_feature_min_max_from_lr(
 
 
 def quantize_feature_batch(sampled: Tensor, mins_t: Tensor, maxs_t: Tensor) -> Tensor:
+    """Min-max normalize and quantize features to 0-255 as float32.
+
+    Args:
+        sampled: Raw feature values.
+        mins_t: Per-channel minimums.
+        maxs_t: Per-channel maximums.
+
+    Returns:
+        Quantized tensor with values in [0, 255], dtype float32.
+    """
     scaled = (sampled - mins_t) / (maxs_t - mins_t + 1e-6)
     quantized = torch.clamp(scaled * 255.0, 0.0, 255.0).to(torch.uint8)
     return quantized.to(torch.float32)
@@ -469,6 +653,15 @@ def quantize_feature_batch(sampled: Tensor, mins_t: Tensor, maxs_t: Tensor) -> T
 def precompute_mask_indices(
     bg_mask: np.ndarray, fg_mask: np.ndarray
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Precompute flat indices of background and foreground voxels per Z-slice.
+
+    Args:
+        bg_mask: Boolean background mask of shape [Z, Y, X].
+        fg_mask: Boolean foreground mask of shape [Z, Y, X].
+
+    Returns:
+        Tuple of (bg_indices_per_z, fg_indices_per_z).
+    """
     bg_idx_per_z: list[np.ndarray] = []
     fg_idx_per_z: list[np.ndarray] = []
     for z_index in range(bg_mask.shape[0]):
@@ -480,6 +673,15 @@ def precompute_mask_indices(
 def iter_z_index_chunks(
     z_size: int, z_chunk_size: int = DEFAULT_Z_CHUNK_SIZE
 ) -> Sequence[list[int]]:
+    """Split Z-slice indices into contiguous chunks.
+
+    Args:
+        z_size: Total number of Z slices.
+        z_chunk_size: Maximum slices per chunk.
+
+    Returns:
+        List of index lists, one per chunk.
+    """
     return [
         list(range(z_start, min(z_size, z_start + z_chunk_size)))
         for z_start in range(0, z_size, z_chunk_size)
@@ -496,6 +698,23 @@ def collect_samples_from_timepoint(
     seed: int,
     device: torch.device,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[str]]:
+    """Collect quantized feature samples for density estimation (Stage 1).
+
+    Upsamples features slice by slice, then randomly samples voxel values
+    from foreground and background regions as defined by the segmentation.
+
+    Args:
+        timepoint: Training timepoint with paths to features and raw volume.
+        seg_tif: Path to the training segmentation TIFF.
+        valid_mask_tif: Optional valid-region mask TIFF.
+        max_samples_per_class: Cap on samples per class per feature.
+        feature_batch: Channels to process at once.
+        seed: Random seed for reproducibility.
+        device: Torch device for upsampling.
+
+    Returns:
+        Tuple of (bg_samples_per_feature, fg_samples_per_feature, feature_names).
+    """
     lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
     raw_shape = read_tiff_shape(timepoint.raw_path)
 
@@ -599,6 +818,14 @@ def collect_samples_from_timepoint(
 
 
 def bw_auto(values: np.ndarray) -> float:
+    """Compute Silverman's rule-of-thumb bandwidth for KDE.
+
+    Args:
+        values: 1D array of sample values.
+
+    Returns:
+        Estimated bandwidth (float).
+    """
     numeric = np.asarray(values, dtype=np.float64)
     numeric = numeric[np.isfinite(numeric)]
     count = numeric.size
@@ -613,6 +840,16 @@ def bw_auto(values: np.ndarray) -> float:
 def kde_pdf(
     values: np.ndarray, grid: np.ndarray, bandwidth: float | None
 ) -> np.ndarray:
+    """Evaluate a Gaussian KDE on a grid of points.
+
+    Args:
+        values: Sample values to fit.
+        grid: Points at which to evaluate the density.
+        bandwidth: KDE bandwidth; ``None`` for automatic selection.
+
+    Returns:
+        Density values at each grid point.
+    """
     from sklearn.neighbors import KernelDensity
 
     numeric = np.asarray(values, dtype=np.float64).reshape(-1, 1)
@@ -633,6 +870,17 @@ def fit_densities_from_samples(
     num_points: int,
     bandwidth: float | None,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Fit per-channel KDE density curves for background and foreground.
+
+    Args:
+        bg_list: Background sample values per feature.
+        fg_list: Foreground sample values per feature.
+        num_points: Number of grid points for the density curve.
+        bandwidth: KDE bandwidth; ``None`` for automatic.
+
+    Returns:
+        Tuple of (x1_all, f1_all, x2_all, f2_all) density arrays.
+    """
     x1_all: list[np.ndarray] = []
     f1_all: list[np.ndarray] = []
     x2_all: list[np.ndarray] = []
@@ -666,6 +914,15 @@ def fit_densities_from_samples(
 
 
 def gaussian_kernel_1d(sigma_bins: float, device: torch.device) -> torch.Tensor:
+    """Create a normalised 1D Gaussian convolution kernel.
+
+    Args:
+        sigma_bins: Standard deviation in histogram-bin units.
+        device: Torch device.
+
+    Returns:
+        1D kernel tensor of shape [1, 1, K].
+    """
     kernel_size = int(max(3, 2 * round(3 * sigma_bins) + 1))
     xs = (
         torch.arange(kernel_size, device=device, dtype=torch.float32)
@@ -685,6 +942,22 @@ def fit_densities_gpu_hist(
     device: torch.device,
     batch_features: int = 64,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Fit per-channel density curves using GPU-accelerated histograms.
+
+    Bins each feature's samples into a histogram, smooths with a Gaussian
+    kernel, and normalises to produce a density estimate.
+
+    Args:
+        bg_list: Background sample values per feature.
+        fg_list: Foreground sample values per feature.
+        num_points: Number of histogram bins.
+        sigma_bins: Gaussian smoothing sigma in bin units.
+        device: Torch device.
+        batch_features: Features to process per batch.
+
+    Returns:
+        Tuple of (x1_all, f1_all, x2_all, f2_all) density arrays.
+    """
     feature_total = len(bg_list)
     bin_count = int(num_points)
     kernel = gaussian_kernel_1d(sigma_bins=max(0.5, float(sigma_bins)), device=device)
@@ -775,6 +1048,15 @@ def fit_densities_gpu_hist(
 def pack_curves(
     curves: Sequence[np.ndarray], *, pad_value: float
 ) -> tuple[Tensor, Tensor]:
+    """Pad variable-length curves into a single 2D tensor.
+
+    Args:
+        curves: List of 1D arrays with potentially different lengths.
+        pad_value: Value used for padding shorter curves.
+
+    Returns:
+        Tuple of (packed_tensor, lengths_tensor).
+    """
     lengths = np.array([len(curve) for curve in curves], dtype=np.int64)
     max_length = int(lengths.max()) if lengths.size else 1
     packed = np.full((len(curves), max_length), pad_value, dtype=np.float32)
@@ -791,6 +1073,18 @@ def pack_densities(
     *,
     device: torch.device,
 ) -> PackedDens:
+    """Pack all density curves into GPU tensors for efficient evaluation.
+
+    Args:
+        x1_all: Background grid points per feature.
+        f1_all: Background density values per feature.
+        x2_all: Foreground grid points per feature.
+        f2_all: Foreground density values per feature.
+        device: Target torch device.
+
+    Returns:
+        ``PackedDens`` with all curves on the specified device.
+    """
     x1, len1 = pack_curves(x1_all, pad_value=np.inf)
     f1, _ = pack_curves(f1_all, pad_value=0.0)
     x2, len2 = pack_curves(x2_all, pad_value=np.inf)
@@ -809,6 +1103,20 @@ def pack_densities(
 def interp1d_per_feature(
     values: Tensor, xp: Tensor, fp: Tensor, lengths: Tensor
 ) -> Tensor:
+    """Batched piecewise-linear interpolation on density curves.
+
+    For each feature channel, looks up each value in the corresponding
+    density curve using ``searchsorted`` and linearly interpolates.
+
+    Args:
+        values: Query values, shape [n_features, n_voxels].
+        xp: Grid points, shape [n_features, max_length].
+        fp: Density values, shape [n_features, max_length].
+        lengths: Actual curve lengths per feature.
+
+    Returns:
+        Interpolated density values, same shape as *values*.
+    """
     batch_size, flat_count = values.shape
     max_length = xp.shape[1]
     indices = torch.searchsorted(xp, values, right=False).clamp_(1, max_length - 1)
@@ -828,6 +1136,14 @@ def interp1d_per_feature(
 
 
 def semantic_to_instance_seg(semantic_seg: np.ndarray) -> np.ndarray:
+    """Convert a binary semantic segmentation to instance labels via connected components.
+
+    Args:
+        semantic_seg: Binary (or integer) 3D array where >0 is foreground.
+
+    Returns:
+        uint32 label array with unique IDs per connected component.
+    """
     semantic_bool = np.asarray(semantic_seg > 0, dtype=bool)
     labeled, _ = ndimage.label(
         semantic_bool, structure=np.ones((3, 3, 3), dtype=np.uint8)
@@ -845,6 +1161,24 @@ def classify_timepoint(
     fg_prob_threshold: float,
     device: torch.device,
 ) -> Path:
+    """Run Stage 2 classification on a single timepoint.
+
+    For each voxel, evaluates per-channel foreground and background
+    probabilities from the fitted densities, counts channels voting for
+    each class, and writes the resulting instance segmentation as a TIFF.
+
+    Args:
+        timepoint: Paths for the timepoint to classify.
+        output_path: Directory for the output TIFF.
+        densities: Packed density curves.
+        feature_batch: Channels to process at once.
+        bg_prob_threshold: Probability threshold for a background vote.
+        fg_prob_threshold: Probability threshold for a foreground vote.
+        device: Torch device.
+
+    Returns:
+        Path to the saved instance segmentation TIFF.
+    """
     lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
     raw_shape = read_tiff_shape(timepoint.raw_path)
     sampler = UpsampledFeatureSampler(lr_feats, raw_shape, device)
@@ -913,6 +1247,20 @@ def load_or_compute_densities(
     *,
     device: torch.device,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Load cached densities or run Stage 1 density estimation.
+
+    If ``params.run_density_estimation`` is True, collects samples from
+    the training timepoint and fits density curves.  Otherwise loads
+    previously saved curves from ``params.densities_path``.
+
+    Args:
+        timepoints: All discovered timepoints.
+        params: Pipeline parameters.
+        device: Torch device.
+
+    Returns:
+        Tuple of (x1_all, f1_all, x2_all, f2_all) density arrays.
+    """
     first_timepoint = timepoints[0]
     first_lr = np.load(first_timepoint.lr_path, mmap_mode="r")
     if first_lr.ndim != 4:
@@ -980,6 +1328,15 @@ def load_or_compute_densities(
 
 
 def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Path:
+    """Run the full probability-map pipeline (Stage 1 and/or Stage 2).
+
+    Args:
+        input_path: Root directory containing timepoint subfolders.
+        params: Pipeline parameters.
+
+    Returns:
+        Path to the densities cache file.
+    """
     input_path = input_path.expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(
@@ -1038,6 +1395,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
 
 
 def main() -> None:
+    """Entry point: parse CLI arguments and run the probability-map pipeline."""
     args = parse_args()
     input_path = Path(args.input_path).expanduser().resolve()
     output_path = (

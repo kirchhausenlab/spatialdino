@@ -1,3 +1,12 @@
+"""Distributed 3D feature extraction with optional streaming support.
+
+Runs a spatialDINO backbone over a set of 3D TIFF volumes, extracts
+low-resolution patch features, crops padding, and saves the result as
+NumPy arrays.  Supports multi-GPU distributed inference via PyTorch
+DistributedDataParallel and an optional streaming encoder for
+memory-efficient processing of large volumes.
+"""
+
 import logging
 import math
 from pathlib import Path
@@ -29,6 +38,12 @@ logger = logging.getLogger("inference_3d")
 
 
 def main() -> None:
+    """Entry point for distributed 3D feature extraction.
+
+    Parses the inference config, initialises distributed training,
+    builds the model and dataloader, runs inference over every volume,
+    and saves cropped low-resolution features to disk.
+    """
     config = parse_config(CONFIG_PATH.joinpath("inference.yaml"))  # type: ignore
     local_rank, rank, world_size = dist.setup(
         distributed=config.distributed,
@@ -94,7 +109,13 @@ def main() -> None:
         prog = dataloader
 
     def predict() -> None:
-        """Run inference on the model."""
+        """Run forward pass on every batch and save per-volume features.
+
+        For each volume in the batch the function either uses the
+        streaming encoder or the standard model forward pass, removes
+        padding introduced during preprocessing, and writes the
+        resulting feature tensor as ``lr_feats.npy``.
+        """
         for i, batch in enumerate(prog):
             B = len(batch["vol_metadata"])
             for inner_idx in range(B):
@@ -140,6 +161,8 @@ def main() -> None:
                     .float()
                 )
 
+            # Remove padding that was added during preprocessing so the
+            # saved features match the original volume extent.
             padding = vol_metadata["padding"]
             scale_factor = (
                 volume.shape[-3] / lr_feats.shape[-3],

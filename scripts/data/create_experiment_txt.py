@@ -1,3 +1,20 @@
+"""Discover experiment channel paths and write them to text files.
+
+Scans a lattice light-sheet data directory for ``CS*`` cover-slip
+directories matching a target fluorophore pattern, collects the channel
+sub-directories under each experiment, and writes the resulting paths to
+``channel_paths_valid.txt``. An intermediate ``valid_paths.txt`` caches
+the matching cover-slip paths across runs.
+
+The commented-out sections at the bottom show alternative workflows for
+filtering by grid-based QC metadata and verifying path validity.
+
+Usage::
+
+    python create_experiment_txt.py
+
+"""
+
 from pathlib import Path
 import pandas as pd
 from glob import iglob

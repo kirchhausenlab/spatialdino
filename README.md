@@ -4,6 +4,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
 [![DINOv2](https://img.shields.io/badge/DINOv2-Facebook%20AI-blue.svg)](https://github.com/facebookresearch/dinov2)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
 
 **SpatialDINO** brings a self-supervised foundation model for analyzing 3D fluorescence microscopy images by adapting DINOv2-style joint-embedding training to learn dense volumetric features directly from unlabeled 3D datasets. By exploiting true 3D context rather than slice-wise “2.5D” aggregation, it enables automated detection and segmentation in crowded, anisotropic, low-contrast volume and enables tracking in 4D time-lapse data. SpatialDINO generalizes across targets and imaging conditions without voxel-level annotation or retraining.
 
@@ -42,6 +43,17 @@ aws s3 ls s3://spatialdino/ --no-sign-request
 ---
 
 ## Getting started
+
+### Project Structure
+
+```
+spatialdino/
+├── src/spatialdino/     # Core library (models, data, inference, losses)
+├── scripts/             # Runnable pipelines (data prep, training, inference, post-processing)
+├── apps/server/         # FastAPI GUI server
+├── apps/web/            # React web interface
+└── docs/                # Architecture and script reference
+```
 
 ### 1. Install uv
 
@@ -149,7 +161,52 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
 
 ## Segmentation
 
-### Work in progress
+See `scripts/post_processing/segmentation.py` for Voronoi-Otsu segmentation on saved SpatialDINO features.
+
+```bash
+uv run python scripts/post_processing/segmentation.py \
+  --input-path /path/to/inference/output \
+  --output-path /path/to/segmentation/output \
+  --enable-voronoi-otsu
+```
+
+---
+
+## Post-Processing
+
+After inference, the post-processing scripts in `scripts/post_processing/` turn raw SpatialDINO features into analysis-ready outputs.
+
+### Feature Processing
+
+`process_features.py` -- Upsamples low-resolution features to full volume resolution and optionally computes PCA projections for visualization.
+
+```bash
+uv run python scripts/post_processing/process_features.py \
+  --input-path /path/to/inference/output \
+  --save-pca --save-high-resolution-features
+```
+
+### Probability Maps
+
+`probability_map.py` -- Estimates per-voxel foreground/background probability maps using density estimation on the learned feature space, then classifies voxels via a two-stage pipeline.
+
+```bash
+uv run python scripts/post_processing/probability_map.py \
+  --input-path /path/to/inference/output \
+  --run-density-estimation \
+  --training-timepoint t000 \
+  --seg-tif /path/to/training_seg.tif
+```
+
+### Tracking
+
+`tracking.py` -- Links segmented objects across timepoints using centroid proximity, shape overlap (Dice), and feature correlation to produce a `tracks.csv` file.
+
+```bash
+uv run python scripts/post_processing/tracking.py \
+  --input-path /path/to/inference/output \
+  --segmentation-path /path/to/segmentation/output
+```
 
 ---
 
@@ -234,6 +291,13 @@ torchrun --nnodes 3 --nproc_per_node 8 --node_rank $NODE_RANK \
          --rdzv-id $RDZV_ID --rdzv-backend $RDZV_BACKEND \
          --rdzv-endpoint $RDZV_ENDPOINT scripts/train/pretrain.py
 ```
+
+---
+
+## Documentation
+
+- [Scripts Reference](docs/scripts.md) -- Detailed usage for every runnable script
+- [Changelog](CHANGELOG.md) -- Version history and release notes
 
 ---
 

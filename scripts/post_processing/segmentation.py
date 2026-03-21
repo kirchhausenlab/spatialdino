@@ -1,3 +1,12 @@
+"""Voronoi-Otsu segmentation of spatialDINO features using pyclesperanto.
+
+Reads low-resolution features from each sample subfolder, sums the
+patch-token channels, upsamples to original resolution, applies
+rolling-ball background subtraction, LoG convolution, Gaussian
+blurring, and finally Voronoi-Otsu labeling to produce an instance
+segmentation mask.  Results are saved as uint32 TIFF files.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -20,6 +29,11 @@ ATTENTION_HEAD_CHANNELS = 6
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the segmentation pipeline.
+
+    Returns:
+        Namespace with input/output paths and segmentation hyperparameters.
+    """
     parser = argparse.ArgumentParser(
         description="Run Voronoi-Otsu segmentation on saved spatialDINO features."
     )
@@ -54,6 +68,15 @@ def parse_args() -> argparse.Namespace:
 def list_subfolders(
     input_path: Path, *, exclude_paths: Iterable[Path] = ()
 ) -> list[Path]:
+    """List subdirectories of *input_path*, excluding specified paths.
+
+    Args:
+        input_path: Parent directory to scan.
+        exclude_paths: Paths to exclude from the result.
+
+    Returns:
+        Sorted list of subdirectory paths.
+    """
     excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
     subfolders = [
         path
@@ -65,6 +88,17 @@ def list_subfolders(
 
 
 def read_tiff_shape(path: Path) -> tuple[int, int, int]:
+    """Read the spatial shape of a 3D TIFF volume without loading voxel data.
+
+    Args:
+        path: Path to a 3D TIFF file.
+
+    Returns:
+        Tuple of (Z, Y, X) dimensions.
+
+    Raises:
+        ValueError: If the file is not a valid 3D volume.
+    """
     with tifffile.TiffFile(path) as tif:
         if not tif.series:
             raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
@@ -75,12 +109,29 @@ def read_tiff_shape(path: Path) -> tuple[int, int, int]:
 
 
 def ensure_contiguous(array: np.ndarray) -> np.ndarray:
+    """Return a C-contiguous copy of *array* if it is not already contiguous.
+
+    Args:
+        array: Input NumPy array.
+
+    Returns:
+        C-contiguous array (may be the same object if already contiguous).
+    """
     return array if array.flags.c_contiguous else np.ascontiguousarray(array)
 
 
 def _log_kernel(
     size: tuple[int, int, int] = (7, 7, 7), sigma: float = 1.0
 ) -> np.ndarray:
+    """Build a 3D Laplacian-of-Gaussian (LoG) kernel.
+
+    Args:
+        size: Spatial extent of the kernel in (X, Y, Z) voxels.
+        sigma: Standard deviation of the Gaussian envelope.
+
+    Returns:
+        Zero-mean LoG kernel as a float64 array.
+    """
     x, y, z = size
     xc, yc, zc = (np.array(size) - 1) / 2.0
     xx, yy, zz = np.meshgrid(
@@ -100,6 +151,16 @@ def upsample_scalar_volume(
     target_shape: tuple[int, int, int],
     device: torch.device,
 ) -> np.ndarray:
+    """Upsample a single-channel 3D volume to *target_shape* via trilinear interpolation.
+
+    Args:
+        volume_zyx: 3D array of shape [Z, Y, X].
+        target_shape: Desired (Z, Y, X) output dimensions.
+        device: Torch device for interpolation.
+
+    Returns:
+        Upsampled 3D array of shape matching *target_shape*.
+    """
     input_tensor = torch.from_numpy(ensure_contiguous(volume_zyx)).to(
         device=device, dtype=torch.float32
     )
@@ -118,6 +179,17 @@ def upsample_scalar_volume(
 
 
 def validate_folder(subfolder: Path) -> tuple[Path, Path]:
+    """Verify a sample subfolder contains the required input files.
+
+    Args:
+        subfolder: Path to a per-sample directory.
+
+    Returns:
+        Tuple of (lr_feats path, volume_unnorm path).
+
+    Raises:
+        FileNotFoundError: If either expected file is missing.
+    """
     lr_path = subfolder / "lr_feats.npy"
     volume_path = subfolder / "volume_unnorm.tif"
     if not lr_path.is_file():
@@ -137,6 +209,23 @@ def segment_subfolder(
     cle_device: object,
     log_kernel: np.ndarray,
 ) -> Path:
+    """Run the full Voronoi-Otsu segmentation pipeline on one sample.
+
+    Steps: sum patch tokens, upsample, subtract background (rolling ball),
+    convolve with LoG kernel, blur, then apply Voronoi-Otsu labeling.
+
+    Args:
+        subfolder: Input directory with ``lr_feats.npy`` and ``volume_unnorm.tif``.
+        output_path: Directory for the output segmentation TIFF.
+        gaussian_blur_sigma: Sigma for Gaussian blur before labeling.
+        rolling_ball_radius: Radius for morphological background subtraction.
+        device: Torch device for upsampling.
+        cle_device: pyclesperanto device handle.
+        log_kernel: Pre-computed LoG convolution kernel.
+
+    Returns:
+        Path to the saved segmentation mask TIFF.
+    """
     lr_path, volume_path = validate_folder(subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
@@ -194,11 +283,21 @@ def segment_subfolder(
 def iter_subfolders(
     input_path: Path, *, exclude_paths: Iterable[Path] = ()
 ) -> Iterable[Path]:
+    """Yield subfolders from *input_path*, excluding specified paths.
+
+    Args:
+        input_path: Parent directory to iterate.
+        exclude_paths: Paths to skip.
+
+    Yields:
+        Each subdirectory path.
+    """
     for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
         yield subfolder
 
 
 def main() -> None:
+    """Entry point: validate arguments, set up devices, and segment all subfolders."""
     args = parse_args()
     if not args.enable_voronoi_otsu:
         raise ValueError("Enable Voronoi-Otsu segmentation to run.")
