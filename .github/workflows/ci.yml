@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "latest"
+  XFORMERS_DISABLED: "1"  # xformers requires CUDA; disable for CI lint/type checks
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Ruff lint + format check
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Ruff lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: uv tool install ruff
+
+      - name: Ruff check (lint)
+        run: ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  # ---------------------------------------------------------------------------
+  # Mypy type checking
+  # ---------------------------------------------------------------------------
+  typecheck:
+    name: Mypy type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-packages --extra dev
+
+      - name: Run mypy
+        # NOTE: mypy runs in advisory mode (continue-on-error) until full
+        # type annotations are added across the codebase.
+        continue-on-error: true
+        run: uv run mypy src/spatialdino/ --ignore-missing-imports
+
+  # ---------------------------------------------------------------------------
+  # Unit tests (server)
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-packages --extra dev
+
+      - name: Run tests
+        run: uv run pytest apps/server/tests/ -v --tb=short

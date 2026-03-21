@@ -27,10 +27,10 @@ _LOGGER_LOCK = threading.Lock()
 
 @functools.lru_cache(maxsize=128)
 def _configure_logger(
-    name: Optional[str] = None,
+    name: str | None = None,
     *,
     level: int = logging.DEBUG,
-    output: Optional[str] = None,
+    output: str | None = None,
     rank: int = 0,
 ) -> logging.Logger:
     """
@@ -121,9 +121,9 @@ def _configure_logger(
 
 
 def setup_logging(
-    output: Optional[str] = None,
+    output: str | None = None,
     *,
-    name: Optional[str] = None,
+    name: str | None = None,
     level: int = logging.DEBUG,
     capture_warnings: bool = True,
     rank: int = 0,

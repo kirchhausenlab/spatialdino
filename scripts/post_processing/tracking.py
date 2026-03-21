@@ -5,9 +5,10 @@ import csv
 import os
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import tifffile
@@ -140,8 +141,14 @@ class PipelineError(RuntimeError):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Track segmented objects across timepoints.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-timepoint subfolders.")
+    parser = argparse.ArgumentParser(
+        description="Track segmented objects across timepoints."
+    )
+    parser.add_argument(
+        "--input-path",
+        required=True,
+        help="Folder containing per-timepoint subfolders.",
+    )
     parser.add_argument(
         "--segmentation-path",
         required=True,
@@ -234,9 +241,15 @@ def natural_sort_key(value: str) -> list[Any]:
     return key
 
 
-def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
+def list_subfolders(
+    input_path: Path, *, exclude_paths: Iterable[Path] = ()
+) -> list[Path]:
     excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
-    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
+    subfolders = [
+        path
+        for path in input_path.iterdir()
+        if path.is_dir() and Path(os.path.realpath(path)) not in excluded
+    ]
     subfolders.sort(key=lambda path: natural_sort_key(path.name))
     return subfolders
 
@@ -244,7 +257,9 @@ def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> 
 def read_tiff_volume(path: str | Path) -> np.ndarray:
     array = np.asarray(tifffile.imread(path))
     if array.ndim != 3:
-        raise PipelineError(f"Expected a 3D TIFF volume, got shape {array.shape} for {path}.")
+        raise PipelineError(
+            f"Expected a 3D TIFF volume, got shape {array.shape} for {path}."
+        )
     return np.moveaxis(array, 0, -1)
 
 
@@ -254,12 +269,16 @@ def mask_path_for_timepoint(segmentation_path: Path, *, timepoint_name: str) -> 
 
 def validate_subfolder(subfolder: Path, *, segmentation_path: Path) -> TimepointPaths:
     raw_path = subfolder / DEFAULT_RAW_FILENAME
-    segmentation_mask_path = mask_path_for_timepoint(segmentation_path, timepoint_name=subfolder.name)
+    segmentation_mask_path = mask_path_for_timepoint(
+        segmentation_path, timepoint_name=subfolder.name
+    )
     lr_feats_path = subfolder / "lr_feats.npy"
     if not raw_path.is_file():
         raise FileNotFoundError(f"{subfolder.name} is missing {DEFAULT_RAW_FILENAME}.")
     if not segmentation_mask_path.is_file():
-        raise FileNotFoundError(f"Missing segmentation mask for {subfolder.name}: {segmentation_mask_path.name}.")
+        raise FileNotFoundError(
+            f"Missing segmentation mask for {subfolder.name}: {segmentation_mask_path.name}."
+        )
     if not lr_feats_path.is_file():
         raise FileNotFoundError(f"{subfolder.name} is missing lr_feats.npy.")
     return TimepointPaths(
@@ -271,10 +290,14 @@ def validate_subfolder(subfolder: Path, *, segmentation_path: Path) -> Timepoint
     )
 
 
-def discover_experiment(input_path: Path, *, segmentation_path: Path) -> list[TimepointPaths]:
+def discover_experiment(
+    input_path: Path, *, segmentation_path: Path
+) -> list[TimepointPaths]:
     discovered: list[TimepointPaths] = []
     for subfolder in list_subfolders(input_path, exclude_paths=(segmentation_path,)):
-        discovered.append(validate_subfolder(subfolder, segmentation_path=segmentation_path))
+        discovered.append(
+            validate_subfolder(subfolder, segmentation_path=segmentation_path)
+        )
     return discovered
 
 
@@ -291,13 +314,17 @@ def extract_label_geometries(segmentation_yxz: np.ndarray) -> dict[int, LabelGeo
 
     unique_labels, starts = np.unique(labels, return_index=True)
     counts = np.diff(np.r_[starts, len(labels)])
-    coords_all = np.column_stack(np.unravel_index(foreground_indices, segmentation_yxz.shape)).astype(
+    coords_all = np.column_stack(
+        np.unravel_index(foreground_indices, segmentation_yxz.shape)
+    ).astype(
         np.int32,
         copy=False,
     )
 
     geometries: dict[int, LabelGeometry] = {}
-    for label_id, start, count in zip(unique_labels.tolist(), starts.tolist(), counts.tolist()):
+    for label_id, start, count in zip(
+        unique_labels.tolist(), starts.tolist(), counts.tolist()
+    ):
         coords = coords_all[start : start + count]
         centroid = coords.mean(axis=0, dtype=np.float64)
         bbox_start = coords.min(axis=0)
@@ -322,7 +349,9 @@ def extract_label_geometries(segmentation_yxz: np.ndarray) -> dict[int, LabelGeo
     return geometries
 
 
-def compute_label_mean_intensities(segmentation_yxz: np.ndarray, raw_yxz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def compute_label_mean_intensities(
+    segmentation_yxz: np.ndarray, raw_yxz: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     flat_labels = segmentation_yxz.ravel()
     flat_raw = raw_yxz.ravel()
     foreground = flat_labels != 0
@@ -331,10 +360,14 @@ def compute_label_mean_intensities(segmentation_yxz: np.ndarray, raw_yxz: np.nda
 
     labels = flat_labels[foreground].astype(np.int64, copy=False)
     raw_values = flat_raw[foreground].astype(np.float64, copy=False)
-    unique_labels, inverse, counts = np.unique(labels, return_inverse=True, return_counts=True)
+    unique_labels, inverse, counts = np.unique(
+        labels, return_inverse=True, return_counts=True
+    )
     sums = np.bincount(inverse, weights=raw_values, minlength=len(unique_labels))
     means = sums / np.maximum(counts, 1)
-    return unique_labels.astype(np.int64, copy=False), means.astype(np.float32, copy=False)
+    return unique_labels.astype(np.int64, copy=False), means.astype(
+        np.float32, copy=False
+    )
 
 
 def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
@@ -342,10 +375,8 @@ def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
     segmentation_yxz = read_tiff_volume(paths.segmentation_path)
     if raw_yxz.shape != segmentation_yxz.shape:
         raise PipelineError(
-            (
-                f"Shape mismatch in {paths.name}: "
-                f"{DEFAULT_RAW_FILENAME}={raw_yxz.shape}, {paths.segmentation_path.name}={segmentation_yxz.shape}."
-            )
+            f"Shape mismatch in {paths.name}: "
+            f"{DEFAULT_RAW_FILENAME}={raw_yxz.shape}, {paths.segmentation_path.name}={segmentation_yxz.shape}."
         )
 
     geometries = extract_label_geometries(segmentation_yxz)
@@ -355,9 +386,15 @@ def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
         volumes = np.empty((0,), dtype=np.int64)
         amplitudes = np.empty((0,), dtype=np.float32)
     else:
-        centroids = np.vstack([geometries[int(label_id)].centroid for label_id in label_ids])
-        volumes = np.array([geometries[int(label_id)].volume for label_id in label_ids], dtype=np.int64)
-        amplitude_labels, amplitudes = compute_label_mean_intensities(segmentation_yxz, raw_yxz)
+        centroids = np.vstack([
+            geometries[int(label_id)].centroid for label_id in label_ids
+        ])
+        volumes = np.array(
+            [geometries[int(label_id)].volume for label_id in label_ids], dtype=np.int64
+        )
+        amplitude_labels, amplitudes = compute_label_mean_intensities(
+            segmentation_yxz, raw_yxz
+        )
         if not np.array_equal(amplitude_labels, label_ids):
             raise PipelineError(f"Label intensity extraction mismatch in {paths.name}.")
 
@@ -407,7 +444,9 @@ def find_spatial_candidates(
         cand_ids = cand_tp.label_ids[in_box]
         distances = np.array(
             [
-                anisotropic_distance(ref_centroid, cand_tp.geometries[int(cand_id)].centroid, zratio)
+                anisotropic_distance(
+                    ref_centroid, cand_tp.geometries[int(cand_id)].centroid, zratio
+                )
                 for cand_id in cand_ids.tolist()
             ],
             dtype=np.float32,
@@ -430,7 +469,9 @@ def compute_alignment_overlap(
         empty = np.empty((0, 3), dtype=np.int32)
         return 0.0, empty, empty, 0
 
-    offset = np.rint(ref_geom.local_centroid - cand_geom.local_centroid).astype(np.int32)
+    offset = np.rint(ref_geom.local_centroid - cand_geom.local_centroid).astype(
+        np.int32
+    )
     ref_start = np.maximum(0, -offset)
     cand_start = np.maximum(0, offset)
     ref_end = ref_start + ref_shape
@@ -443,11 +484,17 @@ def compute_alignment_overlap(
         return 0.0, empty, empty, 0
 
     ref_slices = tuple(
-        slice(int(overlap_start[axis] - ref_start[axis]), int(overlap_end[axis] - ref_start[axis]))
+        slice(
+            int(overlap_start[axis] - ref_start[axis]),
+            int(overlap_end[axis] - ref_start[axis]),
+        )
         for axis in range(3)
     )
     cand_slices = tuple(
-        slice(int(overlap_start[axis] - cand_start[axis]), int(overlap_end[axis] - cand_start[axis]))
+        slice(
+            int(overlap_start[axis] - cand_start[axis]),
+            int(overlap_end[axis] - cand_start[axis]),
+        )
         for axis in range(3)
     )
 
@@ -478,7 +525,9 @@ def compute_alignment_overlap(
 def build_axis_interpolation(input_size: int, output_size: int) -> AxisInterpolation:
     if input_size <= 0 or output_size <= 0:
         raise PipelineError("Interpolation sizes must be positive.")
-    src = ((np.arange(output_size, dtype=np.float32) + 0.5) * (input_size / output_size)) - 0.5
+    src = (
+        (np.arange(output_size, dtype=np.float32) + 0.5) * (input_size / output_size)
+    ) - 0.5
     low = np.floor(src).astype(np.int32)
     high = low + 1
     weight_high = src - low
@@ -512,7 +561,10 @@ def choose_feature_batch_size(
 ) -> int:
     max_voxels = max(int(np.prod(ref_lr_shape_zyx)), int(np.prod(cand_lr_shape_zyx)))
     bytes_per_channel_pair = max_voxels * np.dtype(np.float32).itemsize * 2
-    return max(1, min(n_features, DEFAULT_FEATURE_BATCH_BYTES // max(1, bytes_per_channel_pair)))
+    return max(
+        1,
+        min(n_features, DEFAULT_FEATURE_BATCH_BYTES // max(1, bytes_per_channel_pair)),
+    )
 
 
 def load_feature_chunk_internal_yxz(
@@ -523,7 +575,9 @@ def load_feature_chunk_internal_yxz(
 ) -> np.ndarray:
     chunk_zyxc = np.asarray(lr_feats[..., start:end], dtype=np.float32)
     if chunk_zyxc.ndim != 4:
-        raise PipelineError(f"Expected lr_feats.npy to have shape [Z, Y, X, C], got {chunk_zyxc.shape}.")
+        raise PipelineError(
+            f"Expected lr_feats.npy to have shape [Z, Y, X, C], got {chunk_zyxc.shape}."
+        )
     return np.moveaxis(np.transpose(chunk_zyxc, (1, 2, 0, 3)), -1, 0)
 
 
@@ -620,7 +674,9 @@ def compute_pair_metrics(
         ref_geom = ref_tp.geometries[int(ref_id)]
         for index, cand_id in enumerate(candidate_ids.tolist()):
             cand_geom = cand_tp.geometries[int(cand_id)]
-            dice_value, ref_coords, cand_coords, overlap_count = compute_alignment_overlap(ref_geom, cand_geom)
+            dice_value, ref_coords, cand_coords, overlap_count = (
+                compute_alignment_overlap(ref_geom, cand_geom)
+            )
             dice[index] = np.float32(dice_value)
             overlap_counts[index] = int(overlap_count)
             overlaps.append((ref_coords, cand_coords))
@@ -639,9 +695,13 @@ def compute_pair_metrics(
     ref_lr_feats = np.load(ref_tp.paths.lr_feats_path, mmap_mode="r")
     cand_lr_feats = np.load(cand_tp.paths.lr_feats_path, mmap_mode="r")
     if ref_lr_feats.ndim != 4:
-        raise PipelineError(f"{ref_tp.paths.lr_feats_path} must have shape [Z, Y, X, C].")
+        raise PipelineError(
+            f"{ref_tp.paths.lr_feats_path} must have shape [Z, Y, X, C]."
+        )
     if cand_lr_feats.ndim != 4:
-        raise PipelineError(f"{cand_tp.paths.lr_feats_path} must have shape [Z, Y, X, C].")
+        raise PipelineError(
+            f"{cand_tp.paths.lr_feats_path} must have shape [Z, Y, X, C]."
+        )
     if ref_lr_feats.shape[-1] < n_features:
         raise PipelineError(
             f"{ref_tp.paths.lr_feats_path} only has {ref_lr_feats.shape[-1]} channels; tracking needs {n_features}."
@@ -672,12 +732,16 @@ def compute_pair_metrics(
     for start in range(0, n_features, batch_size):
         end = min(n_features, start + batch_size)
         ref_chunk = load_feature_chunk_internal_yxz(ref_lr_feats, start=start, end=end)
-        cand_chunk = load_feature_chunk_internal_yxz(cand_lr_feats, start=start, end=end)
+        cand_chunk = load_feature_chunk_internal_yxz(
+            cand_lr_feats, start=start, end=end
+        )
 
         for ref_id, ref_metrics in metrics_by_ref.items():
             if ref_metrics.candidate_ids.size == 0:
                 continue
-            for candidate_index, _cand_id in enumerate(ref_metrics.candidate_ids.tolist()):
+            for candidate_index, _cand_id in enumerate(
+                ref_metrics.candidate_ids.tolist()
+            ):
                 if ref_metrics.overlap_counts[candidate_index] <= 1:
                     continue
 
@@ -685,8 +749,12 @@ def compute_pair_metrics(
                 if ref_coords.shape[0] <= 1:
                     continue
 
-                ref_values = sample_feature_chunk_at_internal_coords(ref_chunk, ref_axis_maps, ref_coords)
-                cand_values = sample_feature_chunk_at_internal_coords(cand_chunk, cand_axis_maps, cand_coords)
+                ref_values = sample_feature_chunk_at_internal_coords(
+                    ref_chunk, ref_axis_maps, ref_coords
+                )
+                cand_values = sample_feature_chunk_at_internal_coords(
+                    cand_chunk, cand_axis_maps, cand_coords
+                )
 
                 diff = ref_values - cand_values
                 ref_metrics.mse[start:end, candidate_index] = np.mean(
@@ -694,7 +762,9 @@ def compute_pair_metrics(
                     axis=1,
                     dtype=np.float32,
                 )
-                ref_metrics.corr[start:end, candidate_index] = rowwise_correlation(ref_values, cand_values)
+                ref_metrics.corr[start:end, candidate_index] = rowwise_correlation(
+                    ref_values, cand_values
+                )
 
     return metrics_by_ref
 
@@ -713,7 +783,10 @@ def build_summary_from_metrics(
             allowed = np.ones(metrics.candidate_ids.shape[0], dtype=bool)
         else:
             allowed_ids = available_candidates.get(ref_id, set())
-            allowed = np.array([int(candidate_id) in allowed_ids for candidate_id in metrics.candidate_ids.tolist()])
+            allowed = np.array([
+                int(candidate_id) in allowed_ids
+                for candidate_id in metrics.candidate_ids.tolist()
+            ])
 
         candidates: dict[int, CandidateVote] = {}
         for candidate_id, distance, dice in zip(
@@ -721,7 +794,9 @@ def build_summary_from_metrics(
             metrics.distances.tolist(),
             metrics.dice.tolist(),
         ):
-            if available_candidates is not None and int(candidate_id) not in available_candidates.get(ref_id, set()):
+            if available_candidates is not None and int(
+                candidate_id
+            ) not in available_candidates.get(ref_id, set()):
                 continue
             candidates[int(candidate_id)] = CandidateVote(
                 candidate_label=int(candidate_id),
@@ -744,7 +819,9 @@ def build_summary_from_metrics(
                 if not np.any(good):
                     continue
                 good_indices = np.where(good)[0]
-                chosen_index = int(good_indices[np.argmin(metrics.mse[feature_index, good_indices])])
+                chosen_index = int(
+                    good_indices[np.argmin(metrics.mse[feature_index, good_indices])]
+                )
                 chosen_candidate = int(metrics.candidate_ids[chosen_index])
                 candidates[chosen_candidate].wins += 1
                 candidates[chosen_candidate].features.append(feature_index)
@@ -773,7 +850,11 @@ def _remove_assigned_from_candidate_pool(
     for ref_id, candidates in candidate_pool.items():
         if ref_id in assigned_refs_set:
             continue
-        out[ref_id] = {int(candidate) for candidate in candidates if int(candidate) not in assigned_cands_set}
+        out[ref_id] = {
+            int(candidate)
+            for candidate in candidates
+            if int(candidate) not in assigned_cands_set
+        }
     return out
 
 
@@ -784,10 +865,16 @@ def run_assignment_logic(
     vote_thresholds: tuple[int, ...],
     dice_threshold: float,
     corr_threshold: float,
-) -> tuple[list[AssignmentRecord], list[RefSummary], list[list[RefSummary]], list[dict[str, float]]]:
+) -> tuple[
+    list[AssignmentRecord],
+    list[RefSummary],
+    list[list[RefSummary]],
+    list[dict[str, float]],
+]:
     all_ref_ids = sorted(metrics_by_ref)
     candidate_pool: dict[int, set[int]] = {
-        ref_id: set(metrics.candidate_ids.tolist()) for ref_id, metrics in metrics_by_ref.items()
+        ref_id: set(metrics.candidate_ids.tolist())
+        for ref_id, metrics in metrics_by_ref.items()
     }
 
     initial_summary = build_summary_from_metrics(
@@ -808,13 +895,22 @@ def run_assignment_logic(
         best_index = int(np.argmin(metrics.distances))
         min_distance = float(metrics.distances[best_index])
         if min_distance < min_distance_to_remove_cand:
-            nearest_pairs.append((min_distance, ref_id, int(metrics.candidate_ids[best_index])))
+            nearest_pairs.append((
+                min_distance,
+                ref_id,
+                int(metrics.candidate_ids[best_index]),
+            ))
         else:
-            summary_distance_prefilter.append({"RefLabel": float(ref_id), "MinDistance": min_distance})
+            summary_distance_prefilter.append({
+                "RefLabel": float(ref_id),
+                "MinDistance": min_distance,
+            })
 
     assigned_refs: set[int] = set()
     assigned_cands: set[int] = set()
-    for distance, ref_id, cand_id in sorted(nearest_pairs, key=lambda item: (item[0], item[1], item[2])):
+    for distance, ref_id, cand_id in sorted(
+        nearest_pairs, key=lambda item: (item[0], item[1], item[2])
+    ):
         if ref_id in assigned_refs or cand_id in assigned_cands:
             continue
         assignments.append(
@@ -842,7 +938,11 @@ def run_assignment_logic(
     )
     summary_history.append(summary_current)
 
-    used_vote_thresholds = tuple(sorted({int(value) for value in vote_thresholds if int(value) > 0}, reverse=True))
+    used_vote_thresholds = tuple(
+        sorted(
+            {int(value) for value in vote_thresholds if int(value) > 0}, reverse=True
+        )
+    )
     for threshold in used_vote_thresholds:
         while True:
             if not summary_current:
@@ -854,7 +954,11 @@ def run_assignment_logic(
                     continue
                 top = item.candidates[0]
                 if top.wins > threshold:
-                    top_candidates.append((item.ref_label, top.candidate_label, top.wins))
+                    top_candidates.append((
+                        item.ref_label,
+                        top.candidate_label,
+                        top.wins,
+                    ))
 
             if not top_candidates:
                 break
@@ -911,11 +1015,17 @@ def run_assignment_logic(
         metrics = metrics_by_ref[ref_id]
         for candidate_index, candidate_id in enumerate(metrics.candidate_ids.tolist()):
             if int(candidate_id) in remaining_candidates:
-                remaining_pairs.append((float(metrics.distances[candidate_index]), ref_id, int(candidate_id)))
+                remaining_pairs.append((
+                    float(metrics.distances[candidate_index]),
+                    ref_id,
+                    int(candidate_id),
+                ))
 
     used_refs = {assignment.ref_label for assignment in assignments}
     used_cands = {assignment.candidate_label for assignment in assignments}
-    for distance, ref_id, cand_id in sorted(remaining_pairs, key=lambda item: (item[0], item[1], item[2])):
+    for distance, ref_id, cand_id in sorted(
+        remaining_pairs, key=lambda item: (item[0], item[1], item[2])
+    ):
         if ref_id in used_refs or cand_id in used_cands:
             continue
         assignments.append(
@@ -943,18 +1053,25 @@ def run_assignment_logic(
     )
     summary_history.append(summary_current)
 
-    assignments.sort(key=lambda assignment: (assignment.ref_label, assignment.candidate_label))
+    assignments.sort(
+        key=lambda assignment: (assignment.ref_label, assignment.candidate_label)
+    )
     return assignments, initial_summary, summary_history, summary_distance_prefilter
 
 
 def label_row_index(timepoint: PreparedTimepoint, label_id: int) -> int:
     row_index = int(np.searchsorted(timepoint.label_ids, label_id))
-    if row_index >= timepoint.label_ids.size or int(timepoint.label_ids[row_index]) != label_id:
+    if (
+        row_index >= timepoint.label_ids.size
+        or int(timepoint.label_ids[row_index]) != label_id
+    ):
         raise PipelineError(f"Label {label_id} not found in {timepoint.paths.name}.")
     return row_index
 
 
-def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: list[PairResult]) -> list[Track]:
+def build_tracks(
+    prepared_timepoints: list[PreparedTimepoint], pair_results: list[PairResult]
+) -> list[Track]:
     if not prepared_timepoints:
         return []
 
@@ -987,7 +1104,10 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
 
     def ensure_track_point(track_id: int, timepoint_idx: int, label_id: int) -> None:
         track = tracks[track_id - 1]
-        if any(point.timepoint == timepoint_idx and point.label_id == label_id for point in track.points):
+        if any(
+            point.timepoint == timepoint_idx and point.label_id == label_id
+            for point in track.points
+        ):
             return
         track.points.append(build_track_point(timepoint_idx, label_id))
 
@@ -1015,7 +1135,10 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
         active = next_active
         if pair_index == len(pair_results):
             existing_last_frame = {
-                point.label_id for track in tracks for point in track.points if point.timepoint == pair_index + 1
+                point.label_id
+                for track in tracks
+                for point in track.points
+                if point.timepoint == pair_index + 1
             }
             for label_id in next_tp.label_ids.tolist():
                 if int(label_id) not in existing_last_frame:
@@ -1036,20 +1159,28 @@ def build_matlab_style_tracks(tracks: list[Track]) -> list[dict[str, Any]]:
         if not track.points:
             continue
         ordered_points = sorted(track.points, key=lambda point: point.timepoint)
-        matlab_tracks.append(
-            {
-                "track_id": int(track.track_id),
-                "start": int(track.start_time),
-                "x": np.asarray([point.centroid[1] for point in ordered_points], dtype=np.float64),
-                "y": np.asarray([point.centroid[0] for point in ordered_points], dtype=np.float64),
-                "z": np.asarray([point.centroid[2] for point in ordered_points], dtype=np.float64),
-                "A": np.asarray([point.amplitude for point in ordered_points], dtype=np.float64),
-            }
-        )
+        matlab_tracks.append({
+            "track_id": int(track.track_id),
+            "start": int(track.start_time),
+            "x": np.asarray(
+                [point.centroid[1] for point in ordered_points], dtype=np.float64
+            ),
+            "y": np.asarray(
+                [point.centroid[0] for point in ordered_points], dtype=np.float64
+            ),
+            "z": np.asarray(
+                [point.centroid[2] for point in ordered_points], dtype=np.float64
+            ),
+            "A": np.asarray(
+                [point.amplitude for point in ordered_points], dtype=np.float64
+            ),
+        })
     return matlab_tracks
 
 
-def build_export_rows(matlab_tracks: Iterable[dict[str, Any]], *, z0: int, invert_z: bool) -> list[dict[str, Any]]:
+def build_export_rows(
+    matlab_tracks: Iterable[dict[str, Any]], *, z0: int, invert_z: bool
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for track in matlab_tracks:
         x = np.asarray(track["x"], dtype=float)
@@ -1067,18 +1198,16 @@ def build_export_rows(matlab_tracks: Iterable[dict[str, Any]], *, z0: int, inver
             continue
 
         for frame_index in range(length):
-            rows.append(
-                {
-                    "track_id": track_id,
-                    "start": start,
-                    "t": frame_index + 1,
-                    "x": float(x[frame_index]),
-                    "y": float(y[frame_index]),
-                    "z": float(z0 - z[frame_index]) if invert_z else float(z[frame_index]),
-                    "A": float(amplitudes[frame_index]),
-                    "track_length": length,
-                }
-            )
+            rows.append({
+                "track_id": track_id,
+                "start": start,
+                "t": frame_index + 1,
+                "x": float(x[frame_index]),
+                "y": float(y[frame_index]),
+                "z": float(z0 - z[frame_index]) if invert_z else float(z[frame_index]),
+                "A": float(amplitudes[frame_index]),
+                "track_length": length,
+            })
     return rows
 
 
@@ -1093,13 +1222,17 @@ def save_tracks_csv(rows: Iterable[dict[str, Any]], *, output_path: Path) -> Non
 
 
 def default_vote_thresholds(n_features: int) -> tuple[int, ...]:
-    thresholds = tuple(threshold for threshold in (400, 320, 300, 280, 260) if threshold <= n_features)
+    thresholds = tuple(
+        threshold for threshold in (400, 320, 300, 280, 260) if threshold <= n_features
+    )
     if thresholds:
         return thresholds
     return (max(1, int(round(0.8 * n_features))),)
 
 
-def validate_timepoint_shapes(prepared_timepoints: list[PreparedTimepoint], *, require_same_raw_z_size: bool) -> int:
+def validate_timepoint_shapes(
+    prepared_timepoints: list[PreparedTimepoint], *, require_same_raw_z_size: bool
+) -> int:
     if not prepared_timepoints:
         raise PipelineError("No prepared timepoints available.")
 
@@ -1108,28 +1241,36 @@ def validate_timepoint_shapes(prepared_timepoints: list[PreparedTimepoint], *, r
     for prepared in prepared_timepoints[1:]:
         if prepared.shape_yxz != expected_shape:
             raise PipelineError(
-                (
-                    "Tracking requires all timepoints to share the same volume shape. "
-                    f"Got {expected_shape} and {prepared.shape_yxz}."
-                )
+                "Tracking requires all timepoints to share the same volume shape. "
+                f"Got {expected_shape} and {prepared.shape_yxz}."
             )
         if require_same_raw_z_size and prepared.raw_z_size != expected_z0:
             raise PipelineError(
-                (
-                    "Tracking requires all timepoints to share the same raw Z size for the final z inversion. "
-                    f"Got {expected_z0} and {prepared.raw_z_size}."
-                )
+                "Tracking requires all timepoints to share the same raw Z size for the final z inversion. "
+                f"Got {expected_z0} and {prepared.raw_z_size}."
             )
     return expected_z0
 
 
-def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path | None = None, params: TrackingParams) -> Path:
+def run_tracking(
+    input_path: Path,
+    *,
+    segmentation_path: Path,
+    output_path: Path | None = None,
+    params: TrackingParams,
+) -> Path:
     segmentation_path = segmentation_path.expanduser().resolve()
     if not segmentation_path.is_dir():
-        raise FileNotFoundError(f"Segmentation folder does not exist or is not a directory: {segmentation_path}")
-    output_dir = input_path if output_path is None else output_path.expanduser().resolve()
+        raise FileNotFoundError(
+            f"Segmentation folder does not exist or is not a directory: {segmentation_path}"
+        )
+    output_dir = (
+        input_path if output_path is None else output_path.expanduser().resolve()
+    )
     if output_dir.exists() and not output_dir.is_dir():
-        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_dir}")
+        raise FileNotFoundError(
+            f"Output folder exists but is not a directory: {output_dir}"
+        )
 
     discovered = discover_experiment(input_path, segmentation_path=segmentation_path)
     if len(discovered) < 2:
@@ -1138,14 +1279,25 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
     prepared_timepoints: list[PreparedTimepoint] = []
     print(f"[tracking] Found {len(discovered)} subfolders", flush=True)
     for index, timepoint_paths in enumerate(discovered, start=1):
-        print(f"[tracking] Processing {timepoint_paths.name} ({index}/{len(discovered)})", flush=True)
+        print(
+            f"[tracking] Processing {timepoint_paths.name} ({index}/{len(discovered)})",
+            flush=True,
+        )
         prepared_timepoints.append(prepare_timepoint(index, timepoint_paths))
         print(f"[tracking] Completed {timepoint_paths.name}", flush=True)
 
-    z0 = validate_timepoint_shapes(prepared_timepoints, require_same_raw_z_size=bool(params.invert_z))
-    spatial_radius = (float(params.max_distance_xy), float(params.max_distance_xy), float(params.max_distance_z))
-    vote_thresholds = params.vote_thresholds if params.vote_thresholds is not None else default_vote_thresholds(
-        DEFAULT_N_PATCH_FEATURES
+    z0 = validate_timepoint_shapes(
+        prepared_timepoints, require_same_raw_z_size=bool(params.invert_z)
+    )
+    spatial_radius = (
+        float(params.max_distance_xy),
+        float(params.max_distance_xy),
+        float(params.max_distance_z),
+    )
+    vote_thresholds = (
+        params.vote_thresholds
+        if params.vote_thresholds is not None
+        else default_vote_thresholds(DEFAULT_N_PATCH_FEATURES)
     )
 
     pair_results: list[PairResult] = []
@@ -1164,12 +1316,14 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
             spatial_radius=spatial_radius,
             zratio=float(params.z_distance_weight),
         )
-        assignments, initial_summary, summary_history, summary_distance_prefilter = run_assignment_logic(
-            metrics_by_ref,
-            min_distance_to_remove_cand=float(params.min_distance_to_remove_cand),
-            vote_thresholds=vote_thresholds,
-            dice_threshold=float(params.dice_threshold),
-            corr_threshold=float(params.corr_threshold),
+        assignments, initial_summary, summary_history, summary_distance_prefilter = (
+            run_assignment_logic(
+                metrics_by_ref,
+                min_distance_to_remove_cand=float(params.min_distance_to_remove_cand),
+                vote_thresholds=vote_thresholds,
+                dice_threshold=float(params.dice_threshold),
+                corr_threshold=float(params.corr_threshold),
+            )
         )
         pair_results.append(
             PairResult(
@@ -1179,7 +1333,10 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
                 summary_current=summary_history[-1] if summary_history else [],
                 summary_history=summary_history,
                 assignments=assignments,
-                final_assignment={assignment.ref_label: assignment.candidate_label for assignment in assignments},
+                final_assignment={
+                    assignment.ref_label: assignment.candidate_label
+                    for assignment in assignments
+                },
                 summary_distance_prefilter=summary_distance_prefilter,
             )
         )
@@ -1190,7 +1347,9 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
 
     tracks = build_tracks(prepared_timepoints, pair_results)
     matlab_tracks = build_matlab_style_tracks(tracks)
-    output_rows = build_export_rows(matlab_tracks, z0=z0, invert_z=bool(params.invert_z))
+    output_rows = build_export_rows(
+        matlab_tracks, z0=z0, invert_z=bool(params.invert_z)
+    )
     tracks_csv_path = output_dir / "tracks.csv"
     save_tracks_csv(output_rows, output_path=tracks_csv_path)
     print(f"[tracking] Saved tracks to {tracks_csv_path}", flush=True)
@@ -1216,12 +1375,16 @@ def main() -> None:
     input_path = Path(args.input_path).expanduser().resolve()
     segmentation_path = Path(args.segmentation_path).expanduser().resolve()
     if not input_path.is_dir():
-        raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
+        raise FileNotFoundError(
+            f"Input folder does not exist or is not a directory: {input_path}"
+        )
 
     run_tracking(
         input_path,
         segmentation_path=segmentation_path,
-        output_path=Path(args.output_path).expanduser().resolve() if args.output_path else None,
+        output_path=Path(args.output_path).expanduser().resolve()
+        if args.output_path
+        else None,
         params=TrackingParams(
             max_distance_xy=float(args.max_distance_xy),
             max_distance_z=float(args.max_distance_z),

@@ -1,6 +1,6 @@
 import logging
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Optional
 
 import webdataset as wds
 from omegaconf import DictConfig
@@ -18,9 +18,9 @@ logger = logging.getLogger("LiFT")
 
 def setup_dataloader(
     config: DictConfig,
-    transform: Optional[Callable] = None,
+    transform: Callable | None = None,
 ) -> DataLoader:
-    train_dataset = make_webdataset_lift(
+    train_dataset = make_webdataset(
         base_data_dir=config.base_data_dir,
         batch_size=config.batch_size,
         shuffle_buffer_size=config.shuffle_buffer_size,
@@ -39,7 +39,8 @@ def setup_dataloader(
         collate_fn=None,  # handled in web dataset
     )
     train_dataloader = (
-        train_dataloader.compose(custom_unbatched())
+        train_dataloader
+        .compose(custom_unbatched())
         .shuffle(config.shuffle_buffer_size)
         .batched(
             config.batch_size,
@@ -51,7 +52,7 @@ def setup_dataloader(
 
 def get_test_dataset(
     config: DictConfig,
-    transform: Optional[Callable] = None,
+    transform: Callable | None = None,
 ) -> wds.WebLoader:
     collate_fn = partial(
         collate_fn_test,

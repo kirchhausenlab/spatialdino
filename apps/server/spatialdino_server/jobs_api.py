@@ -26,7 +26,9 @@ def _now_ms() -> int:
 def _require_client_id(value: str | None) -> str:
     text = (value or "").strip()
     if len(text) < 8 or len(text) > 128:
-        raise HTTPException(status_code=400, detail="Missing X-SpatialDINO-ClientId header.")
+        raise HTTPException(
+            status_code=400, detail="Missing X-SpatialDINO-ClientId header."
+        )
     if "\x00" in text:
         raise HTTPException(status_code=400, detail="Invalid client id.")
     return text
@@ -78,7 +80,9 @@ class JobState:
         repr=False,
         compare=False,
     )
-    process: subprocess.Popen[str] | None = field(default=None, repr=False, compare=False)
+    process: subprocess.Popen[str] | None = field(
+        default=None, repr=False, compare=False
+    )
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -195,7 +199,9 @@ def list_jobs(x_spatialdino_clientid: str | None = Header(None)) -> dict[str, An
 
 
 @router.post("/cancel")
-def cancel_job(payload: CancelJobRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
+def cancel_job(
+    payload: CancelJobRequest, x_spatialdino_clientid: str | None = Header(None)
+) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
     job = _get_owned_job(payload.job_id, client_id)
     with job.lock:
@@ -209,7 +215,9 @@ def cancel_job(payload: CancelJobRequest, x_spatialdino_clientid: str | None = H
 
 
 @router.post("/clear")
-def clear_jobs(payload: ClearJobsRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
+def clear_jobs(
+    payload: ClearJobsRequest, x_spatialdino_clientid: str | None = Header(None)
+) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
     removed = 0
     removed_jobs: list[JobState] = []
@@ -233,12 +241,16 @@ def clear_jobs(payload: ClearJobsRequest, x_spatialdino_clientid: str | None = H
 
 
 @router.post("/remove")
-def remove_job(payload: RemoveJobRequest, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
+def remove_job(
+    payload: RemoveJobRequest, x_spatialdino_clientid: str | None = Header(None)
+) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
     job = _get_owned_job(payload.job_id, client_id)
     with job.lock:
         if job.status == "running":
-            raise HTTPException(status_code=409, detail="Cannot remove a running job (stop it first).")
+            raise HTTPException(
+                status_code=409, detail="Cannot remove a running job (stop it first)."
+            )
 
     with _jobs_lock:
         removed_job = _jobs.pop(payload.job_id, None)
@@ -248,7 +260,11 @@ def remove_job(payload: RemoveJobRequest, x_spatialdino_clientid: str | None = H
 
 
 @router.get("/{job_id}/log")
-def job_log(job_id: str, tail_lines: int = 200, x_spatialdino_clientid: str | None = Header(None)) -> dict[str, Any]:
+def job_log(
+    job_id: str,
+    tail_lines: int = 200,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
     client_id = _require_client_id(x_spatialdino_clientid)
     job = _get_owned_job(job_id, client_id)
     line_limit = _normalize_tail_lines(tail_lines)
@@ -272,7 +288,9 @@ def job_log(job_id: str, tail_lines: int = 200, x_spatialdino_clientid: str | No
 
     if log_path and Path(log_path).is_file():
         try:
-            log_lines, total_log_lines = _read_log_tail(Path(log_path), tail_lines=line_limit)
+            log_lines, total_log_lines = _read_log_tail(
+                Path(log_path), tail_lines=line_limit
+            )
         except OSError:
             pass
 

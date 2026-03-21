@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
-
 from spatialdino_server import jobs_api
 
 
@@ -47,8 +46,12 @@ class JobsApiTests(unittest.TestCase):
     def test_list_jobs_filters_by_client_and_sorts_newest_first(self) -> None:
         with jobs_api._jobs_lock:
             jobs_api._jobs["old"] = make_job(job_id="old", created_at_ms=100)
-            jobs_api._jobs["new"] = make_job(job_id="new", created_at_ms=300, label="Newest")
-            jobs_api._jobs["other"] = make_job(job_id="other", owner_client_id="other-9999", created_at_ms=500)
+            jobs_api._jobs["new"] = make_job(
+                job_id="new", created_at_ms=300, label="Newest"
+            )
+            jobs_api._jobs["other"] = make_job(
+                job_id="other", owner_client_id="other-9999", created_at_ms=500
+            )
 
         payload = jobs_api.list_jobs("client-1234")
 
@@ -59,9 +62,13 @@ class JobsApiTests(unittest.TestCase):
     def test_clear_jobs_keeps_running_entries_when_requested(self) -> None:
         with jobs_api._jobs_lock:
             jobs_api._jobs["done"] = make_job(job_id="done", status="completed")
-            jobs_api._jobs["running"] = make_job(job_id="running", status="running", finished_at_ms=None)
+            jobs_api._jobs["running"] = make_job(
+                job_id="running", status="running", finished_at_ms=None
+            )
 
-        result = jobs_api.clear_jobs(jobs_api.ClearJobsRequest(keep_running=True), "client-1234")
+        result = jobs_api.clear_jobs(
+            jobs_api.ClearJobsRequest(keep_running=True), "client-1234"
+        )
 
         self.assertEqual(result, {"ok": True, "removed": 1})
         with jobs_api._jobs_lock:
@@ -69,10 +76,16 @@ class JobsApiTests(unittest.TestCase):
 
     def test_cancel_requests_stop_and_remove_deletes_job_after_halt(self) -> None:
         with jobs_api._jobs_lock:
-            jobs_api._jobs["job-1"] = make_job(job_id="job-1", status="running", finished_at_ms=None, current="Busy")
+            jobs_api._jobs["job-1"] = make_job(
+                job_id="job-1", status="running", finished_at_ms=None, current="Busy"
+            )
 
-        with patch("spatialdino_server.jobs_api.terminate_job_process") as terminate_process:
-            cancel_result = jobs_api.cancel_job(jobs_api.CancelJobRequest(job_id="job-1"), "client-1234")
+        with patch(
+            "spatialdino_server.jobs_api.terminate_job_process"
+        ) as terminate_process:
+            cancel_result = jobs_api.cancel_job(
+                jobs_api.CancelJobRequest(job_id="job-1"), "client-1234"
+            )
 
         self.assertEqual(cancel_result, {"ok": True, "status": "stopping"})
         terminate_process.assert_called_once()
@@ -85,7 +98,9 @@ class JobsApiTests(unittest.TestCase):
             job.current = "Stopped"
             job.finished_at_ms = 1234
 
-        remove_result = jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234")
+        remove_result = jobs_api.remove_job(
+            jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234"
+        )
 
         self.assertEqual(remove_result, {"ok": True})
         with jobs_api._jobs_lock:
@@ -93,7 +108,9 @@ class JobsApiTests(unittest.TestCase):
 
     def test_remove_unknown_job_raises_404(self) -> None:
         with self.assertRaises(HTTPException) as context:
-            jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="missing"), "client-1234")
+            jobs_api.remove_job(
+                jobs_api.RemoveJobRequest(job_id="missing"), "client-1234"
+            )
 
         self.assertEqual(context.exception.status_code, 404)
 
@@ -131,9 +148,13 @@ class JobsApiTests(unittest.TestCase):
             log_path.write_text("boom\n", encoding="utf-8")
 
             with jobs_api._jobs_lock:
-                jobs_api._jobs["job-1"] = make_job(job_id="job-1", log_path=str(log_path), log_available=True)
+                jobs_api._jobs["job-1"] = make_job(
+                    job_id="job-1", log_path=str(log_path), log_available=True
+                )
 
-            result = jobs_api.remove_job(jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234")
+            result = jobs_api.remove_job(
+                jobs_api.RemoveJobRequest(job_id="job-1"), "client-1234"
+            )
 
         self.assertEqual(result, {"ok": True})
         self.assertFalse(log_path.exists())

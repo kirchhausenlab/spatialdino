@@ -9,7 +9,6 @@
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
 
-import json
 import logging
 
 logger = logging.getLogger("pretrain")
@@ -38,14 +37,15 @@ def get_vit_lr_decay_rate(
             or ".mask_token" in name
             or ".cls_token" in name
             or ".register_tokens" in name
-        ):
-            layer_id = 0
-        elif force_is_backbone and (
-            "pos_embed" in name
-            or "patch_embed" in name
-            or "mask_token" in name
-            or "cls_token" in name
-            or "register_tokens" in name
+        ) or (
+            force_is_backbone
+            and (
+                "pos_embed" in name
+                or "patch_embed" in name
+                or "mask_token" in name
+                or "cls_token" in name
+                or "register_tokens" in name
+            )
         ):
             layer_id = 0
         elif ".blocks." in name and ".residual." not in name:

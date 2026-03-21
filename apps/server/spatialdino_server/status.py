@@ -50,7 +50,9 @@ def _utilization_pct(prev: CpuSample, cur: CpuSample) -> float:
     return max(0.0, min(100.0, busy / total_delta * 100.0))
 
 
-async def get_cpu_activity(sample_window_s: float = 0.2, active_threshold_pct: float = 10.0) -> dict:
+async def get_cpu_activity(
+    sample_window_s: float = 0.2, active_threshold_pct: float = 10.0
+) -> dict:
     first = _read_proc_stat()
     await asyncio.sleep(sample_window_s)
     second = _read_proc_stat()
@@ -62,8 +64,14 @@ async def get_cpu_activity(sample_window_s: float = 0.2, active_threshold_pct: f
         per_core.append({"cpu": cpu_id, "utilizationPct": round(pct, 1)})
 
     total_cores = len(per_core)
-    active_cores = sum(1 for core in per_core if core["utilizationPct"] > active_threshold_pct)
-    avg_utilization = round(sum(core["utilizationPct"] for core in per_core) / total_cores, 1) if total_cores else 0.0
+    active_cores = sum(
+        1 for core in per_core if core["utilizationPct"] > active_threshold_pct
+    )
+    avg_utilization = (
+        round(sum(core["utilizationPct"] for core in per_core) / total_cores, 1)
+        if total_cores
+        else 0.0
+    )
 
     return {
         "totalCores": total_cores,
@@ -80,7 +88,9 @@ def get_nvidia_gpu_memory() -> dict:
         "--format=csv,noheader,nounits",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=2)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=2
+        )
     except FileNotFoundError:
         return {"nvidiaSmiAvailable": False, "gpus": []}
     except subprocess.TimeoutExpired:
@@ -88,7 +98,11 @@ def get_nvidia_gpu_memory() -> dict:
 
     if result.returncode != 0:
         err = (result.stderr or "").strip() or (result.stdout or "").strip()
-        return {"nvidiaSmiAvailable": True, "gpus": [], "error": err or f"nvidia-smi exited {result.returncode}"}
+        return {
+            "nvidiaSmiAvailable": True,
+            "gpus": [],
+            "error": err or f"nvidia-smi exited {result.returncode}",
+        }
 
     gpus = []
     for raw_line in (result.stdout or "").splitlines():
@@ -105,14 +119,12 @@ def get_nvidia_gpu_memory() -> dict:
             total_mib = int(total_s)
         except ValueError:
             continue
-        gpus.append(
-            {
-                "index": index,
-                "name": name,
-                "memoryUsedMiB": used_mib,
-                "memoryTotalMiB": total_mib,
-            }
-        )
+        gpus.append({
+            "index": index,
+            "name": name,
+            "memoryUsedMiB": used_mib,
+            "memoryTotalMiB": total_mib,
+        })
 
     gpus.sort(key=lambda gpu: gpu["index"])
     return {"nvidiaSmiAvailable": True, "gpus": gpus}

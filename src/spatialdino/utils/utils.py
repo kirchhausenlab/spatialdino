@@ -1,4 +1,5 @@
-from typing import Any, Callable, List, Literal, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import Any, Literal, Union
 
 import numpy as np
 import scipy.sparse as sp
@@ -37,15 +38,15 @@ def kmeans_fit_predict(
     feats: NdarrayOrTensor,
     n_samples: int = 256_000,
     n_clusters: int = 80,
-    probs: Optional[np.ndarray] = None,
+    probs: np.ndarray | None = None,
     max_samples_per_batch: int = 256_000,
     max_iter: int = 300,
     device: Union[str, torch.device] = "cuda",
     init: Literal["kmeans++", "random", "precomputed"] = "kmeans++",
-    centroids: Optional[np.ndarray] = None,
+    centroids: np.ndarray | None = None,
     dist_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = cosine_dist_func,
     tol: float = 1e-4,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Assumes `feats` is an (N, D) array of unit-length vectors (already L2-normalized).
     Returns:
@@ -160,7 +161,7 @@ def kmeans_fit_predict(
     return labels, centroids, distances
 
 
-class PCA(object):
+class PCA:
     def __init__(
         self,
         n_components: int,
@@ -223,7 +224,7 @@ def run_pca(
     pca: PCA,
     feats: np.ndarray,
     non_zero_mask: np.ndarray,
-    input_shape: Tuple[int, int, int],
+    input_shape: tuple[int, int, int],
     n_components: int,
     dtype: str = "float32",
 ) -> np.ndarray:
@@ -245,7 +246,7 @@ def run_pca(
 
 def convert_instance_seg_to_csr_mat(
     instance_seg: np.ndarray,
-) -> Tuple[sp.csr_matrix, Tuple[int, int, int]]:
+) -> tuple[sp.csr_matrix, tuple[int, int, int]]:
     Z, Y, X = instance_seg.shape
     instance_seg_flat = instance_seg.flatten()
     sparse_matrix = sp.csr_matrix(instance_seg_flat)
@@ -253,7 +254,7 @@ def convert_instance_seg_to_csr_mat(
 
 
 def convert_csr_mat_to_instance_seg(
-    csr_mat: sp.csr_matrix, shape: Tuple[int, int, int]
+    csr_mat: sp.csr_matrix, shape: tuple[int, int, int]
 ) -> np.ndarray:
     return csr_mat.toarray().reshape(shape)
 
@@ -269,11 +270,11 @@ def _calculate_features_with_local_background(
     z_ratio: float,
     y_ratio: float,
     x_ratio: float,
-    lr_shape: Tuple[int, int, int],
+    lr_shape: tuple[int, int, int],
     unnormalized_vol: np.ndarray,
     shell_radius: int = 4,
     inner_buffer: int = 2,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Calculate features with local background correction using shell sampling.
     """
@@ -415,15 +416,15 @@ def calculate_features_with_local_background(
     z_ratio: float,
     y_ratio: float,
     x_ratio: float,
-    lr_shape: Tuple[int, int, int],
+    lr_shape: tuple[int, int, int],
     unnormalized_vol: np.ndarray,
     pca_3: PCA,
     shell_radius: int = 4,
     inner_buffer: int = 1,
     return_object_features: bool = False,
 ) -> Union[
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
 ]:
     (
         centroids,
@@ -466,12 +467,12 @@ def _calculate_features_with_local_background_with_matched_background(
     z_ratio: float,
     y_ratio: float,
     x_ratio: float,
-    lr_shape: Tuple[int, int, int],
+    lr_shape: tuple[int, int, int],
     unnormalized_vol: np.ndarray,
     shell_radius: int = 4,
     inner_buffer: int = 2,
     random_seed: int = 42,  # Added for reproducibility
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Calculate features with local background correction using shell sampling.
     Also creates matched background objects with same voxel counts.
@@ -684,14 +685,14 @@ def calculate_features_per_particle(
     z_ratio: float,
     y_ratio: float,
     x_ratio: float,
-    lr_shape: Tuple[int, int, int],
+    lr_shape: tuple[int, int, int],
     unnormalized_vol: np.ndarray,
-) -> Tuple[
+) -> tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
     np.ndarray,
-    List[np.ndarray],
+    list[np.ndarray],
     np.ndarray,
 ]:
     z_ind, y_ind, x_ind = np.nonzero(fg_mask)

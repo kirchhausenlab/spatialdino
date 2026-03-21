@@ -1,7 +1,8 @@
-from typing import Optional, Tuple, Dict, Any
-import torch.nn.functional as F
+from typing import Any
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def check_anomaly_theoretical(
@@ -14,7 +15,7 @@ def check_anomaly_theoretical(
     temperature: float = 0.1,
     mask_thr: float = 0.001,
     kernel: int = 3,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     # batch size should be 1
     # if batch size is not 1, randomly select one sample
     idx = torch.randint(0, x.shape[0], (1,))
@@ -111,7 +112,7 @@ def get_neighbor_loss(
     temperature: float = 0.1,
     mask_thr: float = 0.001,
     kernel: int = 3,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     spatial_size = x.shape[-3:]
     x = model.prepare_tokens_with_masks(x)
     grid_size = tuple(

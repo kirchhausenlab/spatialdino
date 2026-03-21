@@ -1,4 +1,3 @@
-import argparse
 import logging
 import os
 from datetime import timedelta
@@ -137,7 +136,7 @@ def main() -> None:
         state_dict = torch.load(ckpt_path)
         lift.load_state_dict(state_dict["model"])
         metadata["iteration"] = state_dict["iteration"]
-    (test_dataloader, metric_logger, run) = (None, None, None)
+    (metric_logger, run) = (None, None)
 
     if rank == 0:
         run = init_wandb(cfg=cfg)

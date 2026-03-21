@@ -1,9 +1,10 @@
 # compute singular defect directions
+from typing import Literal
+
 import torch
-import torch.nn.functional as F
 import torch.linalg as LA
-from typing import List, Literal, Tuple
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def anomaly_dir_attn(
@@ -12,7 +13,7 @@ def anomaly_dir_attn(
     bias: bool = False,
     centered: bool = False,
     homogeneous: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     with torch.no_grad():
         N = blk.ls1.gamma.shape[0]
         dev = blk.ls1.gamma.device
@@ -52,7 +53,7 @@ def anomaly_dir_mlp_ls(
     centered: bool = False,
     homogeneous: bool = False,
     bias_ls: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     with torch.no_grad():
         N = blk.ls2.gamma.shape[0]  # 768
         M = blk.mlp.fc2.weight.shape[1]  # 3072
@@ -114,7 +115,7 @@ def anomaly_dir_swiglu_ls(
     centered: bool = False,
     homogeneous: bool = False,
     bias_ls: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     with torch.no_grad():
         N = blk.ls2.gamma.shape[0]
         M = blk.mlp.w3.weight.shape[1]
@@ -165,7 +166,7 @@ def anomaly_dir(
     blk: nn.Module,
     homogeneous: bool = False,
     ffn_layer: Literal["mlp", "swiglu"] = "mlp",
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     _, A, b = anomaly_dir_attn(
         blk,
         identity=True,
@@ -209,7 +210,7 @@ def anomaly_dir(
 
 def singular_defect_directions(
     model: nn.Module, ffn_layer: Literal["mlp", "swiglu"]
-) -> List[torch.Tensor]:
+) -> list[torch.Tensor]:
     accumulative_anomalies = []
     anomaly_dab = [anomaly_dir(blk, ffn_layer=ffn_layer) for blk in model.blocks]
     anomaly_as = [dab[1] for dab in anomaly_dab]

@@ -1,18 +1,20 @@
 # adapted from https://github.com/recursionpharma/maes_microscopy/blob/f9505d5a1e9c4716abda6ebb59b850888f569f5d/loss.py#L46
+from typing import Union
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import custom_fwd
 import torch.nn.functional as F
-from typing import Optional, Tuple, Union
-import numpy as np
+from torch.amp import custom_fwd
+
 from spatialdino.utils.misc import make_3tuple
 
 
 class FourierLoss(nn.Module):
     def __init__(
         self,
-        img_size: Union[int, Tuple[int, int, int]] = 224,
-        patch_size: Union[int, Tuple[int, int, int]] = 16,
+        img_size: Union[int, tuple[int, int, int]] = 224,
+        patch_size: Union[int, tuple[int, int, int]] = 16,
         in_chans: int = 3,
         norm: str = "ortho",
     ) -> None:
@@ -63,8 +65,8 @@ class FourierLoss(nn.Module):
         pz, py, px = self.patch_size
         gz, gy, gx = self.grid_size
         C = self.in_chans
-        assert N == gz * gy * gx, f"Expected {gz * gy * gx} patches, got {N}"
-        assert D == pz * py * px * C, f"Expected patch dim {pz * py * px * C}, got {D}"
+        assert gz * gy * gx == N, f"Expected {gz * gy * gx} patches, got {N}"
+        assert pz * py * px * C == D, f"Expected patch dim {pz * py * px * C}, got {D}"
         # → [B, gz, gy, gx, pz, py, px, C]
         x = x.view(B, gz, gy, gx, pz, py, px, C)
         # → [B, C, gz, pz, gy, py, gx, px]

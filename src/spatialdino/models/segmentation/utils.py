@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.amp
@@ -13,7 +12,7 @@ def save_model(
     step: int,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,  # type: ignore
+    loss_scaler: torch.amp.GradScaler | None = None,  # type: ignore
 ) -> None:
     checkpoint_dir = output_dir.joinpath(f"step={step}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)

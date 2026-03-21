@@ -2,10 +2,10 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.amp import custom_fwd
 from torch.nn.init import trunc_normal_
 from torch.nn.utils import weight_norm
-from torch.amp import custom_fwd
-import torch.nn.functional as F
 
 
 class DINOHead(nn.Module):

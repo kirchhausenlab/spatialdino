@@ -1,5 +1,4 @@
 import logging
-from typing import List
 
 import torch
 import torch.nn as nn
@@ -157,7 +156,7 @@ class LiFT(nn.Module):
         if patch_size == 8:
             self.scale_adapter = nn.Identity()
         else:
-            scale_adapter: List[nn.Module] = []
+            scale_adapter: list[nn.Module] = []
             if patch_size % 8 != 0:
                 scale_adapter.append(
                     nn.Upsample(

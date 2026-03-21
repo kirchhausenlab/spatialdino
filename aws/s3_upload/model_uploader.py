@@ -4,19 +4,18 @@ Model weights uploader for S3 storage.
 Handles uploading trained model weights to S3 bucket.
 """
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
 import time
-import hashlib
-import logging
-from pathlib import Path
-from typing import Dict, List, Optional
 from dataclasses import dataclass
+from pathlib import Path
 
 import boto3
-from tqdm import tqdm
 from botocore.exceptions import ClientError, NoCredentialsError
+from tqdm import tqdm
 
 from .s3_upload_config import get_config
 
@@ -30,7 +29,7 @@ class ModelInfo:
     model_type: str  # 'backbone', 'checkpoint', 'config'
     s3_key: str
     size: int
-    md5_hash: Optional[str] = None
+    md5_hash: str | None = None
     uploaded: bool = False
 
 
@@ -68,7 +67,7 @@ class ModelUploader:
             self.logger.error(f"AWS S3 connection failed: {e}")
             sys.exit(1)
 
-    def find_model_files(self, model_dir: str, model_name: str) -> List[ModelInfo]:
+    def find_model_files(self, model_dir: str, model_name: str) -> list[ModelInfo]:
         """Find all model-related files in directory."""
         if not os.path.exists(model_dir):
             self.logger.error(f"Model directory not found: {model_dir}")
@@ -179,7 +178,7 @@ class ModelUploader:
             self.logger.error(f"✗ Failed to upload {model_info.local_path}: {e}")
             return False
 
-    def upload_model(self, model_dir: str, model_name: str) -> Dict:
+    def upload_model(self, model_dir: str, model_name: str) -> dict:
         """Upload all files for a specific model."""
         self.logger.info(f"Starting upload for model: {model_name}")
 
@@ -224,7 +223,7 @@ class ModelUploader:
             "failed": failed_uploads,
         }
 
-    def create_model_manifest(self, model_name: str, model_files: List[ModelInfo]):
+    def create_model_manifest(self, model_name: str, model_files: list[ModelInfo]):
         """Create a manifest file for the uploaded model."""
         manifest = {"model_name": model_name, "upload_time": time.time(), "files": []}
 
@@ -251,7 +250,7 @@ class ModelUploader:
         except Exception as e:
             self.logger.warning(f"Failed to create manifest: {e}")
 
-    def list_uploaded_models(self) -> List[str]:
+    def list_uploaded_models(self) -> list[str]:
         """List all models uploaded to S3."""
         try:
             paginator = self.s3_client.get_paginator("list_objects_v2")
@@ -268,7 +267,7 @@ class ModelUploader:
                     model_name = prefix.split("/")[-2]  # Extract model name
                     model_names.add(model_name)
 
-            return sorted(list(model_names))
+            return sorted(model_names)
 
         except Exception as e:
             self.logger.error(f"Error listing models: {e}")
@@ -329,7 +328,7 @@ def main():
     download_parser.add_argument("download_dir", help="Directory to download to")
 
     # List command
-    list_parser = subparsers.add_parser("list", help="List uploaded models")
+    subparsers.add_parser("list", help="List uploaded models")
 
     args = parser.parse_args()
 
@@ -341,7 +340,7 @@ def main():
 
     if args.command == "upload":
         result = uploader.upload_model(args.model_dir, args.model_name)
-        print(f"\nUpload Summary:")
+        print("\nUpload Summary:")
         print(f"  Uploaded: {result['uploaded']} files")
         print(f"  Skipped: {result['skipped']} files")
         print(f"  Failed: {result['failed']} files")

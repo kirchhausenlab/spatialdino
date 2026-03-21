@@ -31,9 +31,18 @@ cpuX bad values here
         self.assertEqual(parsed["cpu1"].idle, 9)
 
     def test_utilization_pct_clamps_to_bounds(self) -> None:
-        self.assertEqual(status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(10, 1)), 0.0)
-        self.assertEqual(status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(20, 1)), 100.0)
-        self.assertEqual(status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(20, 11)), 0.0)
+        self.assertEqual(
+            status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(10, 1)),
+            0.0,
+        )
+        self.assertEqual(
+            status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(20, 1)),
+            100.0,
+        )
+        self.assertEqual(
+            status._utilization_pct(status.CpuSample(10, 1), status.CpuSample(20, 11)),
+            0.0,
+        )
 
 
 class CpuActivityTests(unittest.IsolatedAsyncioTestCase):
@@ -47,10 +56,16 @@ class CpuActivityTests(unittest.IsolatedAsyncioTestCase):
             "cpu1": status.CpuSample(total=200, idle=195),
         }
         with (
-            patch("spatialdino_server.status._read_proc_stat", side_effect=[first, second]),
-            patch("spatialdino_server.status.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            patch(
+                "spatialdino_server.status._read_proc_stat", side_effect=[first, second]
+            ),
+            patch(
+                "spatialdino_server.status.asyncio.sleep", new=AsyncMock()
+            ) as sleep_mock,
         ):
-            payload = await status.get_cpu_activity(sample_window_s=0.5, active_threshold_pct=10.0)
+            payload = await status.get_cpu_activity(
+                sample_window_s=0.5, active_threshold_pct=10.0
+            )
 
         sleep_mock.assert_awaited_once_with(0.5)
         self.assertEqual(payload["totalCores"], 2)
@@ -61,7 +76,9 @@ class CpuActivityTests(unittest.IsolatedAsyncioTestCase):
 
 class NvidiaGpuMemoryTests(unittest.TestCase):
     def test_handles_missing_nvidia_smi(self) -> None:
-        with patch("spatialdino_server.status.subprocess.run", side_effect=FileNotFoundError):
+        with patch(
+            "spatialdino_server.status.subprocess.run", side_effect=FileNotFoundError
+        ):
             payload = status.get_nvidia_gpu_memory()
         self.assertEqual(payload, {"nvidiaSmiAvailable": False, "gpus": []})
 
@@ -96,8 +113,18 @@ class NvidiaGpuMemoryTests(unittest.TestCase):
         self.assertEqual(
             payload["gpus"],
             [
-                {"index": 0, "name": "GPU-A", "memoryUsedMiB": 10, "memoryTotalMiB": 80},
-                {"index": 1, "name": "GPU-B", "memoryUsedMiB": 20, "memoryTotalMiB": 100},
+                {
+                    "index": 0,
+                    "name": "GPU-A",
+                    "memoryUsedMiB": 10,
+                    "memoryTotalMiB": 80,
+                },
+                {
+                    "index": 1,
+                    "name": "GPU-B",
+                    "memoryUsedMiB": 20,
+                    "memoryTotalMiB": 100,
+                },
             ],
         )
 

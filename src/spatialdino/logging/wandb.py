@@ -1,4 +1,5 @@
-from typing import Any, Dict
+from typing import Any
+
 import wandb
 from omegaconf import DictConfig, OmegaConf, SCMode
 from wandb.sdk.wandb_run import Run

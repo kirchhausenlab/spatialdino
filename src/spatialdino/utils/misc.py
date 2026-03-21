@@ -1,9 +1,11 @@
 import functools
 import os
 import random
-from numbers import Number
-from typing import Sequence, Tuple, Union
+from collections.abc import Sequence
 from functools import lru_cache
+from numbers import Number
+from typing import Union
+
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -22,8 +24,8 @@ def set_seed(
 
 
 def make_3tuple(
-    x: Union[Number, Tuple[Number, Number, Number], ListConfig],
-) -> Tuple[Number, Number, Number]:
+    x: Union[Number, tuple[Number, Number, Number], ListConfig],
+) -> tuple[Number, Number, Number]:
     if isinstance(x, Sequence) and len(x) == 3:
         return tuple(x)
 
@@ -32,8 +34,8 @@ def make_3tuple(
 
 
 def make_2tuple(
-    x: Union[Number, Tuple[Number, Number], ListConfig],
-) -> Tuple[Number, Number]:
+    x: Union[Number, tuple[Number, Number], ListConfig],
+) -> tuple[Number, Number]:
     if isinstance(x, Sequence) and len(x) == 2:
         return tuple(x)
 
@@ -53,7 +55,7 @@ def rgetattr(obj, attr, *args):
     def _getattr(obj, attr):
         return getattr(obj, attr, *args)
 
-    return functools.reduce(_getattr, [obj] + attr.split("."))
+    return functools.reduce(_getattr, [obj, *attr.split(".")])
 
 
 def rhasattr(obj, attr):

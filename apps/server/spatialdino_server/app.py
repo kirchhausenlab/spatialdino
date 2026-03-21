@@ -9,38 +9,36 @@ import shlex
 import shutil
 import socket
 import subprocess
-import tempfile
-from functools import lru_cache
-from pathlib import Path
 import sys
+import tempfile
 import threading
-from typing import Any, Callable, Literal, TextIO
 import urllib.request
 import uuid
 import zipfile
+from collections.abc import Callable
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Literal, TextIO
 
+import tifffile
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
-import tifffile
 
+from spatialdino_server import jobs_api
 from spatialdino_server.fs_api import router as fs_router
 from spatialdino_server.fs_roots import _configured_fs_roots_from_env
-from spatialdino_server import jobs_api
 from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
-
 
 JOB_LOGS_DIRNAME = ".spatialdino_job_logs"
 RAW_DATA_RELATIVE_PATH = "data/raw_data"
 DEFAULT_INFERENCE_BACKBONE_FILENAME = "backbone.pth"
-DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH = f"models/{DEFAULT_INFERENCE_BACKBONE_FILENAME}"
-DEFAULT_INFERENCE_BACKBONE_URL = (
-    "https://spatialdino.s3.us-east-1.amazonaws.com/models/spatial_dino/step%3D244999/backbone.pth"
+DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH = (
+    f"models/{DEFAULT_INFERENCE_BACKBONE_FILENAME}"
 )
-DEFAULT_PUBLIC_DATA_MANIFEST_URL = (
-    "https://spatialdino.s3.us-east-1.amazonaws.com/inference_data/raw_data/manifest.json"
-)
+DEFAULT_INFERENCE_BACKBONE_URL = "https://spatialdino.s3.us-east-1.amazonaws.com/models/spatial_dino/step%3D244999/backbone.pth"
+DEFAULT_PUBLIC_DATA_MANIFEST_URL = "https://spatialdino.s3.us-east-1.amazonaws.com/inference_data/raw_data/manifest.json"
 PUBLIC_DATA_DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _default_inference_backbone_download_lock = threading.Lock()
 
@@ -80,7 +78,9 @@ def get_public_data_manifest_url() -> str:
 
 
 def get_server_hostname() -> str:
-    value = os.environ.get("SPATIALDINO_SERVER_HOSTNAME") or os.environ.get("SERVER_HOSTNAME")
+    value = os.environ.get("SPATIALDINO_SERVER_HOSTNAME") or os.environ.get(
+        "SERVER_HOSTNAME"
+    )
     if value:
         return value
     return socket.gethostname()
@@ -107,7 +107,9 @@ def _normalize_ip_text(value: str | None) -> str | None:
 def get_server_ip_addresses() -> frozenset[str]:
     addresses = {"127.0.0.1", "::1"}
     hostnames = {socket.gethostname(), socket.getfqdn(), "localhost"}
-    configured = os.environ.get("SPATIALDINO_SERVER_HOSTNAME") or os.environ.get("SERVER_HOSTNAME")
+    configured = os.environ.get("SPATIALDINO_SERVER_HOSTNAME") or os.environ.get(
+        "SERVER_HOSTNAME"
+    )
     if configured:
         hostnames.add(configured)
 
@@ -122,7 +124,10 @@ def get_server_ip_addresses() -> frozenset[str]:
             if normalized:
                 addresses.add(normalized)
 
-    for family, target in ((socket.AF_INET, ("8.8.8.8", 80)), (socket.AF_INET6, ("2001:4860:4860::8888", 80, 0, 0))):
+    for family, target in (
+        (socket.AF_INET, ("8.8.8.8", 80)),
+        (socket.AF_INET6, ("2001:4860:4860::8888", 80, 0, 0)),
+    ):
         try:
             with socket.socket(family, socket.SOCK_DGRAM) as sock:
                 sock.connect(target)
@@ -160,7 +165,9 @@ def list_backbone_weights() -> list[dict[str, str]]:
 
     files: set[Path] = set()
     for pattern in ("*.pt", "*.pth"):
-        files.update(path.resolve() for path in models_dir.glob(pattern) if path.is_file())
+        files.update(
+            path.resolve() for path in models_dir.glob(pattern) if path.is_file()
+        )
 
     return [
         {
@@ -182,7 +189,10 @@ def get_default_inference_backbone_path() -> Path:
 def _download_url_to_file(url: str, target_path: Path) -> None:
     temp_path = target_path.with_name(f".{target_path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with urllib.request.urlopen(url, timeout=60) as response, temp_path.open("wb") as handle:
+        with (
+            urllib.request.urlopen(url, timeout=60) as response,
+            temp_path.open("wb") as handle,
+        ):
             shutil.copyfileobj(response, handle)
         os.replace(temp_path, target_path)
     finally:
@@ -209,7 +219,9 @@ def _load_public_data_manifest() -> list[dict[str, str]]:
         with urllib.request.urlopen(manifest_url, timeout=60) as response:
             payload = json.load(response)
     except Exception as exc:
-        raise RuntimeError(f"Could not load public data manifest from {manifest_url}: {exc}") from exc
+        raise RuntimeError(
+            f"Could not load public data manifest from {manifest_url}: {exc}"
+        ) from exc
 
     if not isinstance(payload, dict):
         raise RuntimeError("Public data manifest must be a JSON object.")
@@ -227,18 +239,24 @@ def _load_public_data_manifest() -> list[dict[str, str]]:
         name_raw = item.get("name")
         archive_url_raw = item.get("archiveUrl")
         if not isinstance(name_raw, str) or not isinstance(archive_url_raw, str):
-            raise RuntimeError("Each manifest dataset entry must include string 'name' and 'archiveUrl' fields.")
+            raise RuntimeError(
+                "Each manifest dataset entry must include string 'name' and 'archiveUrl' fields."
+            )
 
         try:
             name = _validate_public_data_dataset_name(name_raw)
         except ValueError as exc:
-            raise RuntimeError(f"Invalid dataset name in public data manifest: {exc}") from exc
+            raise RuntimeError(
+                f"Invalid dataset name in public data manifest: {exc}"
+            ) from exc
 
         archive_url = archive_url_raw.strip()
         if not archive_url.startswith(("http://", "https://")):
             raise RuntimeError(f"Manifest dataset {name!r} has an invalid archiveUrl.")
         if name in seen_names:
-            raise RuntimeError(f"Duplicate dataset name in public data manifest: {name!r}")
+            raise RuntimeError(
+                f"Duplicate dataset name in public data manifest: {name!r}"
+            )
 
         seen_names.add(name)
         datasets.append({"name": name, "archiveUrl": archive_url})
@@ -302,9 +320,13 @@ class RunInferenceRequest(BaseModel):
     upsample_factor: float | None = None
     route: str = Field("full", min_length=1)
     precision: str = Field("bfloat16", min_length=1)
-    crop_bounds: InferenceCropBoundsRequest = Field(default_factory=InferenceCropBoundsRequest)
+    crop_bounds: InferenceCropBoundsRequest = Field(
+        default_factory=InferenceCropBoundsRequest
+    )
     anisotropy: InferenceAxisRequest = Field(default_factory=InferenceAxisRequest)
-    file_range: InferenceFileRangeRequest = Field(default_factory=InferenceFileRangeRequest)
+    file_range: InferenceFileRangeRequest = Field(
+        default_factory=InferenceFileRangeRequest
+    )
     normalization_mode: str = Field("per_volume", min_length=1)
     global_hist_min: float | None = None
     global_hist_max: float | None = None
@@ -379,7 +401,9 @@ def _resolve_allowed_inference_path(raw_path: str) -> Path:
     resolved = Path(os.path.realpath(configured))
     roots = _configured_fs_roots_from_env().roots
     if roots and not any(_is_relative_to(resolved, root) for root in roots):
-        raise HTTPException(status_code=403, detail="Path is outside configured filesystem roots.")
+        raise HTTPException(
+            status_code=403, detail="Path is outside configured filesystem roots."
+        )
     return resolved
 
 
@@ -407,12 +431,24 @@ def _validate_inference_crop_params(
     assert start_z < end_z, "start_z must be less than end_z"
     assert start_y < end_y, "start_y must be less than end_y"
     assert start_x < end_x, "start_x must be less than end_x"
-    assert start_z < raw_volume_shape[0], "start_z must be less than the number of z-stacks"
-    assert start_y < raw_volume_shape[1], "start_y must be less than the number of y-stacks"
-    assert start_x < raw_volume_shape[2], "start_x must be less than the number of x-stacks"
-    assert end_z <= raw_volume_shape[0], "end_z must be less than or equal to the number of z-stacks"
-    assert end_y <= raw_volume_shape[1], "end_y must be less than or equal to the number of y-stacks"
-    assert end_x <= raw_volume_shape[2], "end_x must be less than or equal to the number of x-stacks"
+    assert start_z < raw_volume_shape[0], (
+        "start_z must be less than the number of z-stacks"
+    )
+    assert start_y < raw_volume_shape[1], (
+        "start_y must be less than the number of y-stacks"
+    )
+    assert start_x < raw_volume_shape[2], (
+        "start_x must be less than the number of x-stacks"
+    )
+    assert end_z <= raw_volume_shape[0], (
+        "end_z must be less than or equal to the number of z-stacks"
+    )
+    assert end_y <= raw_volume_shape[1], (
+        "end_y must be less than or equal to the number of y-stacks"
+    )
+    assert end_x <= raw_volume_shape[2], (
+        "end_x must be less than or equal to the number of x-stacks"
+    )
 
 
 def _list_inference_tiff_paths(input_path: Path) -> list[Path]:
@@ -431,7 +467,9 @@ def _list_inference_tiff_paths(input_path: Path) -> list[Path]:
     return tiff_paths
 
 
-def _selected_inference_tiff_paths(input_path: Path, file_start: int, file_end: int | None) -> list[Path]:
+def _selected_inference_tiff_paths(
+    input_path: Path, file_start: int, file_end: int | None
+) -> list[Path]:
     return _list_inference_tiff_paths(input_path)[file_start:file_end]
 
 
@@ -478,13 +516,19 @@ def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
 
     if not input_path.exists():
-        return _invalid_process_features_input("missing", "Input folder does not exist.")
+        return _invalid_process_features_input(
+            "missing", "Input folder does not exist."
+        )
     if not input_path.is_dir():
-        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+        return _invalid_process_features_input(
+            "not_directory", "Input path is not a folder."
+        )
 
     subfolders = _list_child_directories(input_path)
     if not subfolders:
-        return _invalid_process_features_input("no_subfolders", "Input folder contains no subfolders.")
+        return _invalid_process_features_input(
+            "no_subfolders", "Input folder contains no subfolders."
+        )
 
     for subfolder in subfolders:
         missing_files: list[str] = []
@@ -497,7 +541,9 @@ def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
             if len(missing_files) == 1:
                 missing_text = missing_files[0]
             else:
-                missing_text = ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
+                missing_text = (
+                    ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
+                )
             return _invalid_process_features_input(
                 "missing_required_files",
                 f"Subfolder {subfolder.name} is missing {missing_text}.",
@@ -530,9 +576,13 @@ def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
 
     if not input_path.exists():
-        return _invalid_process_features_input("missing", "Input folder does not exist.")
+        return _invalid_process_features_input(
+            "missing", "Input folder does not exist."
+        )
     if not input_path.is_dir():
-        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+        return _invalid_process_features_input(
+            "not_directory", "Input path is not a folder."
+        )
 
     candidate_subfolders: list[Path] = []
     for subfolder in _list_child_directories(input_path):
@@ -559,7 +609,9 @@ def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
 
     subfolder_count = len(candidate_subfolders)
     if subfolder_count == 0:
-        return _invalid_process_features_input("no_subfolders", "Input folder contains no valid timepoint subfolders.")
+        return _invalid_process_features_input(
+            "no_subfolders", "Input folder contains no valid timepoint subfolders."
+        )
     if subfolder_count < 2:
         return _invalid_process_features_input(
             "insufficient_subfolders",
@@ -574,16 +626,22 @@ def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
     }
 
 
-def validate_tracking_segmentation_folder(raw_input_path: str, raw_segmentation_path: str) -> dict[str, Any]:
+def validate_tracking_segmentation_folder(
+    raw_input_path: str, raw_segmentation_path: str
+) -> dict[str, Any]:
     input_validation = validate_tracking_input_folder(raw_input_path)
     if not input_validation["valid"]:
         return input_validation
 
     segmentation_path = _resolve_allowed_inference_path(raw_segmentation_path)
     if not segmentation_path.exists():
-        return _invalid_process_features_input("missing", "Segmentation folder does not exist.")
+        return _invalid_process_features_input(
+            "missing", "Segmentation folder does not exist."
+        )
     if not segmentation_path.is_dir():
-        return _invalid_process_features_input("not_directory", "Segmentation path is not a folder.")
+        return _invalid_process_features_input(
+            "not_directory", "Segmentation path is not a folder."
+        )
 
     subfolder_names = [str(name) for name in input_validation.get("subfolderNames", [])]
     for subfolder_name in subfolder_names:
@@ -613,7 +671,9 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
 
     tiff_paths = _list_inference_tiff_paths(input_path)
     if not tiff_paths:
-        return _invalid_inference_input("no_tiff_files", "Input folder contains no .tif or .tiff files.")
+        return _invalid_inference_input(
+            "no_tiff_files", "Input folder contains no .tif or .tiff files."
+        )
 
     reference_shape: tuple[int, ...] | None = None
     reference_shape_xyz: dict[str, int] | None = None
@@ -635,7 +695,9 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
             )
 
         if len(shape) != 3:
-            return _invalid_inference_input("shape_mismatch", f"{tiff_path.name} is not a 3D TIFF volume.")
+            return _invalid_inference_input(
+                "shape_mismatch", f"{tiff_path.name} is not a 3D TIFF volume."
+            )
 
         current_shape_xyz = _shape_xyz(shape)
         if reference_shape is None:
@@ -667,9 +729,15 @@ SAVED_FEATURES_RE = re.compile(r"Saved features to\s+(.+)$")
 PROCESS_FEATURES_PROCESSING_RE = re.compile(
     r"^\[(?:process-features|segmentation|tracking|probmap)\] Processing (.+?) \((\d+)/(\d+)\)$"
 )
-PROCESS_FEATURES_COMPLETED_RE = re.compile(r"^\[(?:process-features|segmentation|tracking|probmap)\] Completed (.+)$")
-TRACKING_MATCHING_RE = re.compile(r"^\[tracking\] Matching (.+?) -> (.+?) \((\d+)/(\d+)\)$")
-TRACKING_MATCHED_RE = re.compile(r"^\[tracking\] Matched (.+?) -> (.+?) \((\d+)/(\d+)\)$")
+PROCESS_FEATURES_COMPLETED_RE = re.compile(
+    r"^\[(?:process-features|segmentation|tracking|probmap)\] Completed (.+)$"
+)
+TRACKING_MATCHING_RE = re.compile(
+    r"^\[tracking\] Matching (.+?) -> (.+?) \((\d+)/(\d+)\)$"
+)
+TRACKING_MATCHED_RE = re.compile(
+    r"^\[tracking\] Matched (.+?) -> (.+?) \((\d+)/(\d+)\)$"
+)
 DEFAULT_INFERENCE_OMP_NUM_THREADS = 4
 NORM_PER_VOL_MIN_RE = re.compile(r"^Global hist min:\s*(.+?)\s*$", re.MULTILINE)
 NORM_PER_VOL_MAX_RE = re.compile(r"^Global hist max:\s*(.+?)\s*$", re.MULTILINE)
@@ -717,7 +785,9 @@ def _validate_post_processing_output_path(
 ) -> tuple[dict[str, Any] | None, Path | None]:
     output_path = _resolve_allowed_inference_path(raw_output_path)
     if output_path.exists() and not output_path.is_dir():
-        return _invalid_process_features_run("output_not_directory", f"{label} path is not a folder."), None
+        return _invalid_process_features_run(
+            "output_not_directory", f"{label} path is not a folder."
+        ), None
     if _is_relative_to(output_path, input_path):
         return _invalid_process_features_run(
             "output_inside_input",
@@ -726,7 +796,9 @@ def _validate_post_processing_output_path(
     return None, output_path
 
 
-def _overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -> dict[str, Any]:
+def _overwrite_confirmation(
+    output_path: Path, count: int, preview: list[str]
+) -> dict[str, Any]:
     message = "Output folder is not empty. Confirm overwrite to erase its contents and continue."
     return {
         "valid": True,
@@ -750,7 +822,9 @@ def _coerce_script_file_end(value: int | None) -> int | None:
     return None if value is None else value + 1
 
 
-def _validate_inclusive_axis_bounds(start: int, end: int | None, *, size: int, axis_label: str) -> str | None:
+def _validate_inclusive_axis_bounds(
+    start: int, end: int | None, *, size: int, axis_label: str
+) -> str | None:
     last_index = size - 1
     if start < 0 or start > last_index:
         return f"{axis_label} start must be between 0 and {last_index}."
@@ -764,7 +838,9 @@ def _build_process_features_launch_config(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     input_validation = validate_process_features_input_folder(payload.input_path)
     if not input_validation["valid"]:
-        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+        return _invalid_process_features_run(
+            input_validation["reasonCode"], input_validation["message"]
+        ), None
 
     if not payload.save_pca and not payload.save_high_resolution_features:
         return _invalid_process_features_run(
@@ -773,13 +849,17 @@ def _build_process_features_launch_config(
         ), None
 
     if payload.gpu_index is None:
-        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+        return _invalid_process_features_run(
+            "missing_gpu_selection", "Select one GPU."
+        ), None
 
     requested_gpu = int(payload.gpu_index)
     gpu_status = get_nvidia_gpu_memory()
     available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
     if requested_gpu not in available_gpus:
-        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
+        return _invalid_process_features_run(
+            "invalid_gpu_selection", "Selected GPU is not available on this server."
+        ), None
 
     if payload.high_resolution_save_format not in PROCESS_FEATURES_SAVE_FORMATS:
         return _invalid_process_features_run(
@@ -788,7 +868,9 @@ def _build_process_features_launch_config(
         ), None
 
     if payload.pca_save_format not in PROCESS_FEATURES_SAVE_FORMATS:
-        return _invalid_process_features_run("invalid_pca_format", "PCA save format must be one of: .npy, .tif."), None
+        return _invalid_process_features_run(
+            "invalid_pca_format", "PCA save format must be one of: .npy, .tif."
+        ), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
     output_error, output_path = _validate_post_processing_output_path(
@@ -813,7 +895,9 @@ def _build_process_features_launch_config(
             "save_pca": bool(payload.save_pca),
             "pca_components": int(payload.pca_components),
             "pca_save_format": payload.pca_save_format,
-            "save_high_resolution_features": bool(payload.save_high_resolution_features),
+            "save_high_resolution_features": bool(
+                payload.save_high_resolution_features
+            ),
             "high_resolution_save_format": payload.high_resolution_save_format,
             "subfolder_count": subfolder_count,
         },
@@ -825,22 +909,30 @@ def _build_segmentation_launch_config(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     input_validation = validate_segmentation_input_folder(payload.input_path)
     if not input_validation["valid"]:
-        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+        return _invalid_process_features_run(
+            input_validation["reasonCode"], input_validation["message"]
+        ), None
 
     if payload.gpu_index is None:
-        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+        return _invalid_process_features_run(
+            "missing_gpu_selection", "Select one GPU."
+        ), None
 
     requested_gpu = int(payload.gpu_index)
     gpu_status = get_nvidia_gpu_memory()
     available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
     if requested_gpu not in available_gpus:
-        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
+        return _invalid_process_features_run(
+            "invalid_gpu_selection", "Selected GPU is not available on this server."
+        ), None
 
     segmentation_mode = (payload.mode or "").strip() or (
         SEGMENTATION_MODE_VORONOI_OTSU if payload.enable_voronoi_otsu else ""
     )
     if segmentation_mode not in SEGMENTATION_MODE_OPTIONS:
-        return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
+        return _invalid_process_features_run(
+            "invalid_segmentation_mode", "Segmentation mode is invalid."
+        ), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
     subfolder_count = int(input_validation["subfolderCount"])
@@ -917,10 +1009,14 @@ def _build_segmentation_launch_config(
             ), None
         seg_tif_raw = (payload.seg_tif or "").strip()
         if not seg_tif_raw:
-            return _invalid_process_features_run("missing_seg_tif", "Choose an annotated FG/BG mask."), None
+            return _invalid_process_features_run(
+                "missing_seg_tif", "Choose an annotated FG/BG mask."
+            ), None
         seg_tif_path = _resolve_allowed_inference_path(seg_tif_raw)
         if not seg_tif_path.is_file():
-            return _invalid_process_features_run("missing_seg_tif", "Annotated FG/BG mask does not exist."), None
+            return _invalid_process_features_run(
+                "missing_seg_tif", "Annotated FG/BG mask does not exist."
+            ), None
         valid_mask_raw = (payload.valid_mask_tif or "").strip()
         if valid_mask_raw:
             valid_mask_tif_path = _resolve_allowed_inference_path(valid_mask_raw)
@@ -935,7 +1031,9 @@ def _build_segmentation_launch_config(
             f"Could not find {PROBABILITY_MAP_DENSITIES_FILENAME} in the input folder root.",
         ), None
 
-    progress_total = (2 if run_density_estimation else 0) + (subfolder_count if run_stage_2 else 0)
+    progress_total = (2 if run_density_estimation else 0) + (
+        subfolder_count if run_stage_2 else 0
+    )
     launch_config: dict[str, Any] = {
         "input_path": input_path,
         "output_path": output_path,
@@ -952,7 +1050,9 @@ def _build_segmentation_launch_config(
         "feature_batch": int(payload.feature_batch),
         "kde_points": int(payload.kde_points),
         "kde_max_samples": int(payload.kde_max_samples),
-        "kde_bandwidth": float(payload.kde_bandwidth) if payload.kde_bandwidth is not None else None,
+        "kde_bandwidth": float(payload.kde_bandwidth)
+        if payload.kde_bandwidth is not None
+        else None,
         "hist_sigma_bins": float(payload.hist_sigma_bins),
         "bg_prob_threshold": float(payload.bg_prob_threshold),
         "fg_prob_threshold": float(payload.fg_prob_threshold),
@@ -976,9 +1076,13 @@ def _build_tracking_launch_config(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     input_validation = validate_tracking_input_folder(payload.input_path)
     if not input_validation["valid"]:
-        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+        return _invalid_process_features_run(
+            input_validation["reasonCode"], input_validation["message"]
+        ), None
 
-    segmentation_validation = validate_tracking_segmentation_folder(payload.input_path, payload.segmentation_path)
+    segmentation_validation = validate_tracking_segmentation_folder(
+        payload.input_path, payload.segmentation_path
+    )
     if not segmentation_validation["valid"]:
         return _invalid_process_features_run(
             segmentation_validation["reasonCode"],
@@ -1029,7 +1133,9 @@ def _resolve_omp_num_threads() -> str:
     raw_omp_num_threads = os.environ.get("OMP_NUM_THREADS", "").strip()
     if raw_omp_num_threads:
         try:
-            omp_num_threads = max(DEFAULT_INFERENCE_OMP_NUM_THREADS, int(raw_omp_num_threads))
+            omp_num_threads = max(
+                DEFAULT_INFERENCE_OMP_NUM_THREADS, int(raw_omp_num_threads)
+            )
         except ValueError:
             omp_num_threads = DEFAULT_INFERENCE_OMP_NUM_THREADS
     return str(omp_num_threads)
@@ -1038,10 +1144,14 @@ def _resolve_omp_num_threads() -> str:
 def _validate_normalization_payload(
     payload: RunInferenceRequest,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    normalization_mode = payload.normalization_mode.strip() or NORMALIZATION_MODE_PER_VOLUME
+    normalization_mode = (
+        payload.normalization_mode.strip() or NORMALIZATION_MODE_PER_VOLUME
+    )
     if normalization_mode not in NORMALIZATION_MODE_OPTIONS:
         return (
-            _invalid_inference_run("invalid_normalization_mode", "Normalization mode is invalid."),
+            _invalid_inference_run(
+                "invalid_normalization_mode", "Normalization mode is invalid."
+            ),
             None,
         )
 
@@ -1106,7 +1216,10 @@ def _summarize_directory(path: Path) -> tuple[int, list[str]]:
     if not path.exists() or not path.is_dir():
         return 0, []
 
-    entries = sorted((entry.name for entry in path.iterdir()), key=lambda value: (value.casefold(), value))
+    entries = sorted(
+        (entry.name for entry in path.iterdir()),
+        key=lambda value: (value.casefold(), value),
+    )
     return len(entries), entries[:8]
 
 
@@ -1143,9 +1256,13 @@ def _extract_zip_to_directory(archive_path: Path, extract_dir: Path) -> None:
         for info in infos:
             member = Path(info.filename)
             if member.is_absolute():
-                raise RuntimeError(f"Archive contains an absolute path: {info.filename!r}")
+                raise RuntimeError(
+                    f"Archive contains an absolute path: {info.filename!r}"
+                )
             if any(part == ".." for part in member.parts):
-                raise RuntimeError(f"Archive contains an unsafe path: {info.filename!r}")
+                raise RuntimeError(
+                    f"Archive contains an unsafe path: {info.filename!r}"
+                )
 
         archive.extractall(extract_dir)
 
@@ -1155,7 +1272,9 @@ def _select_extracted_dataset_path(extract_dir: Path, dataset_name: str) -> Path
     if named_path.is_dir():
         return named_path
 
-    visible_children = [child for child in extract_dir.iterdir() if child.name not in {"__MACOSX"}]
+    visible_children = [
+        child for child in extract_dir.iterdir() if child.name not in {"__MACOSX"}
+    ]
     if len(visible_children) == 1 and visible_children[0].is_dir():
         return visible_children[0]
     return extract_dir
@@ -1185,14 +1304,18 @@ def _build_data_download_launch_config(
         try:
             name = _validate_public_data_dataset_name(raw_name)
         except ValueError:
-            return _invalid_data_download("invalid_dataset_name", f"Invalid dataset selection: {raw_name!r}"), None
+            return _invalid_data_download(
+                "invalid_dataset_name", f"Invalid dataset selection: {raw_name!r}"
+            ), None
         if name in seen_names:
             continue
         seen_names.add(name)
         selected_names.append(name)
 
     if not selected_names:
-        return _invalid_data_download("missing_selection", "Select at least one dataset to download."), None
+        return _invalid_data_download(
+            "missing_selection", "Select at least one dataset to download."
+        ), None
 
     manifest_by_name = {item["name"]: item for item in manifest_datasets}
     missing_names = [name for name in selected_names if name not in manifest_by_name]
@@ -1208,7 +1331,10 @@ def _build_data_download_launch_config(
     repo_root = get_repo_root()
     raw_data_dir = get_public_data_dir()
     if not _is_relative_to(raw_data_dir, repo_root):
-        raise HTTPException(status_code=500, detail="Public data directory must stay inside the repo root.")
+        raise HTTPException(
+            status_code=500,
+            detail="Public data directory must stay inside the repo root.",
+        )
 
     selected_datasets = [manifest_by_name[name] for name in selected_names]
     existing_items = [
@@ -1217,10 +1343,15 @@ def _build_data_download_launch_config(
             "path": str(raw_data_dir / item["name"]),
         }
         for item in selected_datasets
-        if (raw_data_dir / item["name"]).exists() or (raw_data_dir / item["name"]).is_symlink()
+        if (raw_data_dir / item["name"]).exists()
+        or (raw_data_dir / item["name"]).is_symlink()
     ]
 
-    if existing_items and payload.existing_mode is None and require_overwrite_confirmation:
+    if (
+        existing_items
+        and payload.existing_mode is None
+        and require_overwrite_confirmation
+    ):
         existing_names = [item["name"] for item in existing_items]
         return {
             "valid": True,
@@ -1240,7 +1371,8 @@ def _build_data_download_launch_config(
         selected_datasets = [
             item
             for item in selected_datasets
-            if not (raw_data_dir / item["name"]).exists() and not (raw_data_dir / item["name"]).is_symlink()
+            if not (raw_data_dir / item["name"]).exists()
+            and not (raw_data_dir / item["name"]).is_symlink()
         ]
 
     if not selected_datasets:
@@ -1253,7 +1385,9 @@ def _build_data_download_launch_config(
         )
 
     selected_dataset_names = {item["name"] for item in selected_datasets}
-    skipped_names = [name for name in selected_names if name not in selected_dataset_names]
+    skipped_names = [
+        name for name in selected_names if name not in selected_dataset_names
+    ]
     return None, {
         "manifest_url": get_public_data_manifest_url(),
         "download_root": raw_data_dir,
@@ -1289,12 +1423,16 @@ def _build_inference_launch_config(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     input_validation = validate_inference_input_folder(payload.input_path)
     if not input_validation["valid"]:
-        return _invalid_inference_run(input_validation["reasonCode"], input_validation["message"]), None
+        return _invalid_inference_run(
+            input_validation["reasonCode"], input_validation["message"]
+        ), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
     output_path = _resolve_allowed_inference_path(payload.output_path)
     if output_path.exists() and not output_path.is_dir():
-        return _invalid_inference_run("output_not_directory", "Output path is not a folder."), None
+        return _invalid_inference_run(
+            "output_not_directory", "Output path is not a folder."
+        ), None
 
     if _is_relative_to(input_path, output_path):
         return _invalid_inference_run(
@@ -1304,39 +1442,58 @@ def _build_inference_launch_config(
 
     backbone_path = _resolve_backbone_weight_path(payload.backbone_weight)
     if backbone_path is None:
-        return _invalid_inference_run("missing_backbone_weight", "Select a backbone weights file."), None
+        return _invalid_inference_run(
+            "missing_backbone_weight", "Select a backbone weights file."
+        ), None
 
-    requested_gpus = sorted(set(int(index) for index in payload.gpu_indices))
+    requested_gpus = sorted({int(index) for index in payload.gpu_indices})
     if not requested_gpus:
-        return _invalid_inference_run("missing_gpu_selection", "Select at least one GPU."), None
+        return _invalid_inference_run(
+            "missing_gpu_selection", "Select at least one GPU."
+        ), None
 
     available_gpu_indices = {
-        int(gpu["index"]) for gpu in get_nvidia_gpu_memory().get("gpus", []) if "index" in gpu
+        int(gpu["index"])
+        for gpu in get_nvidia_gpu_memory().get("gpus", [])
+        if "index" in gpu
     }
     if any(index not in available_gpu_indices for index in requested_gpus):
-        return _invalid_inference_run("invalid_gpu_selection", "Selected GPUs are not available on the server."), None
+        return _invalid_inference_run(
+            "invalid_gpu_selection", "Selected GPUs are not available on the server."
+        ), None
 
     upsample_factor = payload.upsample_factor
     if upsample_factor is None or upsample_factor < 1.0:
-        return _invalid_inference_run("invalid_upsample_factor", "Upsample factor must be greater than or equal to 1."), None
+        return _invalid_inference_run(
+            "invalid_upsample_factor",
+            "Upsample factor must be greater than or equal to 1.",
+        ), None
 
     anisotropy_x = payload.anisotropy.x
     anisotropy_y = payload.anisotropy.y
     anisotropy_z = payload.anisotropy.z
     if anisotropy_x is None or anisotropy_y is None or anisotropy_z is None:
-        return _invalid_inference_run("invalid_anisotropy", "Anisotropy correction values are required."), None
+        return _invalid_inference_run(
+            "invalid_anisotropy", "Anisotropy correction values are required."
+        ), None
     if anisotropy_x <= 0 or anisotropy_y <= 0 or anisotropy_z <= 0:
-        return _invalid_inference_run("invalid_anisotropy", "Anisotropy correction values must be greater than 0."), None
+        return _invalid_inference_run(
+            "invalid_anisotropy", "Anisotropy correction values must be greater than 0."
+        ), None
 
     route_mapping = {"full": "default", "streaming": "streaming"}
     inference_route = route_mapping.get(payload.route)
     if inference_route is None:
-        return _invalid_inference_run("invalid_route", "Inference route is invalid."), None
+        return _invalid_inference_run(
+            "invalid_route", "Inference route is invalid."
+        ), None
 
     dtype_mapping = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
     dtype = dtype_mapping.get(payload.precision)
     if dtype is None:
-        return _invalid_inference_run("invalid_precision", "Precision is invalid."), None
+        return _invalid_inference_run(
+            "invalid_precision", "Precision is invalid."
+        ), None
 
     normalization_error, normalization_config = _validate_normalization_payload(payload)
     if normalization_error is not None or normalization_config is None:
@@ -1350,7 +1507,9 @@ def _build_inference_launch_config(
     crop_end_x_inclusive = payload.crop_bounds.x_end
     crop_end_y_inclusive = payload.crop_bounds.y_end
     crop_end_z_inclusive = payload.crop_bounds.z_end
-    crop_error = _validate_inclusive_axis_bounds(crop_start_x, crop_end_x_inclusive, size=raw_shape[2], axis_label="X")
+    crop_error = _validate_inclusive_axis_bounds(
+        crop_start_x, crop_end_x_inclusive, size=raw_shape[2], axis_label="X"
+    )
     if crop_error is None:
         crop_error = _validate_inclusive_axis_bounds(
             crop_start_y,
@@ -1366,7 +1525,9 @@ def _build_inference_launch_config(
             axis_label="Z",
         )
     if crop_error is not None:
-        return _invalid_inference_run("invalid_crop", f"Crop parameters are invalid: {crop_error}"), None
+        return _invalid_inference_run(
+            "invalid_crop", f"Crop parameters are invalid: {crop_error}"
+        ), None
 
     crop_end_x = _coerce_script_crop_end(crop_end_x_inclusive)
     crop_end_y = _coerce_script_crop_end(crop_end_y_inclusive)
@@ -1383,7 +1544,9 @@ def _build_inference_launch_config(
     try:
         _validate_inference_crop_params(effective_crop_params, raw_shape)
     except AssertionError as exc:
-        return _invalid_inference_run("invalid_crop", f"Crop parameters are invalid: {exc}"), None
+        return _invalid_inference_run(
+            "invalid_crop", f"Crop parameters are invalid: {exc}"
+        ), None
 
     file_start = _coerce_start(payload.file_range.start)
     file_count = int(input_validation["fileCount"])
@@ -1393,7 +1556,9 @@ def _build_inference_launch_config(
             "invalid_file_range",
             f"Start file must be between 0 and {file_count - 1}.",
         ), None
-    if file_end_inclusive is not None and (file_end_inclusive < 0 or file_end_inclusive >= file_count):
+    if file_end_inclusive is not None and (
+        file_end_inclusive < 0 or file_end_inclusive >= file_count
+    ):
         return _invalid_inference_run(
             "invalid_file_range",
             f"End file must be between 0 and {file_count - 1}.",
@@ -1401,17 +1566,25 @@ def _build_inference_launch_config(
     file_end = _coerce_script_file_end(file_end_inclusive)
     effective_file_end = file_count if file_end is None else file_end
     if effective_file_end <= file_start:
-        return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
+        return _invalid_inference_run(
+            "empty_file_selection", "Chosen files leave zero files to process."
+        ), None
 
-    selected_input_paths = _selected_inference_tiff_paths(input_path, file_start, effective_file_end)
+    selected_input_paths = _selected_inference_tiff_paths(
+        input_path, file_start, effective_file_end
+    )
     if not selected_input_paths:
-        return _invalid_inference_run("empty_file_selection", "Chosen files leave zero files to process."), None
+        return _invalid_inference_run(
+            "empty_file_selection", "Chosen files leave zero files to process."
+        ), None
     selected_stems = [path.stem for path in selected_input_paths]
 
     overwrite_warning: dict[str, Any] | None = None
     output_entry_count, output_preview = _summarize_directory(output_path)
     if output_entry_count > 0 and not payload.overwrite:
-        overwrite_warning = _overwrite_confirmation(output_path, output_entry_count, output_preview)
+        overwrite_warning = _overwrite_confirmation(
+            output_path, output_entry_count, output_preview
+        )
         if require_overwrite_confirmation:
             return overwrite_warning, None
 
@@ -1539,17 +1712,28 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             str(launch_config["seed"]),
         ]
         if launch_config.get("run_stage_2", True):
-            command.extend(["--output-path", str(launch_config["output_path"]), "--run-stage-2"])
+            command.extend([
+                "--output-path",
+                str(launch_config["output_path"]),
+                "--run-stage-2",
+            ])
         else:
             command.append("--skip-stage-2")
         if launch_config.get("kde_bandwidth") is not None:
             command.extend(["--kde-bandwidth", str(launch_config["kde_bandwidth"])])
         if launch_config.get("run_density_estimation"):
-            command.extend(["--run-density-estimation", "--training-timepoint", launch_config["training_timepoint"]])
+            command.extend([
+                "--run-density-estimation",
+                "--training-timepoint",
+                launch_config["training_timepoint"],
+            ])
             if launch_config.get("seg_tif") is not None:
                 command.extend(["--seg-tif", str(launch_config["seg_tif"])])
             if launch_config.get("valid_mask_tif") is not None:
-                command.extend(["--valid-mask-tif", str(launch_config["valid_mask_tif"])])
+                command.extend([
+                    "--valid-mask-tif",
+                    str(launch_config["valid_mask_tif"]),
+                ])
         return command
 
     command = [
@@ -1594,7 +1778,10 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
     ]
     vote_thresholds = launch_config.get("vote_thresholds")
     if vote_thresholds:
-        command.extend(["--vote-thresholds", ",".join(str(value) for value in vote_thresholds)])
+        command.extend([
+            "--vote-thresholds",
+            ",".join(str(value) for value in vote_thresholds),
+        ])
     else:
         command.extend(["--vote-thresholds", ""])
     if launch_config.get("invert_z", False):
@@ -1621,13 +1808,17 @@ def _build_norm_per_vol_command(launch_config: dict[str, Any]) -> list[str]:
 
 def _build_inference_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
     return {
-        "CUDA_VISIBLE_DEVICES": ",".join(str(index) for index in launch_config["gpu_indices"]),
+        "CUDA_VISIBLE_DEVICES": ",".join(
+            str(index) for index in launch_config["gpu_indices"]
+        ),
         "OMP_NUM_THREADS": _resolve_omp_num_threads(),
         "PYTHONUNBUFFERED": "1",
     }
 
 
-def _build_process_features_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
+def _build_process_features_command_env(
+    launch_config: dict[str, Any],
+) -> dict[str, str]:
     return {
         "CUDA_VISIBLE_DEVICES": str(launch_config["gpu_index"]),
         "OMP_NUM_THREADS": _resolve_omp_num_threads(),
@@ -1649,12 +1840,16 @@ def _build_norm_per_vol_command_env() -> dict[str, str]:
     }
 
 
-def _render_inference_preview_command(launch_config: dict[str, Any], *, cwd: Path) -> str:
+def _render_inference_preview_command(
+    launch_config: dict[str, Any], *, cwd: Path
+) -> str:
     normalization_mode = launch_config.get("normalization_mode")
     inference_env = _build_inference_command_env(launch_config)
 
     if normalization_mode != NORMALIZATION_MODE_GLOBAL_AUTO:
-        return _render_shell_command(_build_inference_command(launch_config), cwd=cwd, env=inference_env)
+        return _render_shell_command(
+            _build_inference_command(launch_config), cwd=cwd, env=inference_env
+        )
 
     norm_command = _build_norm_per_vol_command(launch_config)
     norm_env = _build_norm_per_vol_command_env()
@@ -1663,7 +1858,9 @@ def _render_inference_preview_command(launch_config: dict[str, Any], *, cwd: Pat
     preview_launch = dict(launch_config)
     preview_launch["global_hist_min"] = "<computed-from-norm_per_vol>"
     preview_launch["global_hist_max"] = "<computed-from-norm_per_vol>"
-    inference_text = _render_shell_command(_build_inference_command(preview_launch), env=inference_env)
+    inference_text = _render_shell_command(
+        _build_inference_command(preview_launch), env=inference_env
+    )
     return f"cd {shlex.quote(os.fspath(cwd))} && {norm_text} && \\\n{inference_text}"
 
 
@@ -1676,7 +1873,9 @@ def _render_shell_command(
     command_text = shlex.join(command)
     env = env or {}
     if env:
-        env_prefix = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+        env_prefix = " ".join(
+            f"{name}={shlex.quote(value)}" for name, value in env.items()
+        )
         command_text = f"{env_prefix} {command_text}"
     if cwd is None:
         return command_text
@@ -1734,7 +1933,11 @@ def _run_norm_per_vol_prepass(
     command_env = _build_norm_per_vol_command_env()
     command_text = _render_shell_command(command, cwd=repo_root, env=command_env)
 
-    _append_job_log_line(job, f"[server] Global normalization prepass command: {command_text}", log_handle)
+    _append_job_log_line(
+        job,
+        f"[server] Global normalization prepass command: {command_text}",
+        log_handle,
+    )
 
     with job.lock:
         if job.stop_requested:
@@ -1782,7 +1985,9 @@ def _run_norm_per_vol_prepass(
             return None
 
     if return_code != 0:
-        raise RuntimeError(last_output_line or f"norm_per_vol.py exited with code {return_code}.")
+        raise RuntimeError(
+            last_output_line or f"norm_per_vol.py exited with code {return_code}."
+        )
     if not stats_path.is_file():
         raise RuntimeError("Normalization prepass did not produce norm_per_vol.txt.")
 
@@ -1822,7 +2027,9 @@ def _open_job_log(job: jobs_api.JobState) -> TextIO | None:
     return handle
 
 
-def _append_job_log_line(job: jobs_api.JobState, line: str, log_handle: TextIO | None) -> None:
+def _append_job_log_line(
+    job: jobs_api.JobState, line: str, log_handle: TextIO | None
+) -> None:
     text = line.rstrip("\r\n")
     if not text:
         return
@@ -1855,10 +2062,18 @@ def _update_job_progress_from_output(
             return
         save_name = Path(saved_path_text).parent.name or saved_path_text
         with job.lock:
-            if job.status != "running" or job.stop_requested or saved_feature_key in saved_feature_paths:
+            if (
+                job.status != "running"
+                or job.stop_requested
+                or saved_feature_key in saved_feature_paths
+            ):
                 return
             saved_feature_paths.add(saved_feature_key)
-            job.processed = min(job.total, len(saved_feature_paths)) if job.total > 0 else len(saved_feature_paths)
+            job.processed = (
+                min(job.total, len(saved_feature_paths))
+                if job.total > 0
+                else len(saved_feature_paths)
+            )
             job.current = save_name
         return
 
@@ -1900,10 +2115,18 @@ def _update_process_features_job_progress_from_output(
 
     subfolder_name = completed_match.group(1).strip()
     with job.lock:
-        if job.status != "running" or job.stop_requested or subfolder_name in completed_subfolders:
+        if (
+            job.status != "running"
+            or job.stop_requested
+            or subfolder_name in completed_subfolders
+        ):
             return len(completed_subfolders)
         completed_subfolders.add(subfolder_name)
-        job.processed = min(job.total, len(completed_subfolders)) if job.total > 0 else len(completed_subfolders)
+        job.processed = (
+            min(job.total, len(completed_subfolders))
+            if job.total > 0
+            else len(completed_subfolders)
+        )
         job.current = subfolder_name
     return len(completed_subfolders)
 
@@ -1932,11 +2155,17 @@ def _update_tracking_job_progress_from_output(
         cand_name = matched_match.group(2).strip()
         pair_key = f"{ref_name}->{cand_name}"
         with job.lock:
-            if job.status != "running" or job.stop_requested or pair_key in completed_pairs:
+            if (
+                job.status != "running"
+                or job.stop_requested
+                or pair_key in completed_pairs
+            ):
                 return len(completed_subfolders) + len(completed_pairs)
             completed_pairs.add(pair_key)
             total_completed = len(completed_subfolders) + len(completed_pairs)
-            job.processed = min(job.total, total_completed) if job.total > 0 else total_completed
+            job.processed = (
+                min(job.total, total_completed) if job.total > 0 else total_completed
+            )
             job.current = f"Matched {ref_name} -> {cand_name}"
         return len(completed_subfolders) + len(completed_pairs)
 
@@ -1954,31 +2183,47 @@ def _update_tracking_job_progress_from_output(
 
     subfolder_name = completed_match.group(1).strip()
     with job.lock:
-        if job.status != "running" or job.stop_requested or subfolder_name in completed_subfolders:
+        if (
+            job.status != "running"
+            or job.stop_requested
+            or subfolder_name in completed_subfolders
+        ):
             return len(completed_subfolders) + len(completed_pairs)
         completed_subfolders.add(subfolder_name)
         total_completed = len(completed_subfolders) + len(completed_pairs)
-        job.processed = min(job.total, total_completed) if job.total > 0 else total_completed
+        job.processed = (
+            min(job.total, total_completed) if job.total > 0 else total_completed
+        )
         job.current = f"Prepared {subfolder_name}"
     return len(completed_subfolders) + len(completed_pairs)
 
 
 def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
     output_path = Path(launch_config["output_path"])
-    expected_feature_paths = _expected_feature_paths(output_path, launch_config["selected_stems"])
-    expected_feature_path_keys = {_canonicalize_runtime_path(path) for path in expected_feature_paths}
-    expected_output_dir_keys = {_canonicalize_runtime_path(path.parent) for path in expected_feature_paths}
+    expected_feature_paths = _expected_feature_paths(
+        output_path, launch_config["selected_stems"]
+    )
+    expected_feature_path_keys = {
+        _canonicalize_runtime_path(path) for path in expected_feature_paths
+    }
+    expected_output_dir_keys = {
+        _canonicalize_runtime_path(path.parent) for path in expected_feature_paths
+    }
     saved_feature_paths: set[str] = set()
     repo_root = get_repo_root()
     log_handle = _open_job_log(job)
-    preview_command_text = _render_inference_preview_command(launch_config, cwd=repo_root)
+    preview_command_text = _render_inference_preview_command(
+        launch_config, cwd=repo_root
+    )
 
     with job.lock:
         job.command = preview_command_text
         job.working_dir = str(repo_root)
 
     _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
-    _append_job_log_line(job, f"[server] Planned command: {preview_command_text}", log_handle)
+    _append_job_log_line(
+        job, f"[server] Planned command: {preview_command_text}", log_handle
+    )
 
     try:
         with job.lock:
@@ -2006,7 +2251,11 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                 log_handle=log_handle,
             )
             if prepass_result is None:
-                _append_job_log_line(job, "[server] Job stopped during normalization prepass.", log_handle)
+                _append_job_log_line(
+                    job,
+                    "[server] Job stopped during normalization prepass.",
+                    log_handle,
+                )
                 return
 
             global_hist_min, global_hist_max = prepass_result
@@ -2014,7 +2263,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
             launch_config["global_hist_max"] = global_hist_max
             launch_config["normalization_mode"] = NORMALIZATION_MODE_GLOBAL_MANUAL
             with job.lock:
-                job.command = _render_inference_preview_command(launch_config, cwd=repo_root)
+                job.command = _render_inference_preview_command(
+                    launch_config, cwd=repo_root
+                )
 
         with job.lock:
             if job.stop_requested:
@@ -2024,7 +2275,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                 stop_before_process = False
                 job.current = "Starting"
         if stop_before_process:
-            _append_job_log_line(job, "[server] Job stopped before process start.", log_handle)
+            _append_job_log_line(
+                job, "[server] Job stopped before process start.", log_handle
+            )
             return
 
         command_env = _build_inference_command_env(launch_config)
@@ -2074,7 +2327,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                     )
 
         return_code = process.wait()
-        existing_feature_paths = _existing_expected_feature_paths(expected_feature_paths)
+        existing_feature_paths = _existing_expected_feature_paths(
+            expected_feature_paths
+        )
         saved_feature_count = len(existing_feature_paths)
         final_log_line: str | None = None
         with job.lock:
@@ -2097,12 +2352,18 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                 job.current = "Failed"
                 if return_code == 0:
                     missing_stems = [
-                        path.parent.name for path in expected_feature_paths if not path.is_file()
+                        path.parent.name
+                        for path in expected_feature_paths
+                        if not path.is_file()
                     ]
                     missing_preview = ", ".join(missing_stems[:3])
                     if len(missing_stems) > 3:
                         missing_preview = f"{missing_preview}, ..."
-                    missing_suffix = f" Missing outputs: {missing_preview}." if missing_preview else ""
+                    missing_suffix = (
+                        f" Missing outputs: {missing_preview}."
+                        if missing_preview
+                        else ""
+                    )
                     job.error = (
                         f"Inference exited successfully but produced {saved_feature_count}/{job.total} expected "
                         f"lr_feats.npy files.{missing_suffix}"
@@ -2110,7 +2371,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                     job.processed = saved_feature_count
                     final_log_line = f"[server] {job.error}"
                 else:
-                    job.error = last_output_line or f"Inference exited with code {return_code}."
+                    job.error = (
+                        last_output_line or f"Inference exited with code {return_code}."
+                    )
                     final_log_line = f"[server] Process exited with code {return_code}."
                 job.finished_at_ms = jobs_api._now_ms()
         if final_log_line:
@@ -2132,7 +2395,9 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
             log_handle.close()
 
 
-def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _run_process_features_job(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     _run_single_gpu_post_processing_job(
         job,
         launch_config,
@@ -2144,7 +2409,9 @@ def _run_process_features_job(job: jobs_api.JobState, launch_config: dict[str, A
     )
 
 
-def _run_segmentation_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _run_segmentation_job(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     _run_single_gpu_post_processing_job(
         job,
         launch_config,
@@ -2169,7 +2436,9 @@ def _run_tracking_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> 
     )
 
 
-def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _run_data_download_job(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     repo_root = get_repo_root()
     download_root = Path(launch_config["download_root"])
     selected_datasets = list(launch_config["selected_datasets"])
@@ -2181,11 +2450,15 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
         job.working_dir = str(repo_root)
 
     _append_job_log_line(job, f"[server] Working directory: {repo_root}", log_handle)
-    _append_job_log_line(job, f"[server] Manifest: {launch_config['manifest_url']}", log_handle)
+    _append_job_log_line(
+        job, f"[server] Manifest: {launch_config['manifest_url']}", log_handle
+    )
     _append_job_log_line(job, f"[server] Download root: {download_root}", log_handle)
     if launch_config.get("skipped_names"):
         skipped_text = ", ".join(launch_config["skipped_names"])
-        _append_job_log_line(job, f"[server] Skipping existing datasets: {skipped_text}", log_handle)
+        _append_job_log_line(
+            job, f"[server] Skipping existing datasets: {skipped_text}", log_handle
+        )
 
     try:
         download_root.mkdir(parents=True, exist_ok=True)
@@ -2210,13 +2483,21 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
             with job.lock:
                 if job.stop_requested:
                     _mark_job_halted_locked(job)
-                    _append_job_log_line(job, "[server] Job stopped by user.", log_handle)
+                    _append_job_log_line(
+                        job, "[server] Job stopped by user.", log_handle
+                    )
                     return
                 job.current = f"Downloading {dataset_name}"
 
-            _append_job_log_line(job, f"[server] Downloading {dataset_name} from {archive_url}", log_handle)
+            _append_job_log_line(
+                job,
+                f"[server] Downloading {dataset_name} from {archive_url}",
+                log_handle,
+            )
 
-            with tempfile.TemporaryDirectory(prefix=f"spatialdino-data-{dataset_name}-", dir=temp_parent) as tmp:
+            with tempfile.TemporaryDirectory(
+                prefix=f"spatialdino-data-{dataset_name}-", dir=temp_parent
+            ) as tmp:
                 tmp_path = Path(tmp)
                 archive_path = tmp_path / f"{dataset_name}.zip"
                 extract_dir = tmp_path / "extract"
@@ -2227,16 +2508,24 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
                 with job.lock:
                     if job.stop_requested:
                         _mark_job_halted_locked(job)
-                        _append_job_log_line(job, "[server] Job stopped by user.", log_handle)
+                        _append_job_log_line(
+                            job, "[server] Job stopped by user.", log_handle
+                        )
                         return
                     job.current = f"Extracting {dataset_name}"
 
-                _append_job_log_line(job, f"[server] Extracting {dataset_name}", log_handle)
+                _append_job_log_line(
+                    job, f"[server] Extracting {dataset_name}", log_handle
+                )
                 _extract_zip_to_directory(archive_path, extract_dir)
 
-                extracted_source = _select_extracted_dataset_path(extract_dir, dataset_name)
+                extracted_source = _select_extracted_dataset_path(
+                    extract_dir, dataset_name
+                )
                 if not extracted_source.exists():
-                    raise RuntimeError(f"Archive for {dataset_name} produced no extractable data.")
+                    raise RuntimeError(
+                        f"Archive for {dataset_name} produced no extractable data."
+                    )
 
                 if extracted_source == extract_dir:
                     wrapped_dir = tmp_path / dataset_name
@@ -2246,7 +2535,9 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
                         shutil.move(str(child), str(wrapped_dir / child.name))
                         moved_any = True
                     if not moved_any:
-                        raise RuntimeError(f"Archive for {dataset_name} is empty after extraction.")
+                        raise RuntimeError(
+                            f"Archive for {dataset_name} is empty after extraction."
+                        )
                     extracted_source = wrapped_dir
 
                 if target_path.exists() or target_path.is_symlink():
@@ -2260,9 +2551,17 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
                 shutil.move(str(extracted_source), str(target_path))
 
             with job.lock:
-                job.processed = min(job.total, job.processed + 1) if job.total > 0 else job.processed + 1
+                job.processed = (
+                    min(job.total, job.processed + 1)
+                    if job.total > 0
+                    else job.processed + 1
+                )
                 job.current = dataset_name
-            _append_job_log_line(job, f"[server] Saved dataset {dataset_name} to {target_path}", log_handle)
+            _append_job_log_line(
+                job,
+                f"[server] Saved dataset {dataset_name} to {target_path}",
+                log_handle,
+            )
 
         with job.lock:
             if job.stop_requested:
@@ -2272,7 +2571,9 @@ def _run_data_download_job(job: jobs_api.JobState, launch_config: dict[str, Any]
                 job.status = "completed"
                 job.current = "Done"
             job.finished_at_ms = jobs_api._now_ms()
-        _append_job_log_line(job, "[server] Public data download completed successfully.", log_handle)
+        _append_job_log_line(
+            job, "[server] Public data download completed successfully.", log_handle
+        )
     except Exception as exc:
         _append_job_log_line(job, f"[server] Runner error: {exc}", log_handle)
         with job.lock:
@@ -2298,7 +2599,9 @@ def _run_single_gpu_post_processing_job(
     launch_log_line: str,
     success_log_line: str,
     job_name: str,
-    progress_updater: Callable[[jobs_api.JobState, str, dict[str, Any]], int] = _update_process_features_job_progress_from_output,
+    progress_updater: Callable[
+        [jobs_api.JobState, str, dict[str, Any]], int
+    ] = _update_process_features_job_progress_from_output,
     progress_state: dict[str, Any] | None = None,
 ) -> None:
     repo_root = get_repo_root()
@@ -2381,7 +2684,10 @@ def _run_single_gpu_post_processing_job(
                 if return_code == 0:
                     job.error = f"{job_name} job exited successfully but only completed {completed_count}/{job.total} progress steps."
                 else:
-                    job.error = last_output_line or f"{job_name} job exited with code {return_code}."
+                    job.error = (
+                        last_output_line
+                        or f"{job_name} job exited with code {return_code}."
+                    )
                 job.finished_at_ms = jobs_api._now_ms()
                 final_log_line = f"[server] {job.error}"
         if final_log_line:
@@ -2403,7 +2709,9 @@ def _run_single_gpu_post_processing_job(
             log_handle.close()
 
 
-def _launch_inference_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _launch_inference_job_thread(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     thread = threading.Thread(
         target=_run_inference_job,
         args=(job, launch_config),
@@ -2413,7 +2721,9 @@ def _launch_inference_job_thread(job: jobs_api.JobState, launch_config: dict[str
     thread.start()
 
 
-def _launch_process_features_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _launch_process_features_job_thread(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     thread = threading.Thread(
         target=_run_process_features_job,
         args=(job, launch_config),
@@ -2423,7 +2733,9 @@ def _launch_process_features_job_thread(job: jobs_api.JobState, launch_config: d
     thread.start()
 
 
-def _launch_segmentation_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _launch_segmentation_job_thread(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     thread = threading.Thread(
         target=_run_segmentation_job,
         args=(job, launch_config),
@@ -2433,7 +2745,9 @@ def _launch_segmentation_job_thread(job: jobs_api.JobState, launch_config: dict[
     thread.start()
 
 
-def _launch_tracking_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _launch_tracking_job_thread(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     thread = threading.Thread(
         target=_run_tracking_job,
         args=(job, launch_config),
@@ -2443,7 +2757,9 @@ def _launch_tracking_job_thread(job: jobs_api.JobState, launch_config: dict[str,
     thread.start()
 
 
-def _launch_data_download_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+def _launch_data_download_job_thread(
+    job: jobs_api.JobState, launch_config: dict[str, Any]
+) -> None:
     thread = threading.Thread(
         target=_run_data_download_job,
         args=(job, launch_config),
@@ -2463,10 +2779,8 @@ def load_index_html(dist_dir: Path) -> str | None:
 def render_index_html(index_html: str, *, client_host: str | None = None) -> str:
     hostname = html.escape(get_server_hostname())
     session_label = html.escape(classify_client_session(client_host))
-    return (
-        index_html.replace("__SPATIALDINO_SERVER_HOSTNAME__", hostname).replace(
-            "__SPATIALDINO_SESSION_LABEL__", session_label
-        )
+    return index_html.replace("__SPATIALDINO_SERVER_HOSTNAME__", hostname).replace(
+        "__SPATIALDINO_SESSION_LABEL__", session_label
     )
 
 
@@ -2538,7 +2852,9 @@ def run_data_download(
         jobs_api.unregister_job(job.job_id)
         return {
             "submitted": False,
-            **_invalid_data_download("submit_failed", f"Could not start public data download: {exc}"),
+            **_invalid_data_download(
+                "submit_failed", f"Could not start public data download: {exc}"
+            ),
         }
 
     skipped_names = list(launch_config.get("skipped_names", []))
@@ -2551,14 +2867,21 @@ def run_data_download(
                 f"{'' if len(skipped_names) == 1 else 's'}."
             ),
         }
-    return {"submitted": True, "jobId": job.job_id, "message": "Public data download submitted."}
+    return {
+        "submitted": True,
+        "jobId": job.job_id,
+        "message": "Public data download submitted.",
+    }
 
 
 @api.get("/inference/options")
 def inference_options() -> dict[str, object]:
     gpu_status = get_nvidia_gpu_memory()
     return {
-        "gpus": [{"index": gpu["index"], "name": gpu["name"]} for gpu in gpu_status.get("gpus", [])],
+        "gpus": [
+            {"index": gpu["index"], "name": gpu["name"]}
+            for gpu in gpu_status.get("gpus", [])
+        ],
         "gpuError": gpu_status.get("error"),
         "nvidiaSmiAvailable": bool(gpu_status.get("nvidiaSmiAvailable")),
         "backboneWeights": list_backbone_weights(),
@@ -2566,22 +2889,34 @@ def inference_options() -> dict[str, object]:
 
 
 @api.post("/inference/download-backbone")
-def download_inference_backbone(payload: DownloadBackboneWeightsRequest) -> dict[str, Any]:
+def download_inference_backbone(
+    payload: DownloadBackboneWeightsRequest,
+) -> dict[str, Any]:
     repo_root = get_repo_root()
     models_dir = get_backbone_weights_dir()
     target_path = get_default_inference_backbone_path()
 
-    if not _is_relative_to(models_dir, repo_root) or not _is_relative_to(target_path, repo_root):
-        raise HTTPException(status_code=500, detail="Backbone weights path must stay inside the repo root.")
+    if not _is_relative_to(models_dir, repo_root) or not _is_relative_to(
+        target_path, repo_root
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="Backbone weights path must stay inside the repo root.",
+        )
 
     with _default_inference_backbone_download_lock:
         if models_dir.exists() and not models_dir.is_dir():
-            raise HTTPException(status_code=500, detail="Backbone weights directory is not a folder.")
+            raise HTTPException(
+                status_code=500, detail="Backbone weights directory is not a folder."
+            )
 
         already_exists = target_path.exists()
         if already_exists:
             if not target_path.is_file():
-                raise HTTPException(status_code=500, detail="Backbone weights target exists but is not a file.")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Backbone weights target exists but is not a file.",
+                )
             if not payload.overwrite:
                 return {
                     "downloaded": False,
@@ -2594,12 +2929,16 @@ def download_inference_backbone(payload: DownloadBackboneWeightsRequest) -> dict
         try:
             models_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not create the weights directory: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"Could not create the weights directory: {exc}"
+            ) from exc
 
         try:
             _download_url_to_file(DEFAULT_INFERENCE_BACKBONE_URL, target_path)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Could not download backbone weights: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"Could not download backbone weights: {exc}"
+            ) from exc
 
     return {
         "downloaded": True,
@@ -2616,12 +2955,16 @@ def validate_inference_input(payload: ValidateInferenceInputRequest) -> dict[str
 
 
 @api.post("/post-processing/process-features/validate-input")
-def validate_process_features_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+def validate_process_features_input(
+    payload: ValidateProcessFeaturesInputRequest,
+) -> dict[str, Any]:
     return validate_process_features_input_folder(payload.path)
 
 
 @api.post("/post-processing/segmentation/validate-input")
-def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+def validate_segmentation_input(
+    payload: ValidateProcessFeaturesInputRequest,
+) -> dict[str, Any]:
     return validate_segmentation_input_folder(payload.path)
 
 
@@ -2631,8 +2974,12 @@ def validate_tracking_input(payload: ValidateTrackingInputRequest) -> dict[str, 
 
 
 @api.post("/post-processing/tracking/validate-segmentation-folder")
-def validate_tracking_segmentation(payload: ValidateTrackingSegmentationFolderRequest) -> dict[str, Any]:
-    return validate_tracking_segmentation_folder(payload.input_path, payload.segmentation_path)
+def validate_tracking_segmentation(
+    payload: ValidateTrackingSegmentationFolderRequest,
+) -> dict[str, Any]:
+    return validate_tracking_segmentation_folder(
+        payload.input_path, payload.segmentation_path
+    )
 
 
 @api.post("/post-processing/process-features/run")
@@ -2658,7 +3005,12 @@ def run_process_features(
         current="Queued",
         label=label,
         save_dir=str(output_path.parent),
-        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
+        datasets=[
+            {
+                "source_dir": str(input_path),
+                "save_to": output_path.name or str(output_path),
+            }
+        ],
     )
     jobs_api.register_job(job)
 
@@ -2668,10 +3020,16 @@ def run_process_features(
         jobs_api.unregister_job(job.job_id)
         return {
             "submitted": False,
-            **_invalid_process_features_run("submit_failed", f"Could not start process-features job: {exc}"),
+            **_invalid_process_features_run(
+                "submit_failed", f"Could not start process-features job: {exc}"
+            ),
         }
 
-    return {"submitted": True, "jobId": job.job_id, "message": "Process-features job submitted."}
+    return {
+        "submitted": True,
+        "jobId": job.job_id,
+        "message": "Process-features job submitted.",
+    }
 
 
 @api.post("/post-processing/segmentation/run")
@@ -2693,11 +3051,18 @@ def run_segmentation(
         type="segmentation",
         status="running",
         processed=0,
-        total=int(launch_config.get("progress_total", launch_config["subfolder_count"])),
+        total=int(
+            launch_config.get("progress_total", launch_config["subfolder_count"])
+        ),
         current="Queued",
         label=label,
         save_dir=str(output_path.parent),
-        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
+        datasets=[
+            {
+                "source_dir": str(input_path),
+                "save_to": output_path.name or str(output_path),
+            }
+        ],
     )
     jobs_api.register_job(job)
 
@@ -2707,10 +3072,16 @@ def run_segmentation(
         jobs_api.unregister_job(job.job_id)
         return {
             "submitted": False,
-            **_invalid_process_features_run("submit_failed", f"Could not start segmentation job: {exc}"),
+            **_invalid_process_features_run(
+                "submit_failed", f"Could not start segmentation job: {exc}"
+            ),
         }
 
-    return {"submitted": True, "jobId": job.job_id, "message": "Segmentation job submitted."}
+    return {
+        "submitted": True,
+        "jobId": job.job_id,
+        "message": "Segmentation job submitted.",
+    }
 
 
 @api.post("/post-processing/tracking/run")
@@ -2736,7 +3107,12 @@ def run_tracking(
         current="Queued",
         label=label,
         save_dir=str(output_path.parent),
-        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
+        datasets=[
+            {
+                "source_dir": str(input_path),
+                "save_to": output_path.name or str(output_path),
+            }
+        ],
     )
     jobs_api.register_job(job)
 
@@ -2746,10 +3122,16 @@ def run_tracking(
         jobs_api.unregister_job(job.job_id)
         return {
             "submitted": False,
-            **_invalid_process_features_run("submit_failed", f"Could not start tracking job: {exc}"),
+            **_invalid_process_features_run(
+                "submit_failed", f"Could not start tracking job: {exc}"
+            ),
         }
 
-    return {"submitted": True, "jobId": job.job_id, "message": "Tracking job submitted."}
+    return {
+        "submitted": True,
+        "jobId": job.job_id,
+        "message": "Tracking job submitted.",
+    }
 
 
 @api.post("/inference/run")
@@ -2795,15 +3177,23 @@ def run_inference(
         jobs_api.unregister_job(job.job_id)
         return {
             "submitted": False,
-            **_invalid_inference_run("submit_failed", f"Could not start inference: {exc}"),
+            **_invalid_inference_run(
+                "submit_failed", f"Could not start inference: {exc}"
+            ),
         }
 
-    return {"submitted": True, "jobId": job.job_id, "message": "Inference job submitted."}
+    return {
+        "submitted": True,
+        "jobId": job.job_id,
+        "message": "Inference job submitted.",
+    }
 
 
 @api.post("/inference/command-preview")
 def inference_command_preview(payload: RunInferenceRequest) -> dict[str, Any]:
-    validation, launch_config = _build_inference_launch_config(payload, require_overwrite_confirmation=False)
+    validation, launch_config = _build_inference_launch_config(
+        payload, require_overwrite_confirmation=False
+    )
     if launch_config is None:
         return validation
 

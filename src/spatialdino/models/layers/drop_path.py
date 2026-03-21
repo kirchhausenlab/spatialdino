@@ -8,9 +8,8 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/layers/drop.py
 
 
-from typing import Optional
-from torch import nn
 import torch
+from torch import nn
 
 
 def drop_path(
@@ -33,7 +32,7 @@ class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
 
     def __init__(self, drop_prob: float = 0.0) -> None:
-        super(DropPath, self).__init__()
+        super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

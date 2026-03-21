@@ -3,18 +3,15 @@
 Direct model uploader to S3 - simplified approach based on existing system.
 """
 
-import os
-import sys
-import json
-import time
 import hashlib
 import logging
+import sys
+import time
 from pathlib import Path
-from typing import Dict, List
 
 import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 from tqdm import tqdm
-from botocore.exceptions import NoCredentialsError, ClientError
 
 # Configuration
 BUCKET_NAME = "spatialdino"
@@ -53,7 +50,7 @@ class ModelUploader:
             self.logger.error(f"✗ AWS S3 connection failed: {e}")
             sys.exit(1)
 
-    def find_files_to_upload(self, model_dir: str, model_name: str) -> List[Dict]:
+    def find_files_to_upload(self, model_dir: str, model_name: str) -> list[dict]:
         """Find all files in the model directory."""
         model_path = Path(model_dir)
         if not model_path.exists():
@@ -101,7 +98,7 @@ class ModelUploader:
                 self.logger.warning(f"Error checking {s3_key}: {e}")
             return False
 
-    def upload_file(self, file_info: Dict) -> bool:
+    def upload_file(self, file_info: dict) -> bool:
         """Upload a single file to S3."""
         try:
             local_path = file_info["local_path"]

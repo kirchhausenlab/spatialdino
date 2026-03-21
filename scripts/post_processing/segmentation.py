@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pyclesperanto as cle
@@ -20,9 +20,17 @@ ATTENTION_HEAD_CHANNELS = 6
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Voronoi-Otsu segmentation on saved spatialDINO features.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
-    parser.add_argument("--output-path", required=True, help="Folder where segmentation masks are written.")
+    parser = argparse.ArgumentParser(
+        description="Run Voronoi-Otsu segmentation on saved spatialDINO features."
+    )
+    parser.add_argument(
+        "--input-path", required=True, help="Folder containing per-sample subfolders."
+    )
+    parser.add_argument(
+        "--output-path",
+        required=True,
+        help="Folder where segmentation masks are written.",
+    )
     parser.add_argument(
         "--enable-voronoi-otsu",
         action="store_true",
@@ -43,9 +51,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
+def list_subfolders(
+    input_path: Path, *, exclude_paths: Iterable[Path] = ()
+) -> list[Path]:
     excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
-    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
+    subfolders = [
+        path
+        for path in input_path.iterdir()
+        if path.is_dir() and Path(os.path.realpath(path)) not in excluded
+    ]
     subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
     return subfolders
 
@@ -64,10 +78,14 @@ def ensure_contiguous(array: np.ndarray) -> np.ndarray:
     return array if array.flags.c_contiguous else np.ascontiguousarray(array)
 
 
-def _log_kernel(size: tuple[int, int, int] = (7, 7, 7), sigma: float = 1.0) -> np.ndarray:
+def _log_kernel(
+    size: tuple[int, int, int] = (7, 7, 7), sigma: float = 1.0
+) -> np.ndarray:
     x, y, z = size
     xc, yc, zc = (np.array(size) - 1) / 2.0
-    xx, yy, zz = np.meshgrid(np.arange(x) - xc, np.arange(y) - yc, np.arange(z) - zc, indexing="ij")
+    xx, yy, zz = np.meshgrid(
+        np.arange(x) - xc, np.arange(y) - yc, np.arange(z) - zc, indexing="ij"
+    )
     r2 = xx**2 + yy**2 + zz**2
     normalization = (r2 - 3 * sigma**2) / (sigma**5)
     log_kernel = normalization * np.exp(-r2 / (2 * sigma**2))
@@ -82,13 +100,20 @@ def upsample_scalar_volume(
     target_shape: tuple[int, int, int],
     device: torch.device,
 ) -> np.ndarray:
-    input_tensor = torch.from_numpy(ensure_contiguous(volume_zyx)).to(device=device, dtype=torch.float32)
-    output_tensor = F.interpolate(
-        input_tensor.unsqueeze(0).unsqueeze(0),
-        size=target_shape,
-        mode="trilinear",
-        align_corners=False,
-    ).squeeze(0).squeeze(0)
+    input_tensor = torch.from_numpy(ensure_contiguous(volume_zyx)).to(
+        device=device, dtype=torch.float32
+    )
+    output_tensor = (
+        F
+        .interpolate(
+            input_tensor.unsqueeze(0).unsqueeze(0),
+            size=target_shape,
+            mode="trilinear",
+            align_corners=False,
+        )
+        .squeeze(0)
+        .squeeze(0)
+    )
     return output_tensor.cpu().numpy()
 
 
@@ -120,9 +145,15 @@ def segment_subfolder(
     target_shape = read_tiff_shape(volume_path)
 
     # Streaming inference appends attention channels after the patch embeddings.
-    patch_tokens = lr_feats[..., :-ATTENTION_HEAD_CHANNELS] if lr_feats.shape[-1] > ATTENTION_HEAD_CHANNELS else lr_feats
+    patch_tokens = (
+        lr_feats[..., :-ATTENTION_HEAD_CHANNELS]
+        if lr_feats.shape[-1] > ATTENTION_HEAD_CHANNELS
+        else lr_feats
+    )
     patch_tokens_sum = np.asarray(patch_tokens, dtype=np.float32).sum(axis=-1)
-    patch_tokens_sum = upsample_scalar_volume(patch_tokens_sum, target_shape=target_shape, device=device)
+    patch_tokens_sum = upsample_scalar_volume(
+        patch_tokens_sum, target_shape=target_shape, device=device
+    )
 
     background = cle.opening_sphere(
         patch_tokens_sum.astype(np.float32),
@@ -144,7 +175,9 @@ def segment_subfolder(
         sigma_z=gaussian_blur_sigma,
         device=cle_device,
     )
-    seg = cle.voronoi_otsu_labeling(gaussian_blur, spot_sigma=2, outline_sigma=2, device=cle_device)
+    seg = cle.voronoi_otsu_labeling(
+        gaussian_blur, spot_sigma=2, outline_sigma=2, device=cle_device
+    )
     seg_array = np.asarray(seg).astype(np.uint32, copy=False)
     output_path.mkdir(parents=True, exist_ok=True)
     mask_path = output_path / f"{subfolder.name}.tif"
@@ -158,7 +191,9 @@ def segment_subfolder(
     return mask_path
 
 
-def iter_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> Iterable[Path]:
+def iter_subfolders(
+    input_path: Path, *, exclude_paths: Iterable[Path] = ()
+) -> Iterable[Path]:
     for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
         yield subfolder
 
@@ -176,9 +211,13 @@ def main() -> None:
     input_path = Path(args.input_path).expanduser().resolve()
     output_path = Path(args.output_path).expanduser().resolve()
     if not input_path.is_dir():
-        raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
+        raise FileNotFoundError(
+            f"Input folder does not exist or is not a directory: {input_path}"
+        )
     if output_path.exists() and not output_path.is_dir():
-        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
+        raise FileNotFoundError(
+            f"Output folder exists but is not a directory: {output_path}"
+        )
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Segmentation requires one GPU.")
 
@@ -198,7 +237,10 @@ def main() -> None:
     print(f"[segmentation] Found {len(subfolders)} subfolders", flush=True)
 
     for index, subfolder in enumerate(subfolders, start=1):
-        print(f"[segmentation] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
+        print(
+            f"[segmentation] Processing {subfolder.name} ({index}/{len(subfolders)})",
+            flush=True,
+        )
         segment_subfolder(
             subfolder,
             output_path=output_path,

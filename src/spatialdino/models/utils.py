@@ -1,8 +1,10 @@
 from pathlib import Path
-from typing import Any, Optional, Union
-from omegaconf import DictConfig
+from typing import Union
+
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig
+
 from spatialdino.distributed import save_on_master
 from spatialdino.models import Encoder
 from spatialdino.models.segmentation import Segmentation
@@ -116,7 +118,7 @@ def load_model(
     checkpoint_path: Union[str, Path],
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,
+    loss_scaler: torch.amp.GradScaler | None = None,
 ) -> int:
     if checkpoint_path.startswith("https"):  # type: ignore
         checkpoint = torch.hub.load_state_dict_from_url(

@@ -1,6 +1,7 @@
 # From https://github.com/AdaptiveMotorControlLab/CellSeg3D/blob/6de4b86a671ffcd4b5535277a53082ac5ecc00a1/napari_cellseg3d/code_models/models/wnet/model.py
 
-from typing import List, Final, Optional
+from typing import Final
+
 import torch
 import torch.nn as nn
 
@@ -116,7 +117,7 @@ class UNet(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        channels: Optional[List[int]] = None,
+        channels: list[int] | None = None,
         dropout: float = 0.65,
     ) -> None:
         """Creates a U-Net model, which is half of the W-Net model."""
@@ -126,7 +127,7 @@ class UNet(nn.Module):
             raise ValueError(
                 "Channels must be a list of channels in the form: [64, 128, 256, 512, 1024]"
             )
-        super(UNet, self).__init__()
+        super().__init__()
         # self.device = device
         self.channels = channels
         self.max_pool = nn.MaxPool3d(2)

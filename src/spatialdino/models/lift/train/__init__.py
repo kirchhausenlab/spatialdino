@@ -11,7 +11,7 @@ from spatialdino.models.lift.model.extractor import ViTExtractor
 def get_feats_(
     extractor: ViTExtractor,
     image_tensor: torch.Tensor,
-    patches: Tuple[int, int, int],
+    patches: tuple[int, int, int],
     return_class_token: bool = False,
     use_fp16: bool = True,
     device_type: str = "cuda",

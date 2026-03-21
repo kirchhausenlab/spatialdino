@@ -1,9 +1,10 @@
+import logging
+from typing import Any
+
 import torch
+import torch.linalg as LA
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.linalg as LA
-from typing import Any
-import logging
 
 logger = logging.getLogger("sinder")
 

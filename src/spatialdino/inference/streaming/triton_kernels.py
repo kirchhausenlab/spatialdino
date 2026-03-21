@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 
 try:
@@ -58,9 +56,24 @@ if TRITON_AVAILABLE:
         mask_n = offs_n < k_len
         mask_d = offs_d < d_head
 
-        q_ptrs = q_ptr + pid_h * stride_qh + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qd
-        k_ptrs = k_ptr + pid_h * stride_kh + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kd
-        v_ptrs = v_ptr + pid_h * stride_vh + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vd
+        q_ptrs = (
+            q_ptr
+            + pid_h * stride_qh
+            + offs_m[:, None] * stride_qm
+            + offs_d[None, :] * stride_qd
+        )
+        k_ptrs = (
+            k_ptr
+            + pid_h * stride_kh
+            + offs_n[:, None] * stride_kn
+            + offs_d[None, :] * stride_kd
+        )
+        v_ptrs = (
+            v_ptr
+            + pid_h * stride_vh
+            + offs_n[:, None] * stride_vn
+            + offs_d[None, :] * stride_vd
+        )
 
         q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_d[None, :], other=0.0)
         k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
@@ -75,7 +88,12 @@ if TRITON_AVAILABLE:
 
         m_ptrs = m_ptr + pid_h * stride_mh + offs_m * stride_mm
         l_ptrs = l_ptr + pid_h * stride_lh + offs_m * stride_lm
-        out_ptrs = out_ptr + pid_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :] * stride_od
+        out_ptrs = (
+            out_ptr
+            + pid_h * stride_oh
+            + offs_m[:, None] * stride_om
+            + offs_d[None, :] * stride_od
+        )
 
         m_prev = tl.load(m_ptrs, mask=mask_m, other=float("-inf"))
         l_prev = tl.load(l_ptrs, mask=mask_m, other=0.0)

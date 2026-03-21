@@ -8,7 +8,8 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/layers/patch_embed.py
 
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
+from collections.abc import Callable
+from typing import Any, Literal, Union
 
 import torch
 import torch.nn as nn
@@ -25,8 +26,8 @@ if XFORMERS_ENABLED:
 
         XFORMERS_AVAILABLE = True
 
-    except ImportError:
-        raise ImportError("xFormers is not available (Block)")
+    except ImportError as e:
+        raise ImportError("xFormers is not available (Block)") from e
 else:
     XFORMERS_AVAILABLE = False
 
@@ -164,7 +165,7 @@ def drop_add_residual_stochastic_depth(
 
 def get_branges_scales(
     x: torch.Tensor, sample_drop_ratio: float = 0.0
-) -> Tuple[torch.Tensor, float]:
+) -> tuple[torch.Tensor, float]:
     b, n, d = x.shape
     sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
     brange = (torch.randperm(b, device=x.device))[:sample_subset_size]
@@ -177,7 +178,7 @@ def add_residual(
     brange: torch.Tensor,
     residual: torch.Tensor,
     residual_scale_factor: float,
-    scaling_vector: Optional[torch.Tensor] = None,
+    scaling_vector: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if scaling_vector is None:
         x_flat = x.flatten(1)
@@ -196,12 +197,12 @@ def add_residual(
     return x_plus_residual
 
 
-attn_bias_cache: Dict[Tuple, Any] = {}
+attn_bias_cache: dict[tuple, Any] = {}
 
 
 def get_attn_bias_and_cat(
-    x_list: List[torch.Tensor], branges: Optional[List[torch.Tensor]] = None
-) -> Tuple[Any, torch.Tensor]:
+    x_list: list[torch.Tensor], branges: list[torch.Tensor] | None = None
+) -> tuple[Any, torch.Tensor]:
     """
     this will perform the index select, cat the tensors, and provide the attn_bias from cache
     """
@@ -211,7 +212,7 @@ def get_attn_bias_and_cat(
         else [x.shape[0] for x in x_list]
     )
     all_shapes = tuple((b, x.shape[1]) for b, x in zip(batch_sizes, x_list))
-    if all_shapes not in attn_bias_cache.keys():
+    if all_shapes not in attn_bias_cache:
         seqlens = []
         for b, x in zip(batch_sizes, x_list):
             for _ in range(b):
@@ -232,11 +233,11 @@ def get_attn_bias_and_cat(
 
 
 def drop_add_residual_stochastic_depth_list(
-    x_list: List[torch.Tensor],
+    x_list: list[torch.Tensor],
     residual_func: Callable[[torch.Tensor, Any], torch.Tensor],
     sample_drop_ratio: float = 0.0,
-    scaling_vector: Optional[torch.Tensor] = None,
-) -> List[torch.Tensor]:
+    scaling_vector: torch.Tensor | None = None,
+) -> list[torch.Tensor]:
     # 1) generate random set of indices for dropping samples in the batch
     branges_scales = [
         get_branges_scales(x, sample_drop_ratio=sample_drop_ratio) for x in x_list
@@ -263,7 +264,7 @@ def drop_add_residual_stochastic_depth_list(
 
 
 class NestedTensorBlock(Block):
-    def forward_nested(self, x_list: List[torch.Tensor]) -> List[torch.Tensor]:
+    def forward_nested(self, x_list: list[torch.Tensor]) -> list[torch.Tensor]:
         """
         x_list contains a list of tensors to nest together and run
         """
@@ -273,13 +274,13 @@ class NestedTensorBlock(Block):
 
             def attn_residual_func(
                 x: torch.Tensor,
-                attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                attn_bias: fmha.attn_bias.BlockDiagonalMask | None = None,
             ) -> torch.Tensor:
                 return self.attn(self.norm1(x), attn_bias=attn_bias)
 
             def ffn_residual_func(
                 x: torch.Tensor,
-                attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                attn_bias: fmha.attn_bias.BlockDiagonalMask | None = None,
             ) -> torch.Tensor:
                 return self.mlp(self.norm2(x))
 
@@ -304,13 +305,13 @@ class NestedTensorBlock(Block):
 
             def attn_residual_func(
                 x: torch.Tensor,
-                attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                attn_bias: fmha.attn_bias.BlockDiagonalMask | None = None,
             ) -> torch.Tensor:
                 return self.ls1(self.attn(self.norm1(x), attn_bias=attn_bias))
 
             def ffn_residual_func(
                 x: torch.Tensor,
-                attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                attn_bias: fmha.attn_bias.BlockDiagonalMask | None = None,
             ) -> torch.Tensor:
                 return self.ls2(self.mlp(self.norm2(x)))
 
@@ -321,9 +322,9 @@ class NestedTensorBlock(Block):
 
     def forward(
         self,
-        x_or_x_list: Union[torch.Tensor, List[torch.Tensor]],
+        x_or_x_list: Union[torch.Tensor, list[torch.Tensor]],
         vit_feat: Literal["patch", "patch_attn", "attn"] = "patch",
-    ) -> Union[torch.Tensor, List[torch.Tensor]]:
+    ) -> Union[torch.Tensor, list[torch.Tensor]]:
         if isinstance(x_or_x_list, torch.Tensor):
             # return super().forward(x_or_x_list)
             return super().forward(x_or_x_list, vit_feat=vit_feat)

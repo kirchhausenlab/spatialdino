@@ -7,13 +7,10 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
-import logging
 import os
-from typing import Literal
-import warnings
+
 import torch
 import torch.nn as nn
-
 
 XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
 if XFORMERS_ENABLED:
@@ -22,10 +19,11 @@ if XFORMERS_ENABLED:
 
         XFORMERS_AVAILABLE = True
 
-    except ImportError:
-        raise ImportError("xFormers is not available (Attention)")
+    except ImportError as e:
+        raise ImportError("xFormers is not available (Attention)") from e
 else:
     XFORMERS_AVAILABLE = False
+
 
 class Attention(nn.Module):
     def __init__(
@@ -54,7 +52,8 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         B, N, C = x.shape
         qkv = (
-            self.qkv(x)
+            self
+            .qkv(x)
             .reshape(B, N, 3, self.num_heads, C // self.num_heads)
             .permute(2, 0, 3, 1, 4)
         )  # [3, B, H, N, C // H]

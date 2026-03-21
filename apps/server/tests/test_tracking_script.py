@@ -48,7 +48,9 @@ class TrackingScriptTests(unittest.TestCase):
 
     def test_on_the_fly_feature_sampling_matches_trilinear_upsample(self) -> None:
         lr_feats = np.arange(2 * 2 * 2 * 1, dtype=np.float32).reshape(2, 2, 2, 1)
-        chunk = tracking_script.load_feature_chunk_internal_yxz(lr_feats, start=0, end=1)
+        chunk = tracking_script.load_feature_chunk_internal_yxz(
+            lr_feats, start=0, end=1
+        )
         axis_maps = tracking_script.build_axis_maps((2, 2, 2), (4, 4, 4))
         coords = np.array(
             [
@@ -59,10 +61,13 @@ class TrackingScriptTests(unittest.TestCase):
             dtype=np.int32,
         )
 
-        sampled = tracking_script.sample_feature_chunk_at_internal_coords(chunk, axis_maps, coords)[0]
+        sampled = tracking_script.sample_feature_chunk_at_internal_coords(
+            chunk, axis_maps, coords
+        )[0]
 
         hr_zyx = (
-            F.interpolate(
+            F
+            .interpolate(
                 torch.from_numpy(np.moveaxis(lr_feats, -1, 0)).unsqueeze(0),
                 size=(4, 4, 4),
                 mode="trilinear",
@@ -72,7 +77,9 @@ class TrackingScriptTests(unittest.TestCase):
             .numpy()[0, 0]
         )
         hr_yxz = np.moveaxis(hr_zyx, 0, -1)
-        expected = np.array([hr_yxz[tuple(coord)] for coord in coords], dtype=np.float32)
+        expected = np.array(
+            [hr_yxz[tuple(coord)] for coord in coords], dtype=np.float32
+        )
 
         np.testing.assert_allclose(sampled, expected, rtol=1e-5, atol=1e-5)
 
@@ -90,7 +97,11 @@ class TrackingScriptTests(unittest.TestCase):
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
-                tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
+                tifffile.imwrite(
+                    segmentation_dir / f"stack{index:04d}.tif",
+                    seg,
+                    photometric="minisblack",
+                )
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
                 tifffile.imwrite(
@@ -146,10 +157,16 @@ class TrackingScriptTests(unittest.TestCase):
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
-                tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
+                tifffile.imwrite(
+                    segmentation_dir / f"stack{index:04d}.tif",
+                    seg,
+                    photometric="minisblack",
+                )
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", raw, photometric="minisblack")
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif", raw, photometric="minisblack"
+                )
 
             output_path = tracking_script.run_tracking(
                 root,
@@ -186,10 +203,16 @@ class TrackingScriptTests(unittest.TestCase):
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
-                tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
+                tifffile.imwrite(
+                    segmentation_dir / f"stack{index:04d}.tif",
+                    seg,
+                    photometric="minisblack",
+                )
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", raw, photometric="minisblack")
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif", raw, photometric="minisblack"
+                )
 
             output_path = tracking_script.run_tracking(
                 root,

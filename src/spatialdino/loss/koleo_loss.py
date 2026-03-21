@@ -5,10 +5,11 @@
 
 
 import torch
+import torch.amp
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.amp
 from torch.amp import custom_fwd
+
 # import torch.distributed as dist
 
 
@@ -29,7 +30,7 @@ class KoLeoLoss(nn.Module):
         n = x.shape[0]
         dots.view(-1)[:: (n + 1)].fill_(-1)  # Trick to fill diagonal with -1
         # max inner prod -> min distance
-        _, I = torch.max(dots, dim=1)  # noqa: E741
+        _, I = torch.max(dots, dim=1)
         return I
 
     @custom_fwd(device_type="cuda", cast_inputs=torch.float32)
@@ -39,7 +40,7 @@ class KoLeoLoss(nn.Module):
             student_output (BxD): backbone output of student
         """
         student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)
-        I = self.pairwise_NNs_inner(student_output)  # noqa: E741
+        I = self.pairwise_NNs_inner(student_output)
         distances = self.pdist(student_output, student_output[I])  # BxD, BxD -> B
         loss = -torch.log(distances + eps).mean()
         return loss

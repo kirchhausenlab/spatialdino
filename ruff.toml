@@ -1,4 +1,9 @@
-# Exclude a variety of commonly ignored directories.
+# ---------------------------------------------------------------------------
+# Ruff — linter + formatter configuration for SpatialDINO
+# https://docs.astral.sh/ruff/configuration/
+# ---------------------------------------------------------------------------
+
+# Exclude commonly ignored directories.
 exclude = [
     ".bzr",
     ".direnv",
@@ -28,26 +33,99 @@ exclude = [
     "venv",
 ]
 
-# Same as Black.
 line-length = 88
 indent-width = 4
+target-version = "py312"
 
-# Assume Python 3.8
-target-version = "py310"
-
+# ---------------------------------------------------------------------------
+# Lint rules
+# ---------------------------------------------------------------------------
 [lint]
-select = ["E4", "E7", "E9", "F"]
-ignore = []
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "RUF",    # Ruff-specific rules
+]
 
-# Allow fix for all enabled rules (when `--fix`) is provided.
+ignore = [
+    "E501",    # line too long — formatter handles this
+    "E741",    # ambiguous variable name — x, l, I are standard in ML/math code
+    "B905",    # `zip()` without an explicit `strict=` parameter
+    "N801",    # class name should use CapWords — some classes follow paper conventions
+    "N802",    # function name should be lowercase — many ML conventions break this
+    "N803",    # argument name should be lowercase — tensor names like B, C, N
+    "N806",    # variable in function should be lowercase — tensor names
+    "N812",    # lowercase imported as non-lowercase — `import torch.nn.functional as F`
+    "N817",    # CamelCase imported as acronym — `import SlidingWindowInferer as SWI`
+    "UP007",   # use X | Y for union — keep Optional for clarity in older code
+    "UP031",   # printf-string-formatting — existing codebase uses %-formatting
+    "UP028",   # yield-in-for-loop — readability preference in data pipelines
+    "SIM102",  # collapsible-if — nested ifs are often clearer in complex logic
+    "SIM108",  # use ternary operator — readability preference
+    "SIM117",  # multiple-with-statements — nested context managers are clearer
+    "RUF003",  # ambiguous unicode character in comment — non-ASCII in author names
+    "RUF012",  # mutable class variable annotation — nn.Module convention
+    "RUF046",  # unnecessary cast to int — math.ceil returns int in 3.x but explicit cast aids readability
+    "RUF059",  # unused unpacked variable — common in SVD: u, s, vt = LA.svd(A)
+    "SIM105",  # use contextlib.suppress — try/except/pass is more explicit
+    "B007",    # unused loop control variable — common in enumerate patterns
+    "B008",    # function call in default argument — intentional for nn.Module defaults
+    "B023",    # function uses loop variable — closures in training loops are intentional
+    "C408",    # unnecessary dict() call — dict() is more readable for keyword args
+    "TC002",   # typing-only third-party import — keep imports at top for readability
+    "TC003",   # typing-only standard-library import — keep imports at top for readability
+    "UP035",   # deprecated typing imports — keep for compatibility
+]
+
+# Allow fix for all enabled rules (when `--fix` is provided).
 fixable = ["ALL"]
 unfixable = [
-    "PLC0415", # allow lazy imports
+    "PLC0415",  # allow lazy imports
 ]
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
+[lint.per-file-ignores]
+"scripts/**/*.py" = ["E402"]    # module-level imports not at top — scripts need path setup
+"tests/**/*.py" = ["B011"]      # assert False is fine in tests
+"**/__init__.py" = ["F401"]     # unused imports in __init__.py are re-exports
+"src/spatialdino/data/__init__.py" = ["F401", "A001"]  # re-exports + builtins shadow
+"src/spatialdino/distributed/__init__.py" = ["F401", "A001"]  # intentional print override
+
+# ---------------------------------------------------------------------------
+# isort
+# ---------------------------------------------------------------------------
+[lint.isort]
+combine-as-imports = true
+split-on-trailing-comma = false
+known-first-party = ["spatialdino"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
+# ---------------------------------------------------------------------------
+# flake8-annotations
+# ---------------------------------------------------------------------------
+[lint.flake8-annotations]
+ignore-fully-untyped = true
+
+# ---------------------------------------------------------------------------
+# Formatter
+# ---------------------------------------------------------------------------
 [format]
 preview = true
 quote-style = "double"
@@ -55,28 +133,4 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 docstring-code-line-length = "dynamic"
-# Set the line length limit used when formatting code snippets indocstring-code-format = false
-# docstrings.
-# extend pyproject.toml for requires-python (workaround astral-sh/ruff#10299)
-
-[lint.isort]
-combine-as-imports = true
-split-on-trailing-comma = false
-# Force Ruff/isort to always import setuptools before distutils in tests as long as distutils_hack is supported
-# This also ensures _distutils_hack is imported before distutils
-# https://github.com/pypa/setuptools/issues/4137
-section-order = [
-    "future",
-    "standard-library",
-    "eager",
-    "third-party",
-    "first-party",
-    "local-folder",
-    "delayed",
-]
-sections.eager = ["_distutils_hack"]
-sections.delayed = ["distutils"]
-known-first-party = ["setuptools"]
-
-[lint.flake8-annotations]
-ignore-fully-untyped = true
+docstring-code-format = false

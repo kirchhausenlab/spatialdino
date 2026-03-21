@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple, Union
+from typing import Union
 
 import numpy as np
 import torch
@@ -20,8 +20,8 @@ class Decoder(nn.Module):
 
     def __init__(
         self,
-        img_size: Union[int, Tuple[int, int, int]] = 224,
-        patch_size: Union[int, Tuple[int, int, int]] = 16,
+        img_size: Union[int, tuple[int, int, int]] = 224,
+        patch_size: Union[int, tuple[int, int, int]] = 16,
         in_chans: int = 3,
         embed_dim: int = 768,
         dropout: float = 0.65,
@@ -119,7 +119,7 @@ class Decoder(nn.Module):
         return x
 
     def unpatchify(
-        self, x: torch.Tensor, grid_size: Tuple[int, int, int]
+        self, x: torch.Tensor, grid_size: tuple[int, int, int]
     ) -> torch.Tensor:
         """_summary_
         - Reconstruct volumetric data from patch tokens
@@ -134,8 +134,8 @@ class Decoder(nn.Module):
         gz, gy, gx = grid_size
 
         C = self.in_chans
-        assert N == gz * gy * gx, f"Expected {gz * gy * gx} patches, got {N}"
-        assert D == pz * py * px * C, f"Expected patch dim {pz * py * px * C}, got {D}"
+        assert gz * gy * gx == N, f"Expected {gz * gy * gx} patches, got {N}"
+        assert pz * py * px * C == D, f"Expected patch dim {pz * py * px * C}, got {D}"
         # reshape to separate patch grid coordinates from patch content
         # → [B, gz, gy, gx, pz, py, px, C]
         x = x.view(B, gz, gy, gx, pz, py, px, C)
@@ -149,8 +149,8 @@ class Decoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        grid_size: Tuple[int, int, int],
-    ) -> Dict[str, torch.Tensor]:
+        grid_size: tuple[int, int, int],
+    ) -> dict[str, torch.Tensor]:
         """_summary_
         - Input is patch tokens [B, N, embed_dim], use linear projection to map embed_dim to patch pixel space
         - decoder_pred transforms embeddings back to patch pixel values
@@ -171,12 +171,12 @@ class Decoder(nn.Module):
     def predict(
         self,
         x: torch.Tensor,
-        grid_size: Tuple[int, int, int],
+        grid_size: tuple[int, int, int],
         dtype: torch.dtype = torch.bfloat16,
         use_amp: bool = True,
         device_type: str = "cuda",
-        roi_size: Union[int, Tuple[int, int, int]] = (32, 32, 32),
-    ) -> Dict[str, torch.Tensor]:
+        roi_size: Union[int, tuple[int, int, int]] = (32, 32, 32),
+    ) -> dict[str, torch.Tensor]:
         """_summary_"""
         self.inferer.roi_size = roi_size
         out = {}
@@ -184,14 +184,16 @@ class Decoder(nn.Module):
         # so we need to unpatchify first, then apply sliding window inference
         x = self.unpatchify(self.decoder_pred(x), grid_size)
         out["decoder_recon"] = x
-        with torch.inference_mode():
-            with torch.amp.autocast(  # type: ignore
+        with (
+            torch.inference_mode(),
+            torch.amp.autocast(  # type: ignore
                 enabled=use_amp,
                 dtype=dtype,
                 device_type=device_type,
-            ):
-                out["decoder_ncuts"] = self.inferer(
-                    x,
-                    lambda x: F.softmax(self.unet(x), dim=1),
-                ).contiguous()  # [C, Z, Y, X] # type: ignore
+            ),
+        ):
+            out["decoder_ncuts"] = self.inferer(
+                x,
+                lambda x: F.softmax(self.unet(x), dim=1),
+            ).contiguous()  # [C, Z, Y, X] # type: ignore
         return out

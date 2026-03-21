@@ -7,7 +7,7 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
-from typing import Optional, Tuple, Union
+from typing import Union
 
 import numpy as np
 import torch.nn as nn
@@ -20,12 +20,12 @@ class PatchEmbed(nn.Module):
 
     def __init__(
         self,
-        img_size: Union[int, Tuple[int, int, int]],
-        patch_size: Union[int, Tuple[int, int, int]] = 16,
-        stride: Optional[Union[int, Tuple[int, int, int]]] = None,
+        img_size: Union[int, tuple[int, int, int]],
+        patch_size: Union[int, tuple[int, int, int]] = 16,
+        stride: Union[int, tuple[int, int, int]] | None = None,
         in_chans: int = 3,
         embed_dim: int = 768,
-        norm_layer: Optional[nn.Module] = None,
+        norm_layer: nn.Module | None = None,
         flatten: bool = True,
     ):
         super().__init__()

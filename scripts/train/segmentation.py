@@ -4,22 +4,15 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 import webdataset as wds
 from omegaconf import DictConfig
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from wandb.sdk.wandb_run import Run
 
 import spatialdino.distributed as dist
-from spatialdino.loss.charbonnier_loss import generalized_charbonnier_loss
-from spatialdino.loss.soft_ncuts import SoftNCutsLoss
-from spatialdino.models.segmentation import Segmentation
-from spatialdino.models.utils import (
-    build_segmentation_model,
-    load_model,
-)
 from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data import DTYPE_MAPPING
 from spatialdino.data.collate import collate_fn_segmentation
@@ -28,10 +21,12 @@ from spatialdino.data.dataset import custom_segmentation_unbatched, make_webdata
 from spatialdino.data.transforms import SegmentationTransform, remap_image
 from spatialdino.logging import MetricLogger, SmoothedValue, setup_logging
 from spatialdino.logging.wandb import init_wandb
-from spatialdino.utils.misc import set_seed
-from wandb.sdk.wandb_run import Run
-
+from spatialdino.loss.charbonnier_loss import generalized_charbonnier_loss
+from spatialdino.loss.soft_ncuts import SoftNCutsLoss
+from spatialdino.models.segmentation import Segmentation
 from spatialdino.models.segmentation.utils import save_model
+from spatialdino.models.utils import build_segmentation_model, load_model
+from spatialdino.utils.misc import set_seed
 
 torch.backends.cuda.matmul.allow_tf32 = (
     True  # PyTorch 1.12 sets this to False by default
@@ -103,7 +98,8 @@ def main():
     )
 
     train_dataloader = (
-        train_dataloader.compose(custom_segmentation_unbatched())
+        train_dataloader
+        .compose(custom_segmentation_unbatched())
         .shuffle(config.shuffle_buffer_size)
         .batched(
             config.batch_size,
@@ -194,9 +190,9 @@ def train(
     train_dataloader: DataLoader,
     rank: int,
     world_size: int,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,  # type: ignore
-    run: Optional[Run] = None,
-) -> Dict[str, float]:
+    loss_scaler: torch.amp.GradScaler | None = None,  # type: ignore
+    run: Run | None = None,
+) -> dict[str, float]:
     start_time = time.time()
     model.train()
 
@@ -307,7 +303,7 @@ def train(
         loss_value = loss.detach().cpu().item()
 
         if not math.isfinite(loss_value):
-            logger.error("Loss is {}, stopping training".format(loss_value))
+            logger.error(f"Loss is {loss_value}, stopping training")
             logger.error(f"Loss dict: {loss_dict}")
             sys.exit(1)
 
@@ -349,7 +345,7 @@ def train(
     logger.info("Averaged stats:", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info("Training time {}".format(total_time_str))
+    logger.info(f"Training time {total_time_str}")
     model.eval()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

@@ -1,11 +1,13 @@
 from typing import Any, Dict, Literal, Tuple, Union
-from omegaconf import DictConfig
+
 import torch
+import torch.nn as nn
+from omegaconf import DictConfig
+
 from spatialdino.data.transforms import remap_image
 from spatialdino.models.layers.decoder import Decoder
 from spatialdino.models.layers.encoder import Encoder
 from spatialdino.utils.misc import make_3tuple
-import torch.nn as nn
 
 
 class Segmentation(nn.Module):
@@ -53,7 +55,7 @@ class Segmentation(nn.Module):
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         with torch.amp.autocast(
             device_type=device_type,
             dtype=dtype,
@@ -81,8 +83,8 @@ class Segmentation(nn.Module):
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
-        roi_size: Union[int, Tuple[int, int, int]] = (32, 32, 32),
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        roi_size: Union[int, tuple[int, int, int]] = (32, 32, 32),
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prediction for segmentation returns tuple of (seg, recon, patch_tokens), do not return dict for sliding window inference
         """

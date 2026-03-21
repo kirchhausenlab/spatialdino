@@ -10,13 +10,13 @@
 # --------------------------------------------------------
 
 import logging
-import math
 from functools import partial
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Literal, Union
+
 import torch
 import torch.amp
 import torch.nn as nn
-import torch.nn.functional as F
+
 from spatialdino.data.transforms import trilinear_interpolate_with_antialias
 from spatialdino.models.layers.attention import MemEffAttention
 from spatialdino.models.layers.block import NestedTensorBlock as Block
@@ -40,9 +40,9 @@ class Encoder(nn.Module):
 
     def __init__(
         self,
-        img_size: Union[int, Tuple[int, int, int]] = 224,
-        patch_size: Union[int, Tuple[int, int, int]] = 16,
-        stride: Optional[Union[int, Tuple[int, int, int]]] = None,
+        img_size: Union[int, tuple[int, int, int]] = 224,
+        patch_size: Union[int, tuple[int, int, int]] = 16,
+        stride: Union[int, tuple[int, int, int]] | None = None,
         in_chans: int = 3,
         embed_dim: int = 768,
         depth: int = 12,
@@ -53,9 +53,7 @@ class Encoder(nn.Module):
         proj_bias: bool = True,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        init_values: Optional[
-            float
-        ] = None,  # for layerscale: None or 0 => no layerscale
+        init_values: float | None = None,  # for layerscale: None or 0 => no layerscale
         embed_layer: nn.Module = PatchEmbed,
         act_layer: nn.Module = nn.GELU,
         block_fn: nn.Module = partial(Block, attn_class=MemEffAttention),
@@ -268,7 +266,7 @@ class Encoder(nn.Module):
         )
 
     def prepare_tokens_with_masks(
-        self, x: torch.Tensor, masks: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, masks: torch.Tensor | None = None
     ) -> torch.Tensor:
         """_summary_
         - Take raw volumetric data [B, C, Z, Y, X], divide it into non overlapping patches by calling the patch_embed.py (src/spatialdino/models/layers/patch_embed.py) class.
@@ -292,8 +290,8 @@ class Encoder(nn.Module):
         return x
 
     def forward_features_list(
-        self, x_list: List[torch.Tensor], masks_list: List[torch.Tensor]
-    ) -> List[Dict[str, Any]]:
+        self, x_list: list[torch.Tensor], masks_list: list[torch.Tensor]
+    ) -> list[dict[str, Any]]:
         """_summary_
         - Process list of tensors through transformer pipeline
         - Each tensor: raw volumetric data [B, C, Z, Y, X] + corresponding masks
@@ -325,9 +323,9 @@ class Encoder(nn.Module):
 
     def forward_features(
         self,
-        x: Union[torch.Tensor, List[torch.Tensor]],
-        masks: Union[torch.Tensor, List[torch.Tensor], None] = None,
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        x: Union[torch.Tensor, list[torch.Tensor]],
+        masks: Union[torch.Tensor, list[torch.Tensor], None] = None,
+    ) -> Union[dict[str, Any], list[dict[str, Any]]]:
         """_summary_
         - Main feature extraction method - handles both single tensors and lists
         - If list input: delegates to forward_features_list for batch processing
@@ -359,9 +357,9 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        x: Union[torch.Tensor, List[torch.Tensor]],
-        masks: Union[torch.Tensor, List[torch.Tensor], None] = None,
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        x: Union[torch.Tensor, list[torch.Tensor]],
+        masks: Union[torch.Tensor, list[torch.Tensor], None] = None,
+    ) -> Union[dict[str, Any], list[dict[str, Any]]]:
         """_summary_
         - If a list, call the forward_features_list method.
         - If a single tensor, call the forward_features method.
@@ -436,16 +434,18 @@ class Encoder(nn.Module):
         device: torch.device | str | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        with torch.no_grad():
-            with torch.amp.autocast(  # type: ignore
+        with (
+            torch.no_grad(),
+            torch.amp.autocast(  # type: ignore
                 enabled=use_amp,
                 dtype=dtype,
                 device_type=device_type,
-            ):
-                lr_feats = self._predict(
-                    img.to(device),
-                    vit_feat=vit_feat,
-                    norm_feat=norm_feat,
-                )
+            ),
+        ):
+            lr_feats = self._predict(
+                img.to(device),
+                vit_feat=vit_feat,
+                norm_feat=norm_feat,
+            )
 
         return lr_feats

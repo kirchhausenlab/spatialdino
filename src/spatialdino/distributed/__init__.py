@@ -22,7 +22,7 @@ def setup_for_distributed(is_master):
         force = force or (get_world_size() > 8)
         if is_master or force:
             now = datetime.datetime.now().time()
-            builtin_print("[{}] ".format(now), end="")  # print with time stamp
+            builtin_print(f"[{now}] ", end="")  # print with time stamp
             builtin_print(*args, **kwargs)
 
     builtins.print = print
@@ -31,9 +31,7 @@ def setup_for_distributed(is_master):
 def is_dist_avail_and_initialized():
     if not dist.is_available():
         return False
-    if not dist.is_initialized():
-        return False
-    return True
+    return dist.is_initialized()
 
 
 def get_world_size():
@@ -61,7 +59,7 @@ def setup(
     distributed: bool = True,
     backend: str = "cpu:gloo,cuda:nccl",
     timeout: datetime.timedelta = datetime.timedelta(minutes=30),
-) -> Tuple[int, int, int]:
+) -> tuple[int, int, int]:
     if not distributed:
         return 0, 0, 1
 

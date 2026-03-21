@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
 import math
 import os
-from pathlib import Path
 import shutil
-from typing import Iterable
+from collections import deque
+from collections.abc import Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import tifffile
@@ -26,26 +26,41 @@ DEFAULT_PCA_BATCH_BYTES = 256 * 1024 * 1024
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Process saved spatialDINO features.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
+    parser.add_argument(
+        "--input-path", required=True, help="Folder containing per-sample subfolders."
+    )
     parser.add_argument(
         "--output-path",
         default=None,
         help="Folder where processed outputs are written. Defaults to the input folder.",
     )
-    parser.add_argument("--save-pca", action="store_true", help="Save PCA volumes inside each sample folder.")
-    parser.add_argument("--pca-components", type=int, default=3, help="Number of PCA components to save.")
-    parser.add_argument("--pca-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif")
+    parser.add_argument(
+        "--save-pca",
+        action="store_true",
+        help="Save PCA volumes inside each sample folder.",
+    )
+    parser.add_argument(
+        "--pca-components",
+        type=int,
+        default=3,
+        help="Number of PCA components to save.",
+    )
+    parser.add_argument(
+        "--pca-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif"
+    )
     parser.add_argument(
         "--save-high-resolution-features",
         action="store_true",
-        help="Upsample all low-resolution features and save them inside hr_feats/."
+        help="Upsample all low-resolution features and save them inside hr_feats/.",
     )
-    parser.add_argument("--high-resolution-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif")
+    parser.add_argument(
+        "--high-resolution-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif"
+    )
     parser.add_argument(
         "--io-workers",
         type=int,
         default=max(1, min(8, os.cpu_count() or 1)),
-        help="Number of worker threads used for writing output files."
+        help="Number of worker threads used for writing output files.",
     )
     return parser.parse_args()
 
@@ -71,10 +86,14 @@ def choose_pca_batch_size(channel_count: int) -> int:
     return max(4096, DEFAULT_PCA_BATCH_BYTES // bytes_per_voxel)
 
 
-def choose_feature_chunk_size(target_shape: tuple[int, int, int], channel_count: int) -> int:
+def choose_feature_chunk_size(
+    target_shape: tuple[int, int, int], channel_count: int
+) -> int:
     voxels = max(1, math.prod(target_shape))
     bytes_per_channel = voxels * np.dtype(np.float32).itemsize
-    return max(1, min(channel_count, DEFAULT_MAX_UPSAMPLE_BYTES // max(1, bytes_per_channel)))
+    return max(
+        1, min(channel_count, DEFAULT_MAX_UPSAMPLE_BYTES // max(1, bytes_per_channel))
+    )
 
 
 def ensure_contiguous(array: np.ndarray) -> np.ndarray:
@@ -97,12 +116,16 @@ def compute_pca_volume(
 
     batch_size = choose_pca_batch_size(channel_count)
     sum_vec = torch.zeros(channel_count, dtype=torch.float32, device=device)
-    sum_outer = torch.zeros((channel_count, channel_count), dtype=torch.float32, device=device)
+    sum_outer = torch.zeros(
+        (channel_count, channel_count), dtype=torch.float32, device=device
+    )
 
     for start in range(0, voxel_count, batch_size):
         end = min(voxel_count, start + batch_size)
         batch_np = ensure_contiguous(flat_feats[start:end])
-        batch = torch.from_numpy(batch_np).to(device=device, dtype=torch.float32, non_blocking=False)
+        batch = torch.from_numpy(batch_np).to(
+            device=device, dtype=torch.float32, non_blocking=False
+        )
         sum_vec += batch.sum(dim=0)
         sum_outer += batch.transpose(0, 1) @ batch
 
@@ -110,13 +133,17 @@ def compute_pca_volume(
     denominator = max(1, voxel_count - 1)
     covariance = (sum_outer - voxel_count * torch.outer(mean, mean)) / denominator
     eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
-    components = eigenvectors[:, torch.argsort(eigenvalues, descending=True)[:n_components]]
+    components = eigenvectors[
+        :, torch.argsort(eigenvalues, descending=True)[:n_components]
+    ]
 
     projected = np.empty((voxel_count, n_components), dtype=np.float32)
     for start in range(0, voxel_count, batch_size):
         end = min(voxel_count, start + batch_size)
         batch_np = ensure_contiguous(flat_feats[start:end])
-        batch = torch.from_numpy(batch_np).to(device=device, dtype=torch.float32, non_blocking=False)
+        batch = torch.from_numpy(batch_np).to(
+            device=device, dtype=torch.float32, non_blocking=False
+        )
         transformed = (batch - mean) @ components
         projected[start:end] = transformed.cpu().numpy()
 
@@ -130,7 +157,9 @@ def upsample_channels(
     target_shape: tuple[int, int, int],
     device: torch.device,
 ) -> np.ndarray:
-    input_tensor = torch.from_numpy(ensure_contiguous(channels_zyx)).to(device=device, dtype=torch.float32)
+    input_tensor = torch.from_numpy(ensure_contiguous(channels_zyx)).to(
+        device=device, dtype=torch.float32
+    )
     output_tensor = F.interpolate(
         input_tensor.unsqueeze(0),
         size=target_shape,
@@ -195,7 +224,9 @@ def export_pca(
 ) -> None:
     pca_lr = compute_pca_volume(lr_feats, n_components=n_components, device=device)
     pca_lr_channels = np.moveaxis(pca_lr, -1, 0)
-    pca_hr_channels = upsample_channels(pca_lr_channels, target_shape=target_shape, device=device)
+    pca_hr_channels = upsample_channels(
+        pca_lr_channels, target_shape=target_shape, device=device
+    )
     pca_hr_uint8 = normalize_channels_to_uint8(pca_hr_channels)
     save_path = subfolder / f"PCA_{n_components}{save_format}"
     if save_format == ".npy":
@@ -212,7 +243,10 @@ def export_pca(
 
     component_width = max(2, len(str(n_components - 1)))
     for component_index in range(n_components):
-        component_path = subfolder / f"PCA_{n_components}_component_{component_index:0{component_width}d}{save_format}"
+        component_path = (
+            subfolder
+            / f"PCA_{n_components}_component_{component_index:0{component_width}d}{save_format}"
+        )
         save_volume(component_path, pca_hr_uint8[component_index], save_format)
 
 
@@ -239,10 +273,14 @@ def export_high_resolution_features(
         for start in range(0, channel_count, chunk_size):
             end = min(channel_count, start + chunk_size)
             lr_chunk = np.moveaxis(lr_feats[..., start:end], -1, 0)
-            hr_chunk = upsample_channels(lr_chunk, target_shape=target_shape, device=device)
+            hr_chunk = upsample_channels(
+                lr_chunk, target_shape=target_shape, device=device
+            )
             hr_chunk_uint8 = normalize_channels_to_uint8(hr_chunk)
             for offset, feature_index in enumerate(range(start, end)):
-                feature_path = hr_dir / f"feature_{feature_index:0{channel_width}d}{save_format}"
+                feature_path = (
+                    hr_dir / f"feature_{feature_index:0{channel_width}d}{save_format}"
+                )
                 feature_volume = ensure_contiguous(hr_chunk_uint8[offset])
                 submit_save_task(
                     executor,
@@ -311,14 +349,24 @@ def iter_subfolders(input_path: Path) -> Iterable[Path]:
 def main() -> None:
     args = parse_args()
     if not args.save_pca and not args.save_high_resolution_features:
-        raise ValueError("Choose at least one output: PCA and/or high-resolution features.")
+        raise ValueError(
+            "Choose at least one output: PCA and/or high-resolution features."
+        )
 
     input_path = Path(args.input_path).expanduser().resolve()
     if not input_path.is_dir():
-        raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
-    output_path = Path(args.output_path).expanduser().resolve() if args.output_path else input_path
+        raise FileNotFoundError(
+            f"Input folder does not exist or is not a directory: {input_path}"
+        )
+    output_path = (
+        Path(args.output_path).expanduser().resolve()
+        if args.output_path
+        else input_path
+    )
     if output_path.exists() and not output_path.is_dir():
-        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
+        raise FileNotFoundError(
+            f"Output folder exists but is not a directory: {output_path}"
+        )
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Process-features requires one GPU.")
@@ -334,8 +382,13 @@ def main() -> None:
     print(f"[process-features] Found {len(subfolders)} subfolders", flush=True)
 
     for index, subfolder in enumerate(subfolders, start=1):
-        print(f"[process-features] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
-        destination_subfolder = subfolder if output_path == input_path else output_path / subfolder.name
+        print(
+            f"[process-features] Processing {subfolder.name} ({index}/{len(subfolders)})",
+            flush=True,
+        )
+        destination_subfolder = (
+            subfolder if output_path == input_path else output_path / subfolder.name
+        )
         process_subfolder(
             subfolder,
             destination_subfolder,

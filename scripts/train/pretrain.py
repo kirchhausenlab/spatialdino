@@ -5,7 +5,6 @@ import sys
 import time
 from functools import partial
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 import webdataset as wds
@@ -13,9 +12,8 @@ from omegaconf import DictConfig
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from wandb.sdk.wandb_run import Run
-from spatialdino.models.utils import load_model
+
 import spatialdino.distributed as dist
-from spatialdino.models.ssl.utils import save_model
 from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data import DTYPE_MAPPING
 from spatialdino.data.collate import collate_fn_train
@@ -28,7 +26,8 @@ from spatialdino.loss.dino_clstoken_loss import DINOLoss
 from spatialdino.loss.ibot_patch_loss import iBOTPatchLoss
 from spatialdino.loss.koleo_loss import KoLeoLoss
 from spatialdino.models.ssl import SSL
-from spatialdino.models.utils import build_ssl_model
+from spatialdino.models.ssl.utils import save_model
+from spatialdino.models.utils import build_ssl_model, load_model
 from spatialdino.optim import lr_sched
 from spatialdino.optim.lr_decay import (
     apply_optim_scheduler,
@@ -128,7 +127,8 @@ def main():
     )
 
     train_dataloader = (
-        train_dataloader.compose(
+        train_dataloader
+        .compose(
             custom_train_unbatched(
                 n_global_crops=config.n_global_crops,
                 n_local_crops=config.n_local_crops,
@@ -227,9 +227,9 @@ def train(
     train_dataloader: DataLoader,
     rank: int,
     world_size: int,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,
-    run: Optional[Run] = None,
-) -> Dict[str, float]:
+    loss_scaler: torch.amp.GradScaler | None = None,
+    run: Run | None = None,
+) -> dict[str, float]:
     start_time = time.time()
     model.train()
 
@@ -444,7 +444,7 @@ def train(
         loss_value = loss.detach().cpu().item()
 
         if not math.isfinite(loss_value):
-            logger.error("Loss is {}, stopping training".format(loss_value))
+            logger.error(f"Loss is {loss_value}, stopping training")
             logger.error(f"Loss dict: {loss_dict}")
             sys.exit(1)
 
@@ -487,7 +487,7 @@ def train(
     logger.info("Averaged stats:", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info("Training time {}".format(total_time_str))
+    logger.info(f"Training time {total_time_str}")
     model.eval()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

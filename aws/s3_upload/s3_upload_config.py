@@ -2,7 +2,6 @@
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -17,7 +16,7 @@ class S3UploadConfig:
     # Upload settings
     chunk_size: int = 100 * 1024 * 1024  # 100MB chunks for multipart
     max_concurrency: int = 4  # Number of parallel uploads
-    max_bandwidth_mbps: Optional[int] = None  # No limit by default
+    max_bandwidth_mbps: int | None = None  # No limit by default
 
     # Retry settings
     max_retries: int = 3

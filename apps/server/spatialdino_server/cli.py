@@ -6,9 +6,16 @@ import uvicorn
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="spatialdino-server", description="Run the spatialDINO infrastructure server.")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0).")
-    parser.add_argument("--port", default=8000, type=int, help="Bind port (default: 8000).")
+    parser = argparse.ArgumentParser(
+        prog="spatialdino-server",
+        description="Run the spatialDINO infrastructure server.",
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)."
+    )
+    parser.add_argument(
+        "--port", default=8000, type=int, help="Bind port (default: 8000)."
+    )
     parser.add_argument(
         "--reload",
         action="store_true",

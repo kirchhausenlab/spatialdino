@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 import numpy as np
 import torch
@@ -15,10 +15,7 @@ def _numpy_dtype_for_torch(dtype: torch.dtype) -> np.dtype:
         return np.float16
     if dtype == torch.float32:
         return np.float32
-    raise ValueError(
-        "Disk storage only supports float16/float32. "
-        f"Got dtype={dtype}."
-    )
+    raise ValueError(f"Disk storage only supports float16/float32. Got dtype={dtype}.")
 
 
 @dataclass
@@ -26,24 +23,24 @@ class TokenStore:
     tensor: torch.Tensor
     storage_kind: StorageKind
     num_special: int
-    grid_size: Tuple[int, int, int]
+    grid_size: tuple[int, int, int]
     pin_memory: bool = False
-    path: Optional[Path] = None
-    memmap: Optional[np.memmap] = None
-    _patch_view: Optional[torch.Tensor] = None
+    path: Path | None = None
+    memmap: np.memmap | None = None
+    _patch_view: torch.Tensor | None = None
 
     @classmethod
     def create(
         cls,
-        shape: Tuple[int, int],
+        shape: tuple[int, int],
         dtype: torch.dtype,
         storage_kind: StorageKind,
         num_special: int,
-        grid_size: Tuple[int, int, int],
+        grid_size: tuple[int, int, int],
         device: torch.device,
         pin_memory: bool = False,
-        path: Optional[Path] = None,
-    ) -> "TokenStore":
+        path: Path | None = None,
+    ) -> TokenStore:
         if storage_kind == "gpu":
             tensor = torch.empty(shape, device=device, dtype=dtype)
             return cls(
@@ -106,7 +103,7 @@ class TokenStore:
         start: int,
         end: int,
         device: torch.device,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
         block = self.tensor[start:end]
         if dtype is not None and block.dtype != dtype:

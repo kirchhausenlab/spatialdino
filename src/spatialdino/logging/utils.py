@@ -5,17 +5,19 @@
 
 import datetime
 import json
+import logging
 import time
 from collections import defaultdict, deque
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Dict, Generator, Optional, Union
-import logging
+from typing import Any, Union
+
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 
 
-class MetricLogger(object):
+class MetricLogger:
     def __init__(
         self,
         logger: logging.Logger,
@@ -45,13 +47,13 @@ class MetricLogger(object):
         if attr in self.__dict__:
             return self.__dict__[attr]
         raise AttributeError(
-            "'{}' object has no attribute '{}'".format(type(self).__name__, attr)
+            f"'{type(self).__name__}' object has no attribute '{attr}'"
         )
 
     def __str__(self) -> str:
         loss_str = []
         for name, meter in self.meters.items():
-            loss_str.append("{}: {}".format(name, str(meter)))
+            loss_str.append(f"{name}: {meter!s}")
         return self.delimiter.join(loss_str)
 
     def synchronize_between_processes(self) -> None:
@@ -63,7 +65,7 @@ class MetricLogger(object):
 
     def dump_in_output_file(
         self, iteration: int, iter_time: float, data_time: float, rank: int
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if self.output_file is None or rank != 0:
             return {}
         dict_to_dump = dict(
@@ -80,11 +82,11 @@ class MetricLogger(object):
         self,
         iterable: DataLoader,
         print_freq: int,
-        header: Optional[str] = None,
-        n_iterations: Optional[int] = None,
+        header: str | None = None,
+        n_iterations: int | None = None,
         start_iteration: int = 0,
         rank: int = 0,
-    ) -> Generator[Dict[str, Any], None, None]:
+    ) -> Generator[dict[str, Any], None, None]:
         i = start_iteration
         if not header:
             header = ""
@@ -116,7 +118,7 @@ class MetricLogger(object):
             yield obj
             iter_time.update(time.time() - end)
             if i % print_freq == 0 or i == n_iterations - 1:
-                dict_to_dump = self.dump_in_output_file(
+                self.dump_in_output_file(
                     iteration=i,
                     iter_time=iter_time.avg,
                     data_time=data_time.avg,
@@ -154,9 +156,7 @@ class MetricLogger(object):
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         self.logger.info(
-            "{} Total time: {} ({:.6f} s / it)".format(
-                header, total_time_str, total_time / n_iterations
-            )
+            f"{header} Total time: {total_time_str} ({total_time / n_iterations:.6f} s / it)"
         )
 
 
@@ -165,7 +165,7 @@ class SmoothedValue:
     window or the global series average.
     """
 
-    def __init__(self, window_size: int = 20, fmt: Optional[str] = None) -> None:
+    def __init__(self, window_size: int = 20, fmt: str | None = None) -> None:
         if fmt is None:
             fmt = "{median:.4f} ({global_avg:.4f})"
         self.deque = deque(maxlen=window_size)

@@ -1,12 +1,15 @@
+from collections.abc import Callable
 from copy import deepcopy
 from functools import partial
-from typing import Any, Callable, Dict, Optional, Tuple
-from omegaconf import DictConfig
+from typing import Any, Dict, Optional, Tuple
+
 import torch
-from spatialdino.models.layers.encoder import Encoder
-from spatialdino.models.layers.dino_head import DINOHead
-from spatialdino.utils.misc import make_3tuple
 import torch.nn as nn
+from omegaconf import DictConfig
+
+from spatialdino.models.layers.dino_head import DINOHead
+from spatialdino.models.layers.encoder import Encoder
+from spatialdino.utils.misc import make_3tuple
 
 
 class SSL(nn.Module):
@@ -90,15 +93,15 @@ class SSL(nn.Module):
     # student forward
     def forward(
         self,
-        x: Dict[str, torch.Tensor],
-        masks: Dict[str, Optional[torch.Tensor]],
+        x: dict[str, torch.Tensor],
+        masks: dict[str, torch.Tensor | None],
         upperbound: int,
         n_masked_patches: int,
         mask_indices_list: torch.Tensor,
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         with torch.amp.autocast(
             device_type=device_type,
             dtype=dtype,
@@ -139,17 +142,17 @@ class SSL(nn.Module):
     def forward_teacher(
         self,
         x: torch.Tensor,
-        masks: Optional[torch.Tensor],
+        masks: torch.Tensor | None,
         upperbound: int,
         n_masked_patches: int,
         mask_indices_list: torch.Tensor,
         n_masked_patches_tensor: torch.Tensor,
         teacher_temp: float,
-        latent_loss_fn: Dict[str, Callable],
+        latent_loss_fn: dict[str, Callable],
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         with torch.no_grad():
             with torch.amp.autocast(
                 device_type=device_type,

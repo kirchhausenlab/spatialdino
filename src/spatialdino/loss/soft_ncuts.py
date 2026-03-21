@@ -5,6 +5,7 @@ This faster version was proposed on https://github.com/fkodom/wnet-unsupervised-
 """
 
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

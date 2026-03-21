@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import torch
 import torch.amp
@@ -14,7 +14,7 @@ def save_model(
     step: int,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,
+    loss_scaler: torch.amp.GradScaler | None = None,
 ) -> None:
     checkpoint_dir = output_dir.joinpath(f"step={step}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def load_model(
     checkpoint_path: Union[str, Path],
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,
+    loss_scaler: torch.amp.GradScaler | None = None,
 ) -> int:
     if checkpoint_path.startswith("https"):
         checkpoint = torch.hub.load_state_dict_from_url(

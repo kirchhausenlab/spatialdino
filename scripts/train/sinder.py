@@ -3,7 +3,6 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -14,7 +13,6 @@ from torch.utils.data import DataLoader
 from wandb.sdk.wandb_run import Run
 
 import spatialdino.distributed as dist
-import spatialdino.models.sinder.utils as utils
 from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data import DTYPE_MAPPING
 from spatialdino.data.collate import collate_fn_sinder
@@ -101,7 +99,8 @@ def main():
     )
 
     train_dataloader = (
-        train_dataloader.compose(custom_sinder_unbatched())
+        train_dataloader
+        .compose(custom_sinder_unbatched())
         .shuffle(config.shuffle_buffer_size)
         .batched(
             config.batch_size,
@@ -201,9 +200,9 @@ def train(
     train_dataloader: DataLoader,
     rank: int,
     world_size: int,
-    loss_scaler: Optional[torch.amp.GradScaler] = None,
-    run: Optional[Run] = None,
-) -> Dict[str, float]:
+    loss_scaler: torch.amp.GradScaler | None = None,
+    run: Run | None = None,
+) -> dict[str, float]:
     start_time = time.time()
     model.train()
 
@@ -278,9 +277,7 @@ def train(
         loss = result["loss_neighbor"]
 
         if torch.isnan(loss).any():
-            logger.error(
-                "Loss is {}, stopping training".format(loss.detach().cpu().item())
-            )
+            logger.error(f"Loss is {loss.detach().cpu().item()}, stopping training")
             sys.exit(1)
 
         if loss_scaler is not None:
@@ -345,7 +342,7 @@ def train(
     logger.info("Averaged stats:", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info("Training time {}".format(total_time_str))
+    logger.info(f"Training time {total_time_str}")
     model.eval()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

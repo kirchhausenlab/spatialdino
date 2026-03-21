@@ -1,0 +1,69 @@
+version: 2
+
+updates:
+  # Python dependencies (root pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    reviewers:
+      - "lavaman131"
+      - "ArkashJ"
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 10
+
+  # Python dependencies (apps/server)
+  - package-ecosystem: "pip"
+    directory: "/apps/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    reviewers:
+      - "lavaman131"
+      - "ArkashJ"
+    commit-message:
+      prefix: "deps(server)"
+    open-pull-requests-limit: 5
+
+  # npm dependencies (apps/web)
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    reviewers:
+      - "lavaman131"
+      - "ArkashJ"
+    commit-message:
+      prefix: "deps(web)"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    reviewers:
+      - "lavaman131"
+      - "ArkashJ"
+    commit-message:
+      prefix: "ci"
+    open-pull-requests-limit: 5

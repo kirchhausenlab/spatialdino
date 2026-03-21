@@ -13,7 +13,6 @@ from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data.utils import median_fill, validate_crop_params
 from spatialdino.utils.misc import make_3tuple
 
-
 torch.backends.cuda.matmul.allow_tf32 = (
     True  # PyTorch 1.12 sets this to False by default
 )
@@ -32,7 +31,9 @@ def main() -> None:
     fnames = fnames[file_start:file_end]
     print(f"running norm_per_vol for {len(fnames)} files for {config.file_path}")
     vols = []
-    crop_start_z, crop_end_z, crop_start_y, crop_end_y, crop_start_x, crop_end_x = config.crop_params
+    crop_start_z, crop_end_z, crop_start_y, crop_end_y, crop_start_x, crop_end_x = (
+        config.crop_params
+    )
     isotropic_scale_factor = make_3tuple(config.isotropic_scale_factor)
     for fname in fnames:
         raw_volume = io.imread(fname).astype(np.float32)
@@ -57,7 +58,8 @@ def main() -> None:
         raw_volume = median_fill(raw_volume)
         if isotropic_scale_factor != (1.0, 1.0, 1.0):
             raw_volume = (
-                F.interpolate(
+                F
+                .interpolate(
                     torch.from_numpy(raw_volume).unsqueeze(0).unsqueeze(0),
                     scale_factor=isotropic_scale_factor,
                     mode="trilinear",

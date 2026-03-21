@@ -1,6 +1,7 @@
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional, Tuple, Union
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -30,18 +31,18 @@ def training_loop(
     scaler: GradScaler,
     dataloader: DataLoader,
     extractor: ViTExtractor,
-    L1: Tuple[int, int, int],
-    L2: Tuple[int, int, int],
-    L4: Tuple[int, int, int],
-    patch_size: Tuple[int, int, int],
+    L1: tuple[int, int, int],
+    L2: tuple[int, int, int],
+    L4: tuple[int, int, int],
+    patch_size: tuple[int, int, int],
     lift: Union[DDP, LiFT],
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     local_rank: int,
-    metric_logger: Optional[MetricLogger],
-    test_data_loader: Optional[Iterable[DataLoader]] = None,
-    run: Optional[Run] = None,
+    metric_logger: MetricLogger | None,
+    test_data_loader: Iterable[DataLoader] | None = None,
+    run: Run | None = None,
     iteration: int = 0,
 ):
     if metric_logger:

@@ -49,28 +49,59 @@ def _collect_samples_reference(
     bg_label = int(np.min(seg))
     bg_mask = (seg == bg_label) & valid_mask
     fg_mask = (seg != bg_label) & valid_mask
-    bg_idx_per_z, fg_idx_per_z = probability_map_script.precompute_mask_indices(bg_mask, fg_mask)
+    bg_idx_per_z, fg_idx_per_z = probability_map_script.precompute_mask_indices(
+        bg_mask, fg_mask
+    )
 
-    sampler = probability_map_script.UpsampledFeatureSampler(lr_feats, raw_shape, device)
-    mins, maxs = probability_map_script.compute_feature_min_max_from_lr(lr_feats, feature_batch=feature_batch)
+    sampler = probability_map_script.UpsampledFeatureSampler(
+        lr_feats, raw_shape, device
+    )
+    mins, maxs = probability_map_script.compute_feature_min_max_from_lr(
+        lr_feats, feature_batch=feature_batch
+    )
     feature_names = probability_map_script.build_feature_names(sampler.channel_count)
-    bg_list: list[np.ndarray] = [np.empty((0,), dtype=np.float32) for _ in range(sampler.channel_count)]
-    fg_list: list[np.ndarray] = [np.empty((0,), dtype=np.float32) for _ in range(sampler.channel_count)]
+    bg_list: list[np.ndarray] = [
+        np.empty((0,), dtype=np.float32) for _ in range(sampler.channel_count)
+    ]
+    fg_list: list[np.ndarray] = [
+        np.empty((0,), dtype=np.float32) for _ in range(sampler.channel_count)
+    ]
     per_z_budget = int(np.ceil(max_samples_per_class / max(1, raw_shape[0])))
-    rngs = [np.random.default_rng(seed + feature_index) for feature_index in range(sampler.channel_count)]
+    rngs = [
+        np.random.default_rng(seed + feature_index)
+        for feature_index in range(sampler.channel_count)
+    ]
     z_chunks = probability_map_script.iter_z_index_chunks(raw_shape[0])
 
     for start in range(0, sampler.channel_count, feature_batch):
         end = min(sampler.channel_count, start + feature_batch)
         bg_parts = [[] for _ in range(end - start)]
         fg_parts = [[] for _ in range(end - start)]
-        batch_mins_t = torch.from_numpy(mins[start:end]).to(device=device, dtype=torch.float32).view(-1, 1, 1, 1)
-        batch_maxs_t = torch.from_numpy(maxs[start:end]).to(device=device, dtype=torch.float32).view(-1, 1, 1, 1)
+        batch_mins_t = (
+            torch
+            .from_numpy(mins[start:end])
+            .to(device=device, dtype=torch.float32)
+            .view(-1, 1, 1, 1)
+        )
+        batch_maxs_t = (
+            torch
+            .from_numpy(maxs[start:end])
+            .to(device=device, dtype=torch.float32)
+            .view(-1, 1, 1, 1)
+        )
 
         for z_indices in z_chunks:
             sampled = sampler.sample_feature_range(start, end, z_indices)
-            quantized = probability_map_script.quantize_feature_batch(sampled, batch_mins_t, batch_maxs_t)
-            quantized_np = quantized.reshape(end - start, len(z_indices), -1).detach().cpu().numpy()
+            quantized = probability_map_script.quantize_feature_batch(
+                sampled, batch_mins_t, batch_maxs_t
+            )
+            quantized_np = (
+                quantized
+                .reshape(end - start, len(z_indices), -1)
+                .detach()
+                .cpu()
+                .numpy()
+            )
             for local_index, z_index in enumerate(z_indices):
                 bg_indices = bg_idx_per_z[z_index]
                 fg_indices = fg_idx_per_z[z_index]
@@ -78,12 +109,20 @@ def _collect_samples_reference(
                     feature_rng = rngs[feature_index]
                     if bg_indices.size > 0:
                         bg_count = min(per_z_budget, int(bg_indices.size))
-                        picked_bg = feature_rng.choice(bg_indices, size=bg_count, replace=False)
-                        bg_parts[offset].append(quantized_np[offset, local_index, picked_bg])
+                        picked_bg = feature_rng.choice(
+                            bg_indices, size=bg_count, replace=False
+                        )
+                        bg_parts[offset].append(
+                            quantized_np[offset, local_index, picked_bg]
+                        )
                     if fg_indices.size > 0:
                         fg_count = min(per_z_budget, int(fg_indices.size))
-                        picked_fg = feature_rng.choice(fg_indices, size=fg_count, replace=False)
-                        fg_parts[offset].append(quantized_np[offset, local_index, picked_fg])
+                        picked_fg = feature_rng.choice(
+                            fg_indices, size=fg_count, replace=False
+                        )
+                        fg_parts[offset].append(
+                            quantized_np[offset, local_index, picked_fg]
+                        )
 
         for offset, feature_index in enumerate(range(start, end)):
             feature_rng = rngs[feature_index]
@@ -98,9 +137,13 @@ def _collect_samples_reference(
                 else np.empty((0,), dtype=np.float32)
             )
             if bg_values.size > max_samples_per_class:
-                bg_values = bg_values[feature_rng.permutation(bg_values.size)[:max_samples_per_class]]
+                bg_values = bg_values[
+                    feature_rng.permutation(bg_values.size)[:max_samples_per_class]
+                ]
             if fg_values.size > max_samples_per_class:
-                fg_values = fg_values[feature_rng.permutation(fg_values.size)[:max_samples_per_class]]
+                fg_values = fg_values[
+                    feature_rng.permutation(fg_values.size)[:max_samples_per_class]
+                ]
             bg_list[feature_index] = bg_values
             fg_list[feature_index] = fg_values
 
@@ -118,7 +161,8 @@ class ProbabilityMapScriptTests(unittest.TestCase):
         sampled = sampler.sample_feature_range(0, 1, [0, 2, 3]).cpu().numpy()[0]
 
         expected = (
-            F.interpolate(
+            F
+            .interpolate(
                 torch.from_numpy(np.moveaxis(lr_feats[..., :1], -1, 0)).unsqueeze(0),
                 size=(4, 6, 8),
                 mode="trilinear",
@@ -138,10 +182,16 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             dtype=np.float32,
         )
 
-        mins, maxs = probability_map_script.compute_feature_min_max_from_lr(lr_feats, feature_batch=1)
+        mins, maxs = probability_map_script.compute_feature_min_max_from_lr(
+            lr_feats, feature_batch=1
+        )
 
-        np.testing.assert_allclose(mins, np.array([0.0, -4.0], dtype=np.float32), rtol=1e-5, atol=1e-5)
-        np.testing.assert_allclose(maxs, np.array([14.0, 10.0], dtype=np.float32), rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(
+            mins, np.array([0.0, -4.0], dtype=np.float32), rtol=1e-5, atol=1e-5
+        )
+        np.testing.assert_allclose(
+            maxs, np.array([14.0, 10.0], dtype=np.float32), rtol=1e-5, atol=1e-5
+        )
 
     def test_semantic_to_instance_seg_labels_connected_components(self) -> None:
         semantic_seg = np.zeros((3, 3, 3), dtype=np.uint8)
@@ -164,13 +214,21 @@ class ProbabilityMapScriptTests(unittest.TestCase):
 
             lr_feats = np.array(
                 [
-                    [[[0.0, 10.0, 2.0], [1.0, 9.0, 3.0]], [[2.0, 8.0, 4.0], [3.0, 7.0, 5.0]]],
-                    [[[4.0, 6.0, 6.0], [5.0, 5.0, 7.0]], [[6.0, 4.0, 8.0], [7.0, 3.0, 9.0]]],
+                    [
+                        [[0.0, 10.0, 2.0], [1.0, 9.0, 3.0]],
+                        [[2.0, 8.0, 4.0], [3.0, 7.0, 5.0]],
+                    ],
+                    [
+                        [[4.0, 6.0, 6.0], [5.0, 5.0, 7.0]],
+                        [[6.0, 4.0, 8.0], [7.0, 3.0, 9.0]],
+                    ],
                 ],
                 dtype=np.float32,
             )
             np.save(sample_dir / "lr_feats.npy", lr_feats)
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16)
+            )
             seg = np.zeros((4, 4, 4), dtype=np.uint8)
             seg[:, :, 2:] = 1
             tifffile.imwrite(seg_tif, seg)
@@ -182,14 +240,16 @@ class ProbabilityMapScriptTests(unittest.TestCase):
                 raw_path=sample_dir / "volume_unnorm.tif",
             )
 
-            actual_bg, actual_fg, actual_names = probability_map_script.collect_samples_from_timepoint(
-                timepoint,
-                seg_tif=seg_tif,
-                valid_mask_tif=None,
-                max_samples_per_class=12,
-                feature_batch=2,
-                seed=1337,
-                device=torch.device("cpu"),
+            actual_bg, actual_fg, actual_names = (
+                probability_map_script.collect_samples_from_timepoint(
+                    timepoint,
+                    seg_tif=seg_tif,
+                    valid_mask_tif=None,
+                    max_samples_per_class=12,
+                    feature_batch=2,
+                    seed=1337,
+                    device=torch.device("cpu"),
+                )
             )
             expected_bg, expected_fg, expected_names = _collect_samples_reference(
                 timepoint,
@@ -202,9 +262,13 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(actual_names, expected_names)
-            for actual_values, expected_values in zip(actual_bg, expected_bg, strict=True):
+            for actual_values, expected_values in zip(
+                actual_bg, expected_bg, strict=True
+            ):
                 np.testing.assert_array_equal(actual_values, expected_values)
-            for actual_values, expected_values in zip(actual_fg, expected_fg, strict=True):
+            for actual_values, expected_values in zip(
+                actual_fg, expected_fg, strict=True
+            ):
                 np.testing.assert_array_equal(actual_values, expected_values)
 
     def test_run_probability_map_writes_expected_outputs(self) -> None:
@@ -224,9 +288,14 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             for offset, name in enumerate(("sample_a", "sample_b")):
                 sample_dir = root / name
                 sample_dir.mkdir()
-                feats = np.stack((base_feature0 + offset, base_feature1 + offset), axis=-1)
+                feats = np.stack(
+                    (base_feature0 + offset, base_feature1 + offset), axis=-1
+                )
                 np.save(sample_dir / "lr_feats.npy", feats)
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
 
             params = probability_map_script.ProbabilityMapParams(
                 run_density_estimation=True,
@@ -247,7 +316,9 @@ class ProbabilityMapScriptTests(unittest.TestCase):
                 device_name="cpu",
             )
 
-            densities_path = probability_map_script.run_probability_map(root, params=params)
+            densities_path = probability_map_script.run_probability_map(
+                root, params=params
+            )
 
             self.assertEqual(densities_path, root / "probmap_densities.npz")
             self.assertTrue(densities_path.is_file())

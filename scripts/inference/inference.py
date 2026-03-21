@@ -1,23 +1,21 @@
 import logging
 import math
 from pathlib import Path
+
 import numpy as np
 import torch
 from natsort import natsorted
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
-from spatialdino.data import DTYPE_MAPPING
+
 import spatialdino.distributed as dist
 from spatialdino.config import CONFIG_PATH, parse_config
-from spatialdino.data.inference import (
-    InferenceDataset,
-    InferenceTransform,
-    collate_fn,
-)
+from spatialdino.data import DTYPE_MAPPING
+from spatialdino.data.inference import InferenceDataset, InferenceTransform, collate_fn
+from spatialdino.inference.streaming import StreamingEncoder
 from spatialdino.logging import setup_logging
 from spatialdino.models.utils import init_backbone
-from spatialdino.inference.streaming import StreamingEncoder
 from spatialdino.utils.misc import set_seed
 
 torch.backends.cuda.matmul.allow_tf32 = (
@@ -53,7 +51,9 @@ def main() -> None:
     model = init_backbone(config=config).eval().to(dtype).to(device)
     model.forward = model.predict  # type: ignore
     use_streaming = bool(getattr(config, "inference_route", "default") == "streaming")
-    streaming_encoder = StreamingEncoder(model, device, config) if use_streaming else None
+    streaming_encoder = (
+        StreamingEncoder(model, device, config) if use_streaming else None
+    )
 
     file_path = config.file_path
     fnames = natsorted(list(Path(file_path).glob("*.tif")))

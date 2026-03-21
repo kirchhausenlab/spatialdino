@@ -5,32 +5,28 @@ import json
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
-import zipfile
 
 import numpy as np
-from starlette.requests import Request
 import tifffile
-
-from spatialdino_server import app as app_module
-from spatialdino_server import jobs_api
+from spatialdino_server import app as app_module, jobs_api
+from starlette.requests import Request
 
 
 def make_request(client_host: str) -> Request:
-    return Request(
-        {
-            "type": "http",
-            "method": "GET",
-            "path": "/",
-            "headers": [],
-            "query_string": b"",
-            "client": (client_host, 12345),
-            "server": ("testserver", 8000),
-            "scheme": "http",
-            "http_version": "1.1",
-        }
-    )
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [],
+        "query_string": b"",
+        "client": (client_host, 12345),
+        "server": ("testserver", 8000),
+        "scheme": "http",
+        "http_version": "1.1",
+    })
 
 
 class FakeUrlopenResponse(io.BytesIO):
@@ -69,10 +65,16 @@ class AppTests(unittest.TestCase):
 
             with patch.dict(
                 os.environ,
-                {"SPATIALDINO_DIST_DIR": str(dist), "SPATIALDINO_SERVER_HOSTNAME": "render-host"},
+                {
+                    "SPATIALDINO_DIST_DIR": str(dist),
+                    "SPATIALDINO_SERVER_HOSTNAME": "render-host",
+                },
                 clear=False,
             ):
-                with patch("spatialdino_server.app.classify_client_session", return_value="Local"):
+                with patch(
+                    "spatialdino_server.app.classify_client_session",
+                    return_value="Local",
+                ):
                     response = app_module.root(make_request("127.0.0.1"))
 
             self.assertEqual(response.status_code, 200)  # type: ignore[attr-defined]
@@ -85,34 +87,59 @@ class AppTests(unittest.TestCase):
             dist = Path(tmp)
             (dist / "index.html").write_text("<p>fallback</p>", encoding="utf-8")
 
-            with patch.dict(os.environ, {"SPATIALDINO_DIST_DIR": str(dist)}, clear=False):
-                response = app_module.spa_fallback("inference", make_request("127.0.0.1"))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_DIST_DIR": str(dist)}, clear=False
+            ):
+                response = app_module.spa_fallback(
+                    "inference", make_request("127.0.0.1")
+                )
 
             self.assertEqual(response.status_code, 200)  # type: ignore[attr-defined]
             self.assertIn("fallback", response.body.decode("utf-8"))
 
     def test_classify_client_session_marks_loopback_as_local(self) -> None:
-        with patch("spatialdino_server.app.get_server_ip_addresses", return_value=frozenset({"10.0.0.5"})):
+        with patch(
+            "spatialdino_server.app.get_server_ip_addresses",
+            return_value=frozenset({"10.0.0.5"}),
+        ):
             self.assertEqual(app_module.classify_client_session("127.0.0.1"), "Local")
 
     def test_classify_client_session_marks_server_ip_as_local(self) -> None:
-        with patch("spatialdino_server.app.get_server_ip_addresses", return_value=frozenset({"10.0.0.5"})):
+        with patch(
+            "spatialdino_server.app.get_server_ip_addresses",
+            return_value=frozenset({"10.0.0.5"}),
+        ):
             self.assertEqual(app_module.classify_client_session("10.0.0.5"), "Local")
 
     def test_classify_client_session_marks_private_ip_as_local_network(self) -> None:
-        with patch("spatialdino_server.app.get_server_ip_addresses", return_value=frozenset({"10.0.0.5"})):
-            self.assertEqual(app_module.classify_client_session("192.168.1.20"), "Local network")
+        with patch(
+            "spatialdino_server.app.get_server_ip_addresses",
+            return_value=frozenset({"10.0.0.5"}),
+        ):
+            self.assertEqual(
+                app_module.classify_client_session("192.168.1.20"), "Local network"
+            )
 
     def test_classify_client_session_marks_public_ip_as_remote(self) -> None:
-        with patch("spatialdino_server.app.get_server_ip_addresses", return_value=frozenset({"10.0.0.5"})):
+        with patch(
+            "spatialdino_server.app.get_server_ip_addresses",
+            return_value=frozenset({"10.0.0.5"}),
+        ):
             self.assertEqual(app_module.classify_client_session("8.8.8.8"), "Remote")
 
     def test_session_info_returns_hostname_and_label(self) -> None:
-        with patch.dict(os.environ, {"SPATIALDINO_SERVER_HOSTNAME": "render-host"}, clear=False):
-            with patch("spatialdino_server.app.classify_client_session", return_value="Local network"):
+        with patch.dict(
+            os.environ, {"SPATIALDINO_SERVER_HOSTNAME": "render-host"}, clear=False
+        ):
+            with patch(
+                "spatialdino_server.app.classify_client_session",
+                return_value="Local network",
+            ):
                 payload = app_module.session_info(make_request("192.168.1.20"))
 
-        self.assertEqual(payload, {"serverHostname": "render-host", "sessionLabel": "Local network"})
+        self.assertEqual(
+            payload, {"serverHostname": "render-host", "sessionLabel": "Local network"}
+        )
 
     def test_inference_options_lists_backbone_weights_and_gpus(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,8 +157,18 @@ class AppTests(unittest.TestCase):
                     return_value={
                         "nvidiaSmiAvailable": True,
                         "gpus": [
-                            {"index": 1, "name": "GPU-1", "memoryUsedMiB": 0, "memoryTotalMiB": 1},
-                            {"index": 0, "name": "GPU-0", "memoryUsedMiB": 0, "memoryTotalMiB": 1},
+                            {
+                                "index": 1,
+                                "name": "GPU-1",
+                                "memoryUsedMiB": 0,
+                                "memoryTotalMiB": 1,
+                            },
+                            {
+                                "index": 0,
+                                "name": "GPU-0",
+                                "memoryUsedMiB": 0,
+                                "memoryTotalMiB": 1,
+                            },
                         ],
                     },
                 ),
@@ -167,16 +204,22 @@ class AppTests(unittest.TestCase):
                     return_value=FakeUrlopenResponse(b"downloaded-weights"),
                 ) as urlopen,
             ):
-                response = app_module.download_inference_backbone(app_module.DownloadBackboneWeightsRequest())
+                response = app_module.download_inference_backbone(
+                    app_module.DownloadBackboneWeightsRequest()
+                )
 
             self.assertEqual(response["downloaded"], True)
             self.assertEqual(response["backboneWeight"], "models/backbone.pth")
             self.assertEqual(response["targetPath"], str(target_path))
             self.assertEqual(response["alreadyExisted"], False)
             self.assertEqual(target_path.read_bytes(), b"downloaded-weights")
-            urlopen.assert_called_once_with(app_module.DEFAULT_INFERENCE_BACKBONE_URL, timeout=60)
+            urlopen.assert_called_once_with(
+                app_module.DEFAULT_INFERENCE_BACKBONE_URL, timeout=60
+            )
 
-    def test_download_inference_backbone_requests_overwrite_when_file_exists(self) -> None:
+    def test_download_inference_backbone_requests_overwrite_when_file_exists(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             models_dir = repo_root / "models"
@@ -188,7 +231,9 @@ class AppTests(unittest.TestCase):
                 patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
                 patch("spatialdino_server.app.urllib.request.urlopen") as urlopen,
             ):
-                response = app_module.download_inference_backbone(app_module.DownloadBackboneWeightsRequest())
+                response = app_module.download_inference_backbone(
+                    app_module.DownloadBackboneWeightsRequest()
+                )
 
             self.assertEqual(response["downloaded"], False)
             self.assertEqual(response["requiresOverwriteConfirmation"], True)
@@ -197,7 +242,9 @@ class AppTests(unittest.TestCase):
             self.assertEqual(target_path.read_bytes(), b"existing-weights")
             urlopen.assert_not_called()
 
-    def test_download_inference_backbone_overwrites_existing_file_when_confirmed(self) -> None:
+    def test_download_inference_backbone_overwrites_existing_file_when_confirmed(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             models_dir = repo_root / "models"
@@ -227,7 +274,10 @@ class AppTests(unittest.TestCase):
                 "version": 1,
                 "datasets": [
                     {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
-                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    {
+                        "name": "dextran",
+                        "archiveUrl": "https://example.com/dextran.zip",
+                    },
                 ],
             }
 
@@ -235,16 +285,22 @@ class AppTests(unittest.TestCase):
                 patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
                 patch(
                     "spatialdino_server.app.urllib.request.urlopen",
-                    return_value=FakeUrlopenResponse(json.dumps(manifest).encode("utf-8")),
+                    return_value=FakeUrlopenResponse(
+                        json.dumps(manifest).encode("utf-8")
+                    ),
                 ),
             ):
                 payload = app_module.data_options()
 
-        self.assertEqual(payload["manifestUrl"], app_module.DEFAULT_PUBLIC_DATA_MANIFEST_URL)
+        self.assertEqual(
+            payload["manifestUrl"], app_module.DEFAULT_PUBLIC_DATA_MANIFEST_URL
+        )
         self.assertEqual(payload["downloadRoot"], str(repo_root / "data" / "raw_data"))
         self.assertEqual(payload["datasets"], [{"name": "ap2"}, {"name": "dextran"}])
 
-    def test_run_data_download_requests_overwrite_confirmation_for_existing_datasets(self) -> None:
+    def test_run_data_download_requests_overwrite_confirmation_for_existing_datasets(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             existing_path = repo_root / "data" / "raw_data" / "ap2"
@@ -258,7 +314,10 @@ class AppTests(unittest.TestCase):
                     "spatialdino_server.app._load_public_data_manifest",
                     return_value=[
                         {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
-                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                        {
+                            "name": "dextran",
+                            "archiveUrl": "https://example.com/dextran.zip",
+                        },
                     ],
                 ),
             ):
@@ -284,10 +343,15 @@ class AppTests(unittest.TestCase):
                     "spatialdino_server.app._load_public_data_manifest",
                     return_value=[
                         {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
-                        {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                        {
+                            "name": "dextran",
+                            "archiveUrl": "https://example.com/dextran.zip",
+                        },
                     ],
                 ),
-                patch("spatialdino_server.app._launch_data_download_job_thread") as launch_thread,
+                patch(
+                    "spatialdino_server.app._launch_data_download_job_thread"
+                ) as launch_thread,
             ):
                 response = app_module.run_data_download(payload, "client-1234")
 
@@ -296,7 +360,9 @@ class AppTests(unittest.TestCase):
         launch_thread.assert_called_once()
         launch_config = launch_thread.call_args.args[1]
         self.assertEqual(launch_config["selected_names"], ["ap2", "dextran"])
-        self.assertEqual(launch_config["download_root"], repo_root / "data" / "raw_data")
+        self.assertEqual(
+            launch_config["download_root"], repo_root / "data" / "raw_data"
+        )
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
@@ -306,7 +372,10 @@ class AppTests(unittest.TestCase):
                 job.datasets,
                 [
                     {"source_dir": "https://example.com/ap2.zip", "save_to": "ap2"},
-                    {"source_dir": "https://example.com/dextran.zip", "save_to": "dextran"},
+                    {
+                        "source_dir": "https://example.com/dextran.zip",
+                        "save_to": "dextran",
+                    },
                 ],
             )
 
@@ -315,18 +384,14 @@ class AppTests(unittest.TestCase):
             repo_root = Path(tmp)
             download_root = repo_root / "data" / "raw_data"
             archive_bytes = {
-                "https://example.com/ap2.zip": make_zip_bytes(
-                    {
-                        "ap2/image_a.tif": b"ap2-image",
-                        "ap2/notes/readme.txt": b"ap2-readme",
-                    }
-                ),
-                "https://example.com/dextran.zip": make_zip_bytes(
-                    {
-                        "volume_001.tif": b"dextran-image",
-                        "metadata/info.txt": b"dextran-info",
-                    }
-                ),
+                "https://example.com/ap2.zip": make_zip_bytes({
+                    "ap2/image_a.tif": b"ap2-image",
+                    "ap2/notes/readme.txt": b"ap2-readme",
+                }),
+                "https://example.com/dextran.zip": make_zip_bytes({
+                    "volume_001.tif": b"dextran-image",
+                    "metadata/info.txt": b"dextran-info",
+                }),
             }
             job = jobs_api.JobState(
                 job_id="job-data-1",
@@ -340,7 +405,10 @@ class AppTests(unittest.TestCase):
                 "download_root": download_root,
                 "selected_datasets": [
                     {"name": "ap2", "archiveUrl": "https://example.com/ap2.zip"},
-                    {"name": "dextran", "archiveUrl": "https://example.com/dextran.zip"},
+                    {
+                        "name": "dextran",
+                        "archiveUrl": "https://example.com/dextran.zip",
+                    },
                 ],
                 "selected_names": ["ap2", "dextran"],
                 "skipped_names": [],
@@ -352,14 +420,28 @@ class AppTests(unittest.TestCase):
 
             with (
                 patch("spatialdino_server.app.get_repo_root", return_value=repo_root),
-                patch("spatialdino_server.app._download_url_to_file", side_effect=fake_download),
+                patch(
+                    "spatialdino_server.app._download_url_to_file",
+                    side_effect=fake_download,
+                ),
             ):
                 app_module._run_data_download_job(job, launch_config)
 
-            self.assertEqual((download_root / "ap2" / "image_a.tif").read_bytes(), b"ap2-image")
-            self.assertEqual((download_root / "ap2" / "notes" / "readme.txt").read_bytes(), b"ap2-readme")
-            self.assertEqual((download_root / "dextran" / "volume_001.tif").read_bytes(), b"dextran-image")
-            self.assertEqual((download_root / "dextran" / "metadata" / "info.txt").read_bytes(), b"dextran-info")
+            self.assertEqual(
+                (download_root / "ap2" / "image_a.tif").read_bytes(), b"ap2-image"
+            )
+            self.assertEqual(
+                (download_root / "ap2" / "notes" / "readme.txt").read_bytes(),
+                b"ap2-readme",
+            )
+            self.assertEqual(
+                (download_root / "dextran" / "volume_001.tif").read_bytes(),
+                b"dextran-image",
+            )
+            self.assertEqual(
+                (download_root / "dextran" / "metadata" / "info.txt").read_bytes(),
+                b"dextran-info",
+            )
 
             with job.lock:
                 self.assertEqual(job.status, "completed")
@@ -382,7 +464,9 @@ class AppTests(unittest.TestCase):
             tifffile.imwrite(input_dir / "a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
             tifffile.imwrite(input_dir / "b.tiff", np.ones((2, 3, 4), dtype=np.uint8))
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(input_dir))
 
         self.assertEqual(
@@ -402,9 +486,13 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             tifffile.imwrite(input_dir / "a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
             tifffile.imwrite(input_dir / "b.tiff", np.ones((2, 3, 4), dtype=np.uint8))
-            tifffile.imwrite(input_dir / ".hidden_bad.tif", np.ones((5, 6, 7), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / ".hidden_bad.tif", np.ones((5, 6, 7), dtype=np.uint8)
+            )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], True)
@@ -416,7 +504,9 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             missing = root / "missing"
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(missing))
 
         self.assertEqual(payload["valid"], False)
@@ -429,7 +519,9 @@ class AppTests(unittest.TestCase):
             input_file = root / "input.txt"
             input_file.write_text("x", encoding="utf-8")
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(input_file))
 
         self.assertEqual(payload["valid"], False)
@@ -442,12 +534,16 @@ class AppTests(unittest.TestCase):
             input_dir = root / "input"
             input_dir.mkdir()
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "no_tiff_files")
-        self.assertEqual(payload["message"], "Input folder contains no .tif or .tiff files.")
+        self.assertEqual(
+            payload["message"], "Input folder contains no .tif or .tiff files."
+        )
 
     def test_validate_inference_input_folder_rejects_shape_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -457,14 +553,20 @@ class AppTests(unittest.TestCase):
             tifffile.imwrite(input_dir / "a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
             tifffile.imwrite(input_dir / "b.tif", np.zeros((5, 3, 4), dtype=np.uint8))
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_inference_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "shape_mismatch")
-        self.assertIn("TIFF files do not all have the same 3D shape.", payload["message"])
+        self.assertIn(
+            "TIFF files do not all have the same 3D shape.", payload["message"]
+        )
 
-    def test_validate_process_features_input_folder_accepts_valid_subfolders(self) -> None:
+    def test_validate_process_features_input_folder_accepts_valid_subfolders(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -473,10 +575,17 @@ class AppTests(unittest.TestCase):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((2, 3, 4), dtype=np.uint8),
+                )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_process_features_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_process_features_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(
             payload,
@@ -488,20 +597,28 @@ class AppTests(unittest.TestCase):
             },
         )
 
-    def test_validate_process_features_input_folder_rejects_missing_subfolders(self) -> None:
+    def test_validate_process_features_input_folder_rejects_missing_subfolders(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
             input_dir.mkdir()
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_process_features_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_process_features_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "no_subfolders")
         self.assertEqual(payload["message"], "Input folder contains no subfolders.")
 
-    def test_validate_process_features_input_folder_ignores_hidden_subfolders(self) -> None:
+    def test_validate_process_features_input_folder_ignores_hidden_subfolders(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -510,34 +627,53 @@ class AppTests(unittest.TestCase):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
                 np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((2, 3, 4), dtype=np.uint8),
+                )
             hidden_dir = input_dir / ".hidden_sample"
             hidden_dir.mkdir()
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_process_features_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_process_features_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(payload["valid"], True)
         self.assertEqual(payload["subfolderCount"], 2)
         self.assertEqual(payload["subfolderNames"], ["sample_a", "sample_b"])
 
-    def test_validate_process_features_input_folder_rejects_missing_lr_feats(self) -> None:
+    def test_validate_process_features_input_folder_rejects_missing_lr_feats(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_process_features_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_process_features_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_a is missing lr_feats.npy.")
+        self.assertEqual(
+            payload["message"], "Subfolder sample_a is missing lr_feats.npy."
+        )
 
-    def test_validate_process_features_input_folder_rejects_missing_volume(self) -> None:
+    def test_validate_process_features_input_folder_rejects_missing_volume(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -546,12 +682,18 @@ class AppTests(unittest.TestCase):
             sample_dir.mkdir()
             np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_process_features_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_process_features_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_a is missing volume_unnorm.tif.")
+        self.assertEqual(
+            payload["message"], "Subfolder sample_a is missing volume_unnorm.tif."
+        )
 
     def test_build_process_features_launch_config_accepts_valid_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -561,8 +703,12 @@ class AppTests(unittest.TestCase):
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8)
+            )
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
@@ -576,13 +722,20 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
-                validation, launch_config = app_module._build_process_features_launch_config(payload)
+                validation, launch_config = (
+                    app_module._build_process_features_launch_config(payload)
+                )
 
         self.assertEqual(validation["valid"], True)
         self.assertEqual(validation["subfolderCount"], 1)
@@ -607,8 +760,12 @@ class AppTests(unittest.TestCase):
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8)
+            )
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
@@ -619,13 +776,20 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
-                validation, launch_config = app_module._build_process_features_launch_config(payload)
+                validation, launch_config = (
+                    app_module._build_process_features_launch_config(payload)
+                )
 
         self.assertEqual(validation["valid"], False)
         self.assertEqual(validation["reasonCode"], "no_outputs_selected")
@@ -639,8 +803,12 @@ class AppTests(unittest.TestCase):
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8)
+            )
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -652,13 +820,20 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
-                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+                validation, launch_config = (
+                    app_module._build_segmentation_launch_config(payload)
+                )
 
         self.assertEqual(validation["valid"], True)
         self.assertEqual(validation["subfolderCount"], 1)
@@ -666,7 +841,9 @@ class AppTests(unittest.TestCase):
         assert launch_config is not None
         self.assertEqual(launch_config["gpu_index"], 0)
         self.assertEqual(launch_config["subfolder_count"], 1)
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_VORONOI_OTSU)
+        self.assertEqual(
+            launch_config["mode"], app_module.SEGMENTATION_MODE_VORONOI_OTSU
+        )
         self.assertEqual(launch_config["gaussian_blur_sigma"], 3)
         self.assertEqual(launch_config["rolling_ball_radius"], 10.0)
         self.assertTrue(launch_config["enable_voronoi_otsu"])
@@ -679,7 +856,9 @@ class AppTests(unittest.TestCase):
         self.assertIn("--gaussian-blur-sigma", command)
         self.assertIn("--rolling-ball-radius", command)
 
-    def test_validate_segmentation_input_folder_reports_subfolder_names_and_probmap_cache(self) -> None:
+    def test_validate_segmentation_input_folder_reports_subfolder_names_and_probmap_cache(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -687,19 +866,35 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
-            np.savez_compressed(input_dir / "probmap_densities.npz", x1=np.array([], dtype=object))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint8),
+                )
+            np.savez_compressed(
+                input_dir / "probmap_densities.npz", x1=np.array([], dtype=object)
+            )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                validation = app_module.validate_segmentation_input_folder(str(input_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                validation = app_module.validate_segmentation_input_folder(
+                    str(input_dir)
+                )
 
         self.assertEqual(validation["valid"], True)
         self.assertEqual(validation["subfolderNames"], ["sample_a", "sample_b"])
         self.assertTrue(validation["probmapDensitiesExists"])
-        self.assertEqual(validation["probmapDensitiesPath"], str(input_dir / "probmap_densities.npz"))
+        self.assertEqual(
+            validation["probmapDensitiesPath"], str(input_dir / "probmap_densities.npz")
+        )
 
-    def test_build_segmentation_launch_config_accepts_probability_map_request_with_density_estimation(self) -> None:
+    def test_build_segmentation_launch_config_accepts_probability_map_request_with_density_estimation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -708,8 +903,14 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint8),
+                )
             seg_tif = root / "seg.tif"
             valid_mask_tif = root / "valid_mask.tif"
             tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
@@ -735,18 +936,27 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
-                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+                validation, launch_config = (
+                    app_module._build_segmentation_launch_config(payload)
+                )
 
         self.assertEqual(validation["valid"], True)
         self.assertIsNotNone(launch_config)
         assert launch_config is not None
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertEqual(
+            launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP
+        )
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["training_timepoint"], "sample_b")
         self.assertEqual(launch_config["feature_batch"], 24)
@@ -757,7 +967,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["fg_prob_threshold"], 0.9)
         self.assertEqual(launch_config["seed"], 9)
         self.assertEqual(launch_config["progress_total"], 4)
-        self.assertEqual(launch_config["densities_path"], input_dir / "probmap_densities.npz")
+        self.assertEqual(
+            launch_config["densities_path"], input_dir / "probmap_densities.npz"
+        )
         self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
@@ -771,7 +983,9 @@ class AppTests(unittest.TestCase):
         self.assertIn("--bg-prob-threshold", command)
         self.assertIn("--fg-prob-threshold", command)
 
-    def test_build_segmentation_launch_config_rejects_probability_map_without_saved_densities(self) -> None:
+    def test_build_segmentation_launch_config_rejects_probability_map_without_saved_densities(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -779,8 +993,12 @@ class AppTests(unittest.TestCase):
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8)
+            )
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -791,13 +1009,20 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
-                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+                validation, launch_config = (
+                    app_module._build_segmentation_launch_config(payload)
+                )
 
         self.assertEqual(validation["valid"], False)
         self.assertEqual(validation["reasonCode"], "missing_probmap_densities")
@@ -811,10 +1036,18 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(
@@ -827,22 +1060,32 @@ class AppTests(unittest.TestCase):
             },
         )
 
-    def test_validate_tracking_input_folder_rejects_insufficient_subfolders(self) -> None:
+    def test_validate_tracking_input_folder_rejects_insufficient_subfolders(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16)
+            )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "insufficient_subfolders")
-        self.assertEqual(payload["message"], "Tracking requires at least 2 subfolders/timepoints.")
+        self.assertEqual(
+            payload["message"], "Tracking requires at least 2 subfolders/timepoints."
+        )
 
     def test_validate_tracking_segmentation_folder_rejects_missing_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -854,11 +1097,21 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-            tifffile.imwrite(segmentation_dir / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
+            tifffile.imwrite(
+                segmentation_dir / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint32)
+            )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_tracking_segmentation_folder(
                     str(input_dir),
                     str(segmentation_dir),
@@ -866,7 +1119,9 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Segmentation folder is missing sample_b.tif.")
+        self.assertEqual(
+            payload["message"], "Segmentation folder is missing sample_b.tif."
+        )
 
     def test_validate_tracking_segmentation_folder_accepts_matching_masks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -878,12 +1133,25 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
+                tifffile.imwrite(
+                    segmentation_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint32),
+                )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                payload = app_module.validate_tracking_segmentation_folder(str(input_dir), str(segmentation_dir))
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                payload = app_module.validate_tracking_segmentation_folder(
+                    str(input_dir), str(segmentation_dir)
+                )
 
         self.assertEqual(
             payload,
@@ -903,12 +1171,20 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
             hidden_dir = input_dir / ".hidden_sample"
             hidden_dir.mkdir()
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
                 payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], True)
@@ -925,9 +1201,18 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
+                tifffile.imwrite(
+                    segmentation_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint32),
+                )
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
@@ -942,8 +1227,12 @@ class AppTests(unittest.TestCase):
                 corr_threshold=0.4,
             )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                validation, launch_config = app_module._build_tracking_launch_config(payload)
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                validation, launch_config = app_module._build_tracking_launch_config(
+                    payload
+                )
 
         self.assertEqual(validation["valid"], True)
         self.assertEqual(validation["subfolderCount"], 2)
@@ -988,9 +1277,18 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
+                tifffile.imwrite(
+                    segmentation_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint32),
+                )
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
@@ -1007,8 +1305,12 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
-                patch("spatialdino_server.app._launch_tracking_job_thread") as launch_thread,
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
+                patch(
+                    "spatialdino_server.app._launch_tracking_job_thread"
+                ) as launch_thread,
             ):
                 response = app_module.run_tracking(payload, "client-1234")
 
@@ -1034,9 +1336,14 @@ class AppTests(unittest.TestCase):
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "tracking")
             self.assertEqual(job.total, 3)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "tracking-output"}])
+            self.assertEqual(
+                job.datasets,
+                [{"source_dir": str(input_dir), "save_to": "tracking-output"}],
+            )
 
-    def test_update_tracking_job_progress_from_output_tracks_preparation_and_pairs(self) -> None:
+    def test_update_tracking_job_progress_from_output_tracks_preparation_and_pairs(
+        self,
+    ) -> None:
         job = jobs_api.JobState(
             job_id="job-track-progress",
             owner_client_id="client-1234",
@@ -1046,12 +1353,16 @@ class AppTests(unittest.TestCase):
         )
         progress_state: dict[str, object] = {}
 
-        app_module._update_tracking_job_progress_from_output(job, "[tracking] Processing sample_a (1/3)", progress_state)
+        app_module._update_tracking_job_progress_from_output(
+            job, "[tracking] Processing sample_a (1/3)", progress_state
+        )
         with job.lock:
             self.assertEqual(job.current, "Preparing sample_a")
             self.assertEqual(job.processed, 0)
 
-        app_module._update_tracking_job_progress_from_output(job, "[tracking] Completed sample_a", progress_state)
+        app_module._update_tracking_job_progress_from_output(
+            job, "[tracking] Completed sample_a", progress_state
+        )
         with job.lock:
             self.assertEqual(job.current, "Prepared sample_a")
             self.assertEqual(job.processed, 1)
@@ -1074,7 +1385,9 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.current, "Matched sample_a -> sample_b")
             self.assertEqual(job.processed, 2)
 
-    def test_update_process_features_job_progress_accepts_probability_map_lines(self) -> None:
+    def test_update_process_features_job_progress_accepts_probability_map_lines(
+        self,
+    ) -> None:
         job = jobs_api.JobState(
             job_id="job-probmap-progress",
             owner_client_id="client-1234",
@@ -1122,9 +1435,18 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
-                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint16),
+                )
+                tifffile.imwrite(
+                    segmentation_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint32),
+                )
 
             payload = app_module.RunTrackingRequest(
                 input_path=str(input_dir),
@@ -1133,8 +1455,12 @@ class AppTests(unittest.TestCase):
                 vote_thresholds="320,0,280",
             )
 
-            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                validation, launch_config = app_module._build_tracking_launch_config(payload)
+            with patch.dict(
+                os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+            ):
+                validation, launch_config = app_module._build_tracking_launch_config(
+                    payload
+                )
 
         self.assertEqual(validation["valid"], False)
         self.assertEqual(validation["reasonCode"], "invalid_vote_thresholds")
@@ -1148,8 +1474,12 @@ class AppTests(unittest.TestCase):
             sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
             sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            np.save(
+                sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32)
+            )
+            tifffile.imwrite(
+                sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8)
+            )
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -1161,12 +1491,19 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
-                patch("spatialdino_server.app._launch_segmentation_job_thread") as launch_thread,
+                patch(
+                    "spatialdino_server.app._launch_segmentation_job_thread"
+                ) as launch_thread,
             ):
                 response = app_module.run_segmentation(payload, "client-1234")
 
@@ -1183,9 +1520,14 @@ class AppTests(unittest.TestCase):
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 1)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
+            self.assertEqual(
+                job.datasets,
+                [{"source_dir": str(input_dir), "save_to": "segmentation-output"}],
+            )
 
-    def test_run_segmentation_probability_map_submits_job_with_density_step(self) -> None:
+    def test_run_segmentation_probability_map_submits_job_with_density_step(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -1194,8 +1536,14 @@ class AppTests(unittest.TestCase):
             for name in ("sample_a", "sample_b"):
                 sample_dir = input_dir / name
                 sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+                np.save(
+                    sample_dir / "lr_feats.npy",
+                    np.zeros((2, 2, 2, 390), dtype=np.float32),
+                )
+                tifffile.imwrite(
+                    sample_dir / "volume_unnorm.tif",
+                    np.zeros((4, 4, 4), dtype=np.uint8),
+                )
             seg_tif = root / "seg.tif"
             tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
 
@@ -1210,19 +1558,28 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
-                patch("spatialdino_server.app._launch_segmentation_job_thread") as launch_thread,
+                patch(
+                    "spatialdino_server.app._launch_segmentation_job_thread"
+                ) as launch_thread,
             ):
                 response = app_module.run_segmentation(payload, "client-1234")
 
         self.assertEqual(response["submitted"], True)
         launch_thread.assert_called_once()
         launch_config = launch_thread.call_args.args[1]
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertEqual(
+            launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP
+        )
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["progress_total"], 4)
         self.assertEqual(launch_config["output_path"], output_dir)
@@ -1231,9 +1588,14 @@ class AppTests(unittest.TestCase):
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "segmentation")
             self.assertEqual(job.total, 4)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
+            self.assertEqual(
+                job.datasets,
+                [{"source_dir": str(input_dir), "save_to": "segmentation-output"}],
+            )
 
-    def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
+    def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "input"
@@ -1242,7 +1604,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (output_dir / "existing.txt").write_text("x", encoding="utf-8")
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
@@ -1254,18 +1618,30 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.run_inference(payload, "client-1234")
@@ -1287,7 +1663,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1298,20 +1676,34 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
-                patch("spatialdino_server.app._launch_inference_job_thread") as launch_thread,
+                patch(
+                    "spatialdino_server.app._launch_inference_job_thread"
+                ) as launch_thread,
             ):
                 response = app_module.run_inference(payload, "client-1234")
 
@@ -1325,7 +1717,9 @@ class AppTests(unittest.TestCase):
             job = next(iter(jobs_api._jobs.values()))
             self.assertEqual(job.type, "inference")
             self.assertEqual(job.total, 1)
-            self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "output"}])
+            self.assertEqual(
+                job.datasets, [{"source_dir": str(input_dir), "save_to": "output"}]
+            )
 
     def test_build_inference_launch_config_converts_inclusive_ui_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1336,7 +1730,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1347,18 +1743,30 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 1, "x_end": 2, "y_start": 0, "y_end": 1, "z_start": 0, "z_end": 0},
+                crop_bounds={
+                    "x_start": 1,
+                    "x_end": 2,
+                    "y_start": 0,
+                    "y_end": 1,
+                    "z_start": 0,
+                    "z_end": 0,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 validation, launch_config = app_module._build_inference_launch_config(
@@ -1381,7 +1789,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1392,20 +1802,32 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 2.0, "z": 3.0},
                 file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
                     return_value={
                         "nvidiaSmiAvailable": True,
-                        "gpus": [{"index": 0, "name": "GPU-0"}, {"index": 1, "name": "GPU-1"}],
+                        "gpus": [
+                            {"index": 0, "name": "GPU-0"},
+                            {"index": 1, "name": "GPU-1"},
+                        ],
                     },
                 ),
             ):
@@ -1434,7 +1856,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1445,7 +1869,14 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 normalization_mode="global_manual",
@@ -1455,11 +1886,16 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.inference_command_preview(payload)
@@ -1468,7 +1904,9 @@ class AppTests(unittest.TestCase):
         self.assertIn("global_hist_min=12.5", response["command"])
         self.assertIn("global_hist_max=98.5", response["command"])
 
-    def test_inference_command_preview_for_auto_global_norm_shows_two_stage_run(self) -> None:
+    def test_inference_command_preview_for_auto_global_norm_shows_two_stage_run(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "input"
@@ -1477,7 +1915,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1488,7 +1928,14 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 normalization_mode="global_auto",
@@ -1496,19 +1943,28 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.inference_command_preview(payload)
 
         self.assertEqual(response["valid"], True)
         self.assertIn("scripts/inference/norm_per_vol.py", response["command"])
-        self.assertIn("global_hist_min=<computed-from-norm_per_vol>", response["command"])
-        self.assertIn("global_hist_max=<computed-from-norm_per_vol>", response["command"])
+        self.assertIn(
+            "global_hist_min=<computed-from-norm_per_vol>", response["command"]
+        )
+        self.assertIn(
+            "global_hist_max=<computed-from-norm_per_vol>", response["command"]
+        )
 
     def test_inference_command_preview_warns_when_output_is_nonempty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1519,7 +1975,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (output_dir / "existing.txt").write_text("x", encoding="utf-8")
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
@@ -1531,18 +1989,30 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.inference_command_preview(payload)
@@ -1565,7 +2035,9 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1576,7 +2048,14 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
                 normalization_mode="global_manual",
@@ -1585,11 +2064,16 @@ class AppTests(unittest.TestCase):
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.run_inference(payload, "client-1234")
@@ -1620,8 +2104,12 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             output_dir.mkdir()
             models_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
-            tifffile.imwrite(input_dir / "stack0002.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
+            tifffile.imwrite(
+                input_dir / "stack0002.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1632,18 +2120,30 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
-                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                crop_bounds={
+                    "x_start": 0,
+                    "x_end": 3,
+                    "y_start": 0,
+                    "y_end": 2,
+                    "z_start": 0,
+                    "z_end": 1,
+                },
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 1, "end": 0},
                 overwrite=False,
             )
 
             with (
-                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch.dict(
+                    os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False
+                ),
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={
+                        "nvidiaSmiAvailable": True,
+                        "gpus": [{"index": 0, "name": "GPU-0"}],
+                    },
                 ),
             ):
                 response = app_module.run_inference(payload, "client-1234")
@@ -1660,8 +2160,12 @@ class AppTests(unittest.TestCase):
             status="running",
             total=1,
         )
-        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
-        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        expected_output_dirs = {
+            app_module._canonicalize_runtime_path("/tmp/out/stack0001")
+        }
+        expected_feature_paths = {
+            app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")
+        }
         saved_feature_paths: set[str] = set()
 
         app_module._update_job_progress_from_output(
@@ -1694,8 +2198,12 @@ class AppTests(unittest.TestCase):
             status="running",
             total=1,
         )
-        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
-        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        expected_output_dirs = {
+            app_module._canonicalize_runtime_path("/tmp/out/stack0001")
+        }
+        expected_feature_paths = {
+            app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")
+        }
         saved_feature_paths: set[str] = set()
 
         app_module._update_job_progress_from_output(
@@ -1725,7 +2233,9 @@ class AppTests(unittest.TestCase):
             (output_dir / "stack0002").mkdir(parents=True)
             (output_dir / "stack0002" / "lr_feats.npy").write_bytes(b"")
 
-            expected_paths = app_module._expected_feature_paths(output_dir, ["stack0001"])
+            expected_paths = app_module._expected_feature_paths(
+                output_dir, ["stack0001"]
+            )
             existing_paths = app_module._existing_expected_feature_paths(expected_paths)
 
         self.assertEqual(existing_paths, [])
@@ -1763,8 +2273,14 @@ class AppTests(unittest.TestCase):
 
             with (
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
-                patch("spatialdino_server.app._build_inference_command", return_value=["python"]),
-                patch("spatialdino_server.app.subprocess.Popen", return_value=FakeProcess()),
+                patch(
+                    "spatialdino_server.app._build_inference_command",
+                    return_value=["python"],
+                ),
+                patch(
+                    "spatialdino_server.app.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
             ):
                 app_module._run_inference_job(job, launch_config)
 
@@ -1783,9 +2299,13 @@ class AppTests(unittest.TestCase):
             self.assertIn("[server] Command:", log_text)
             self.assertIn("0/1 expected lr_feats.npy files", log_text)
 
-    def test_run_inference_job_auto_global_norm_runs_prepass_then_inference(self) -> None:
+    def test_run_inference_job_auto_global_norm_runs_prepass_then_inference(
+        self,
+    ) -> None:
         class FakeProcess:
-            def __init__(self, stdout_lines: tuple[str, ...], return_code: int, on_wait=None) -> None:
+            def __init__(
+                self, stdout_lines: tuple[str, ...], return_code: int, on_wait=None
+            ) -> None:
                 self.stdout = iter(stdout_lines)
                 self.pid = 789
                 self._return_code = return_code
@@ -1805,7 +2325,9 @@ class AppTests(unittest.TestCase):
             output_dir = root / "output"
             input_dir.mkdir()
             output_dir.mkdir()
-            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            tifffile.imwrite(
+                input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8)
+            )
 
             job = jobs_api.JobState(
                 job_id="job-auto-global",
@@ -1851,7 +2373,10 @@ class AppTests(unittest.TestCase):
                 popen_calls.append(list(command))
                 if len(popen_calls) == 1:
                     return FakeProcess(
-                        ("running norm_per_vol for 1 files\n", "saved norm_per_vol to output/norm_per_vol.txt\n"),
+                        (
+                            "running norm_per_vol for 1 files\n",
+                            "saved norm_per_vol to output/norm_per_vol.txt\n",
+                        ),
                         0,
                         on_wait=write_norm_stats,
                     )
@@ -1866,7 +2391,10 @@ class AppTests(unittest.TestCase):
 
             with (
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
-                patch("spatialdino_server.app.subprocess.Popen", side_effect=popen_side_effect),
+                patch(
+                    "spatialdino_server.app.subprocess.Popen",
+                    side_effect=popen_side_effect,
+                ),
             ):
                 app_module._run_inference_job(job, launch_config)
 
@@ -1885,19 +2413,20 @@ class AppTests(unittest.TestCase):
 
             log_text = Path(job.log_path).read_text(encoding="utf-8")
             self.assertIn("Global normalization prepass command", log_text)
-            self.assertIn("Parsed global normalization stats: global_hist_min=12.0, global_hist_max=34.0", log_text)
+            self.assertIn(
+                "Parsed global normalization stats: global_hist_min=12.0, global_hist_max=34.0",
+                log_text,
+            )
             self.assertIn("[server] Inference completed successfully.", log_text)
 
     def test_run_inference_job_persists_process_output_tail(self) -> None:
         class FakeProcess:
             def __init__(self) -> None:
-                self.stdout = iter(
-                    (
-                        "Traceback (most recent call last):\n",
-                        '  File "scripts/inference/inference.py", line 10, in <module>\n',
-                        "RuntimeError: boom\n",
-                    )
-                )
+                self.stdout = iter((
+                    "Traceback (most recent call last):\n",
+                    '  File "scripts/inference/inference.py", line 10, in <module>\n',
+                    "RuntimeError: boom\n",
+                ))
                 self.pid = 456
 
             def wait(self) -> int:
@@ -1934,7 +2463,10 @@ class AppTests(unittest.TestCase):
 
             with (
                 patch("spatialdino_server.app.get_repo_root", return_value=root),
-                patch("spatialdino_server.app.subprocess.Popen", return_value=FakeProcess()),
+                patch(
+                    "spatialdino_server.app.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
             ):
                 app_module._run_inference_job(job, launch_config)
 
@@ -1953,6 +2485,9 @@ class AppTests(unittest.TestCase):
 
             log_text = Path(job.log_path).read_text(encoding="utf-8")
             self.assertIn("Traceback (most recent call last):", log_text)
-            self.assertIn('  File "scripts/inference/inference.py", line 10, in <module>', log_text)
+            self.assertIn(
+                '  File "scripts/inference/inference.py", line 10, in <module>',
+                log_text,
+            )
             self.assertIn("RuntimeError: boom", log_text)
             self.assertIn("[server] Process exited with code 1.", log_text)

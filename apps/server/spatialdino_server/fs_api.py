@@ -34,13 +34,17 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     raise HTTPException(status_code=400, detail=f"Invalid boolean: {value!r}")
 
 
-def _parse_int(value: str | None, *, default: int, min_value: int, max_value: int, name: str) -> int:
+def _parse_int(
+    value: str | None, *, default: int, min_value: int, max_value: int, name: str
+) -> int:
     if value is None:
         return default
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid {name}: {value!r}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"Invalid {name}: {value!r}"
+        ) from exc
     if parsed < min_value or parsed > max_value:
         raise HTTPException(
             status_code=400,
@@ -89,7 +93,9 @@ def _find_root_for_path(path: Path, roots: list[RootInfo]) -> RootInfo | None:
     return None
 
 
-def _require_allowed_dir(requested: str, roots: list[RootInfo]) -> tuple[Path, RootInfo]:
+def _require_allowed_dir(
+    requested: str, roots: list[RootInfo]
+) -> tuple[Path, RootInfo]:
     if not roots:
         raise HTTPException(
             status_code=503,
@@ -132,10 +138,14 @@ def _validate_dir_name(name: str) -> str:
         separators.add(os.altsep)
 
     if any(separator in name for separator in separators if separator):
-        raise HTTPException(status_code=400, detail="Folder name must not contain path separators.")
+        raise HTTPException(
+            status_code=400, detail="Folder name must not contain path separators."
+        )
 
     if name.startswith("."):
-        raise HTTPException(status_code=400, detail="Hidden folder names are not supported here.")
+        raise HTTPException(
+            status_code=400, detail="Hidden folder names are not supported here."
+        )
 
     return name
 
@@ -250,7 +260,13 @@ def _scan_children(
     if sort == "name":
         items.sort(key=lambda i: (str(i["name"]).casefold(), str(i["name"])))
     else:
-        items.sort(key=lambda i: (int(i["mtimeMs"] or 0), str(i["name"]).casefold(), str(i["name"])))
+        items.sort(
+            key=lambda i: (
+                int(i["mtimeMs"] or 0),
+                str(i["name"]).casefold(),
+                str(i["name"]),
+            )
+        )
     return items
 
 
@@ -308,8 +324,12 @@ def fs_list(
     dirs_only_b = _parse_bool(dirsOnly, default=True)
     sort_key = _parse_sort(sort, default="name")
     sort_order = _parse_order(order, default="asc")
-    page_size = _parse_int(pageSize, default=25, min_value=1, max_value=500, name="pageSize")
-    page_num = _parse_int(page, default=1, min_value=1, max_value=10_000_000, name="page")
+    page_size = _parse_int(
+        pageSize, default=25, min_value=1, max_value=500, name="pageSize"
+    )
+    page_num = _parse_int(
+        page, default=1, min_value=1, max_value=10_000_000, name="page"
+    )
 
     dir_path, root = _require_allowed_dir(path, roots)
     items_sorted = _get_children_cached(
@@ -323,7 +343,9 @@ def fs_list(
     total = len(items_sorted)
     total_pages = max(1, (total + page_size - 1) // page_size)
     if page_num > total_pages:
-        raise HTTPException(status_code=400, detail=f"Page out of range (max {total_pages}).")
+        raise HTTPException(
+            status_code=400, detail=f"Page out of range (max {total_pages})."
+        )
 
     start = (page_num - 1) * page_size
     end = min(start + page_size, total)
@@ -334,7 +356,9 @@ def fs_list(
         # Avoid reversing the full list for large directories.
         start_desc = max(0, total - end)
         end_desc = total - start
-        page_items = [dict(item) for item in reversed(items_sorted[start_desc:end_desc])]
+        page_items = [
+            dict(item) for item in reversed(items_sorted[start_desc:end_desc])
+        ]
 
     # Avoid eager stat() calls when sorting by name; only compute mtime for returned items.
     if sort_key == "name":
@@ -385,12 +409,16 @@ def fs_mkdir(payload: CreateDirRequest) -> dict:
         raise HTTPException(status_code=400, detail="Invalid folder name.") from exc
 
     if target.exists():
-        raise HTTPException(status_code=409, detail="An entry with that name already exists.")
+        raise HTTPException(
+            status_code=409, detail="An entry with that name already exists."
+        )
 
     try:
         target.mkdir()
     except FileExistsError as exc:
-        raise HTTPException(status_code=409, detail="An entry with that name already exists.") from exc
+        raise HTTPException(
+            status_code=409, detail="An entry with that name already exists."
+        ) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="Permission denied.") from exc
     except OSError as exc:
