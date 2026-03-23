@@ -42,12 +42,14 @@ class DINOLoss(nn.Module):
     @torch.no_grad()
     def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3):
         teacher_output = teacher_output.float()
-        # world_size = dist.get_world_size() if dist.is_initialized() else 1
         Q = torch.exp(
             teacher_output / teacher_temp
         ).t()  # Q is K-by-B for consistency with notations from our paper
-        # B = Q.shape[1] * world_size # number of samples to assign
-        K, B = Q.size()  # how many prototypes
+        B = torch.tensor([Q.shape[1]], dtype=torch.long, device=Q.device)
+        if dist.is_initialized():
+            dist.all_reduce(B)
+            
+        K = Q.shape[0]  # how many prototypes
 
         # make the matrix sums to 1
         sum_Q = torch.sum(Q)

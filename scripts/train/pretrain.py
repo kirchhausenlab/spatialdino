@@ -286,13 +286,13 @@ def train(
 
     for batch in metric_logger.log_every(
         iterable=train_dataloader,
-        print_freq=config.log_interval,
+        print_freq=config.log_interval * accum_iter,
         header=header,
-        n_iterations=config.max_steps,
+        n_iterations=config.max_steps * accum_iter,
         start_iteration=iteration,
         rank=rank,
     ):
-        if iteration >= config.max_steps:
+        if step >= config.max_steps:
             break
 
         update = (iteration + 1) % accum_iter == 0
@@ -361,11 +361,17 @@ def train(
         n_global_crops_loss_terms = (config.n_global_crops - 1) * config.n_global_crops
 
         if do_dino:
-            dino_global_cls_loss = latent_loss_fn["cls_token"](
-                student_output_list=[student_global_output["cls_token_after_head"]],
-                teacher_out_softmaxed_centered_list=[
-                    teacher_global_output["cls_token_softmaxed_centered"].flatten(0, 1)
-                ],
+            dino_global_cls_loss = sum(
+                latent_loss_fn["cls_token"](
+                    student_output_list=[s],
+                    teacher_out_softmaxed_centered_list=[t],
+                )
+                for s, t in zip(
+                    student_global_output["cls_token_after_head"].chunk(
+                        config.n_global_crops
+                    ),
+                    teacher_global_output["cls_token_softmaxed_centered"],
+                )
             ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
             loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
             latent_loss += config.dino_loss_weight * dino_global_cls_loss
@@ -408,6 +414,8 @@ def train(
         loss_dict["latent_loss"] = latent_loss
         loss += latent_loss
 
+        loss_value = loss.detach().cpu().item()
+
         loss /= accum_iter
 
         if loss_scaler is not None:
@@ -433,15 +441,14 @@ def train(
             # perform teacher EMA update
             model.update_teacher(teacher_momentum=mom)
 
-        if dist.get_world_size() > 1:
-            for v in loss_dict.values():
-                torch.distributed.all_reduce(v)
+        with torch.no_grad():  # Polutes grad-graph otherwise
+            if dist.get_world_size() > 1:
+                for v in loss_dict.values():
+                    torch.distributed.all_reduce(v)
 
-        loss_dict_reduced = {
-            k: v.item() / dist.get_world_size() for k, v in loss_dict.items()
-        }
-
-        loss_value = loss.detach().cpu().item()
+                loss_dict_reduced = {
+                    k: v.item() / dist.get_world_size() for k, v in loss_dict.items()
+                }
 
         if not math.isfinite(loss_value):
             logger.error("Loss is {}, stopping training".format(loss_value))
@@ -454,19 +461,19 @@ def train(
             **loss_dict_reduced,
         )
 
-        if run is not None and (iteration + 1) % config.log_interval == 0:
+        if run is not None and update and step % config.log_interval == 0:
             run.log(
                 {
                     "loss": loss_value,
                     "lr": lr,
                     **loss_dict_reduced,
                 },
-                step=iteration,
+                step=step,
             )
 
-        if (iteration + 1) % config.save_interval == 0 or (
-            iteration + 1
-        ) == config.max_steps:
+        if update and (
+            step % config.save_interval == 0 or step + 1 == config.max_steps
+        ):
             logger.info(f"Saving checkpoint at step {step}")
             save_model(
                 output_dir=ckpt_dir,
