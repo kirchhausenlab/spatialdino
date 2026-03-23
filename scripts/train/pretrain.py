@@ -221,8 +221,7 @@ def main():
 def train(
     config: DictConfig,
     step: int,
-    model: SSL,
-    model_ddp: DDP,
+    model_ddp: DDP | SSL,
     optimizer: torch.optim.Optimizer,
     train_dataloader: DataLoader,
     rank: int,
@@ -231,8 +230,14 @@ def train(
     run: Optional[Run] = None,
 ) -> Dict[str, float]:
     start_time = time.time()
-    # model.train() # Model is should not be used
+
     model_ddp.train()
+    if isinstance(
+        model_ddp, DDP
+    ):  # Referecne, not a copy, so should be fine to update the teacher weights through the DDP wrapper
+        model_for_teacher = model_ddp.module
+    else:
+        model_for_teacher = model_ddp
 
     (
         lr_schedule,
@@ -344,7 +349,7 @@ def train(
             enabled=config.use_amp,
         )
 
-        teacher_global_output = model_ddp.module.forward_teacher(  # No gradients are done here, so no gradients need sync
+        teacher_global_output = model_for_teacher.forward_teacher(  # No gradients are done here, so no gradients need sync
             x=collated_global_crops,
             masks=None,
             upperbound=upperbound,
@@ -437,9 +442,12 @@ def train(
             optimizer.zero_grad(set_to_none=True)
 
             # perform teacher EMA update
-            model_ddp.module.update_teacher(
-                teacher_momentum=mom
-            )  # FIXME: This needs to be checked if it access the correct gradients
+            if isinstance(model_ddp, DDP):
+                model_ddp.module.update_teacher(
+                    teacher_momentum=mom
+                )  # FIXME: This needs to be checked if it access the correct gradients
+            else:
+                model_ddp.update_teacher(teacher_momentum=mom)
 
         if dist.get_world_size() > 1:
             for v in loss_dict.values():
@@ -479,7 +487,9 @@ def train(
             save_model(
                 output_dir=ckpt_dir,
                 step=step,
-                model=model_ddp.module,  # Save the underlying model, not the DDP wrapper, and not the non-wrapped model
+                model=(
+                    model_ddp.module if isinstance(model_ddp, DDP) else model_ddp
+                ),  # Save the underlying model, not the DDP wrapper, and not the non-wrapped model
                 optimizer=optimizer,
                 loss_scaler=loss_scaler,
             )
@@ -496,7 +506,6 @@ def train(
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info(f"Training time {total_time_str}")
-    # model_ddp.eval() # Why?
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
