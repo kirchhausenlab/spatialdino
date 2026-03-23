@@ -231,7 +231,8 @@ def train(
     run: Optional[Run] = None,
 ) -> Dict[str, float]:
     start_time = time.time()
-    model.train()
+    # model.train() # Model is should not be used
+    model_ddp.train()
 
     (
         lr_schedule,
@@ -343,7 +344,7 @@ def train(
             enabled=config.use_amp,
         )
 
-        teacher_global_output = model.forward_teacher(
+        teacher_global_output = model_ddp.module.forward_teacher(  # No gradients are done here, so no gradients need sync
             x=collated_global_crops,
             masks=None,
             upperbound=upperbound,
@@ -410,9 +411,10 @@ def train(
 
         loss /= accum_iter
 
+        # sync_context = contextlib.nullcontext() if update else model_ddp.no_sync()
+        # # FIXME: We are currently sync gradients every iteration, which is not mathcing the 7 itter accum
         if loss_scaler is not None:
             loss_scaler.scale(loss).backward()
-
         else:
             loss.backward()
 
@@ -420,18 +422,24 @@ def train(
             if loss_scaler is not None:
                 if config.clip_grad:
                     loss_scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        model_ddp.parameters(), config.clip_grad
+                    )  # Graidents are sync on model_ddp, so no clip should happen on the non-wrapped model
                 loss_scaler.step(optimizer)
                 loss_scaler.update()
             else:
                 if config.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        model_ddp.parameters(), config.clip_grad
+                    )  # Graidents are sync on model_ddp, so no clip should happen on the non-wrapped model
                 optimizer.step()
 
             optimizer.zero_grad(set_to_none=True)
 
             # perform teacher EMA update
-            model.update_teacher(teacher_momentum=mom)
+            model_ddp.module.update_teacher(
+                teacher_momentum=mom
+            )  # FIXME: This needs to be checked if it access the correct gradients
 
         if dist.get_world_size() > 1:
             for v in loss_dict.values():
@@ -471,7 +479,7 @@ def train(
             save_model(
                 output_dir=ckpt_dir,
                 step=step,
-                model=model,
+                model=model_ddp.module,  # Save the underlying model, not the DDP wrapper, and not the non-wrapped model
                 optimizer=optimizer,
                 loss_scaler=loss_scaler,
             )
@@ -487,8 +495,8 @@ def train(
     logger.info("Averaged stats:", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info("Training time {}".format(total_time_str))
-    model.eval()
+    logger.info(f"Training time {total_time_str}")
+    # model_ddp.eval() # Why?
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
