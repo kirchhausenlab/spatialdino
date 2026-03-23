@@ -296,7 +296,7 @@ class NestedTensorBlock(Block):
                 residual_func=ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
                 scaling_vector=self.ls2.gamma
-                if isinstance(self.ls1, LayerScale)
+                if isinstance(self.ls2, LayerScale)
                 else None,
             )
             return x_list
