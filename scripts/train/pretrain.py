@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import logging
 import math
@@ -416,12 +417,16 @@ def train(
 
         loss /= accum_iter
 
-        # sync_context = contextlib.nullcontext() if update else model_ddp.no_sync()
-        # # FIXME: We are currently sync gradients every iteration, which is not mathcing the 7 itter accum
-        if loss_scaler is not None:
-            loss_scaler.scale(loss).backward()
+        if isinstance(model_ddp, DDP):
+            sync_context = contextlib.nullcontext() if update else model_ddp.no_sync()
         else:
-            loss.backward()
+            sync_context = contextlib.nullcontext()
+            
+        with sync_context:
+            if loss_scaler is not None:
+                loss_scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         if update:
             if loss_scaler is not None:
