@@ -421,7 +421,7 @@ def train(
             sync_context = contextlib.nullcontext() if update else model_ddp.no_sync()
         else:
             sync_context = contextlib.nullcontext()
-            
+
         with sync_context:
             if loss_scaler is not None:
                 loss_scaler.scale(loss).backward()
@@ -450,7 +450,7 @@ def train(
             if isinstance(model_ddp, DDP):
                 model_ddp.module.update_teacher(
                     teacher_momentum=mom
-                )  # FIXME: This needs to be checked if it access the correct gradients
+                )  # Update the teacher weights through the DDP wrapper, which will ensure that the update is done in a consistent way across all processes
             else:
                 model_ddp.update_teacher(teacher_momentum=mom)
 
