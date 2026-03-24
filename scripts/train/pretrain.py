@@ -578,8 +578,12 @@ def train(
                 latent_loss += config.dino_loss_weight * dino_local_cls_loss
 
                 if do_koleo:
+                    for p in student_global_cls_outputs:
+                        assert p.ndim == 2, (
+                            f"Expected KoLeo input chunks to be 2D [B, D], got shape {tuple(p.shape)}"
+                        )
                     koleo_loss = sum(
-                        latent_loss_fn["koleo"](p.squeeze(0))
+                        latent_loss_fn["koleo"](p)
                         for p in student_global_cls_outputs
                     ) / max(config.n_global_crops, 1)
                     loss_dict["koleo_loss"] = koleo_loss

@@ -132,6 +132,38 @@ def _make_smoke_batch(config, seed: int):
 
 
 class PretrainSmokeTests(unittest.TestCase):
+    def test_ssl_layerwise_lr_decay_uses_student_encoder_depth(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = _make_tiny_pretrain_config(Path(tmpdir))
+            config.depth = 3
+            config.layerwise_decay = 0.5
+            config.patch_embed_lr_mult = 0.2
+
+            model = build_ssl_model(config)
+            param_groups = get_params_groups_with_decay(
+                model=model,
+                lr_decay_rate=config.layerwise_decay,
+                patch_embed_lr_mult=config.patch_embed_lr_mult,
+            )
+
+        groups_by_name = {group["name"]: group for group in param_groups}
+        block0 = groups_by_name["student.encoder.blocks.0.attn.qkv.weight"]
+        block2 = groups_by_name["student.encoder.blocks.2.attn.qkv.weight"]
+        patch_embed = groups_by_name["student.encoder.patch_embed.proj.weight"]
+        dino_head_name = next(
+            name for name in groups_by_name if name.startswith("student.dino_head")
+        )
+        ibot_head_name = next(
+            name for name in groups_by_name if name.startswith("student.ibot_head")
+        )
+
+        self.assertLess(block0["lr_multiplier"], block2["lr_multiplier"])
+        self.assertEqual(block0["lr_multiplier"], 0.125)
+        self.assertEqual(block2["lr_multiplier"], 0.5)
+        self.assertEqual(patch_embed["lr_multiplier"], 0.0125)
+        self.assertEqual(groups_by_name[dino_head_name]["lr_multiplier"], 1.0)
+        self.assertEqual(groups_by_name[ibot_head_name]["lr_multiplier"], 1.0)
+
     @unittest.skipUnless(torch.cuda.is_available(), "Pretrain smoke test requires CUDA.")
     def test_train_returns_empty_metrics_when_no_optimizer_steps_run(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -242,3 +274,44 @@ class PretrainSmokeTests(unittest.TestCase):
             for key, value in original_state.items():
                 with self.subTest(key=key):
                     self.assertTrue(torch.equal(value, resumed_state[key]))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "Pretrain smoke test requires CUDA.")
+    def test_koleo_handles_singleton_per_view_batches_without_squeezing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            config = _make_tiny_pretrain_config(output_dir)
+            config.batch_size = 1
+
+            torch.cuda.set_device(0)
+            model = build_ssl_model(config).cuda()
+
+            optimizer = torch.optim.AdamW(
+                get_params_groups_with_decay(
+                    model=model,
+                    lr_decay_rate=config.layerwise_decay,
+                    patch_embed_lr_mult=config.patch_embed_lr_mult,
+                ),
+                lr=config.lr,
+                betas=tuple(config.betas),
+            )
+
+            train_batches = [
+                _make_smoke_batch(config, seed=0),
+                _make_smoke_batch(config, seed=1),
+            ]
+
+            metrics = pretrain.train(
+                config=config,
+                step=0,
+                model=model,
+                train_model=model,
+                optimizer=optimizer,
+                train_dataloader=train_batches,
+                rank=0,
+                world_size=1,
+                loss_scaler=None,
+                run=None,
+            )
+
+        self.assertIn("loss", metrics)
+        self.assertTrue(math.isfinite(metrics["loss"]))
