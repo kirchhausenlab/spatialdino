@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Mapping, Optional, Union
 from omegaconf import DictConfig
 import torch
 import torch.nn as nn
@@ -117,6 +117,7 @@ def load_model(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     loss_scaler: Optional[torch.amp.GradScaler] = None,
+    extra_modules: Optional[Mapping[str, nn.Module]] = None,
 ) -> int:
     if checkpoint_path.startswith("https"):  # type: ignore
         checkpoint = torch.hub.load_state_dict_from_url(
@@ -131,6 +132,13 @@ def load_model(
 
     if "scaler" in checkpoint and loss_scaler is not None:
         loss_scaler.load_state_dict(checkpoint["scaler"])
+
+    if extra_modules is not None:
+        extra_state = checkpoint.get("extra_modules", {})
+        for name, module in extra_modules.items():
+            module_state = extra_state.get(name)
+            if module_state is not None:
+                module.load_state_dict(module_state)
 
     if checkpoint.get("step_semantics") == "optimizer_updates_completed":
         return checkpoint["step"]

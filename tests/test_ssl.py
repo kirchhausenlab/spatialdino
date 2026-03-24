@@ -248,6 +248,117 @@ class SSLTests(unittest.TestCase):
 
         self.assertEqual(resumed_step, 5)
 
+    def test_pretrain_checkpoint_round_trip_restores_explicit_loss_state(self) -> None:
+        model = SSL(make_ssl_config())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        latent_loss_fn = {
+            "cls_token": DINOLoss(out_dim=8, student_temp=1.0, center_momentum=0.9),
+            "patch_tokens": iBOTPatchLoss(
+                patch_out_dim=8,
+                student_temp=1.0,
+                center_momentum=0.9,
+            ),
+        }
+        latent_loss_fn["cls_token"].center.copy_(torch.full((1, 8), 1.5))
+        latent_loss_fn["patch_tokens"].center.copy_(torch.full((1, 1, 8), 2.5))
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            save_model(
+                output_dir=output_dir,
+                step=5,
+                model=model,
+                optimizer=optimizer,
+                extra_modules=latent_loss_fn,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_latent_loss_fn = {
+                "cls_token": DINOLoss(out_dim=8, student_temp=1.0, center_momentum=0.9),
+                "patch_tokens": iBOTPatchLoss(
+                    patch_out_dim=8,
+                    student_temp=1.0,
+                    center_momentum=0.9,
+                ),
+            }
+            resumed_step = load_model(
+                checkpoint_path=str(output_dir / "step=5" / "ckpt.pth"),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+                extra_modules=resumed_latent_loss_fn,
+            )
+
+        self.assertEqual(resumed_step, 5)
+        self.assertTrue(
+            torch.equal(
+                latent_loss_fn["cls_token"].center,
+                resumed_latent_loss_fn["cls_token"].center,
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                latent_loss_fn["patch_tokens"].center,
+                resumed_latent_loss_fn["patch_tokens"].center,
+            )
+        )
+
+    def test_pretrain_checkpoint_flushes_pending_center_update_before_save(self) -> None:
+        model = SSL(make_ssl_config())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        latent_loss_fn = {
+            "cls_token": DINOLoss(out_dim=8, student_temp=1.0, center_momentum=0.9),
+            "patch_tokens": iBOTPatchLoss(
+                patch_out_dim=8,
+                student_temp=1.0,
+                center_momentum=0.9,
+            ),
+        }
+
+        cls_teacher_output = torch.full((2, 8), 4.0)
+        patch_teacher_output = torch.full((1, 3, 8), 6.0)
+
+        latent_loss_fn["cls_token"].update_center(cls_teacher_output)
+        latent_loss_fn["patch_tokens"].update_center(patch_teacher_output)
+
+        expected_cls_center = torch.full((1, 8), 0.4)
+        expected_patch_center = torch.full((1, 1, 8), 0.6)
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            save_model(
+                output_dir=output_dir,
+                step=5,
+                model=model,
+                optimizer=optimizer,
+                extra_modules=latent_loss_fn,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_latent_loss_fn = {
+                "cls_token": DINOLoss(out_dim=8, student_temp=1.0, center_momentum=0.9),
+                "patch_tokens": iBOTPatchLoss(
+                    patch_out_dim=8,
+                    student_temp=1.0,
+                    center_momentum=0.9,
+                ),
+            }
+            load_model(
+                checkpoint_path=str(output_dir / "step=5" / "ckpt.pth"),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+                extra_modules=resumed_latent_loss_fn,
+            )
+
+        self.assertTrue(torch.allclose(resumed_latent_loss_fn["cls_token"].center, expected_cls_center))
+        self.assertTrue(
+            torch.allclose(
+                resumed_latent_loss_fn["patch_tokens"].center,
+                expected_patch_center,
+            )
+        )
+
     @unittest.skipUnless(torch.cuda.is_available(), "GradScaler state requires CUDA.")
     def test_checkpoint_with_scaler_can_resume_without_amp(self) -> None:
         model = SSL(make_ssl_config()).cuda()
@@ -305,6 +416,14 @@ class SSLTests(unittest.TestCase):
     def test_legacy_checkpoints_still_resume_with_next_step_semantics(self) -> None:
         model = SSL(make_ssl_config())
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        latent_loss_fn = {
+            "cls_token": DINOLoss(out_dim=8, student_temp=1.0, center_momentum=0.9),
+            "patch_tokens": iBOTPatchLoss(
+                patch_out_dim=8,
+                student_temp=1.0,
+                center_momentum=0.9,
+            ),
+        }
 
         with TemporaryDirectory() as tmpdir:
             checkpoint_path = Path(tmpdir) / "legacy_ckpt.pth"
@@ -323,6 +442,14 @@ class SSLTests(unittest.TestCase):
                 checkpoint_path=str(checkpoint_path),
                 model=resumed_model,
                 optimizer=resumed_optimizer,
+                extra_modules=latent_loss_fn,
             )
 
         self.assertEqual(resumed_step, 6)
+        self.assertTrue(torch.equal(latent_loss_fn["cls_token"].center, torch.zeros(1, 8)))
+        self.assertTrue(
+            torch.equal(
+                latent_loss_fn["patch_tokens"].center,
+                torch.zeros(1, 1, 8),
+            )
+        )

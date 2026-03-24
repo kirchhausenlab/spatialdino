@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import torch
 import webdataset as wds
@@ -184,6 +184,32 @@ def _compute_weighted_loss_total(
     )
 
 
+def _build_latent_loss_fn(
+    config: DictConfig,
+    device: Union[int, str, torch.device],
+) -> Dict[str, Callable]:
+    latent_loss_fn: Dict[str, Callable] = {}
+
+    if config.dino_loss_weight > 0:
+        latent_loss_fn["cls_token"] = DINOLoss(
+            out_dim=config.n_prototypes,
+            student_temp=config.student_temp,
+            center_momentum=config.center_momentum,
+        ).to(device)
+
+        if config.koleo_loss_weight > 0:
+            latent_loss_fn["koleo"] = KoLeoLoss().to(device)
+
+    if config.ibot_loss_weight > 0:
+        latent_loss_fn["patch_tokens"] = iBOTPatchLoss(
+            patch_out_dim=config.n_prototypes,
+            student_temp=config.student_temp,
+            center_momentum=config.center_momentum,
+        ).to(device)
+
+    return latent_loss_fn
+
+
 def main():
     config = parse_config(CONFIG_PATH.joinpath("pretrain.yaml"))
 
@@ -333,6 +359,7 @@ def main():
     loss_scaler = (
         torch.amp.GradScaler(device=config.device_type) if config.use_amp else None
     )
+    latent_loss_fn = _build_latent_loss_fn(config=config, device=device)
 
     step = 0
     if config.resume and config.ckpt_path:
@@ -342,6 +369,7 @@ def main():
             model=model,
             optimizer=optimizer,
             loss_scaler=loss_scaler,
+            extra_modules=latent_loss_fn,
         )
 
     run = None
@@ -355,6 +383,7 @@ def main():
         train_model=train_model,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
+        latent_loss_fn=latent_loss_fn,
         train_dataloader=train_dataloader,
         rank=rank,
         world_size=world_size,
@@ -373,6 +402,7 @@ def train(
     train_dataloader: DataLoader,
     rank: int,
     world_size: int,
+    latent_loss_fn: Optional[Dict[str, Callable]] = None,
     loss_scaler: Optional[torch.amp.GradScaler] = None,
     run: Optional[Run] = None,
 ) -> Dict[str, float]:
@@ -409,24 +439,8 @@ def train(
     do_ibot = config.ibot_loss_weight > 0
     do_koleo = config.koleo_loss_weight > 0
 
-    latent_loss_fn = {}
-
-    if do_dino:
-        latent_loss_fn["cls_token"] = DINOLoss(
-            out_dim=config.n_prototypes,
-            student_temp=config.student_temp,
-            center_momentum=config.center_momentum,
-        ).to(device)
-
-        if do_koleo:
-            latent_loss_fn["koleo"] = KoLeoLoss().to(device)
-
-    if do_ibot:
-        latent_loss_fn["patch_tokens"] = iBOTPatchLoss(
-            patch_out_dim=config.n_prototypes,
-            student_temp=config.student_temp,
-            center_momentum=config.center_momentum,
-        ).to(device)
+    if latent_loss_fn is None:
+        latent_loss_fn = _build_latent_loss_fn(config=config, device=device)
 
     optimizer.zero_grad(set_to_none=True)
     step_loss_sums: Dict[str, float] = defaultdict(float)
@@ -702,6 +716,7 @@ def train(
                     model=model,
                     optimizer=optimizer,
                     loss_scaler=loss_scaler,
+                    extra_modules=latent_loss_fn,
                 )
 
             step = completed_step
