@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import patch
+
+import torch
+
+import spatialdino.distributed as dist
+
+
+class _NoSyncRecorder:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.entered = 0
+        self.exited = 0
+
+    def no_sync(self):
+        self.calls += 1
+        recorder = self
+
+        class _NoSyncContext:
+            def __enter__(self):
+                recorder.entered += 1
+                return None
+
+            def __exit__(self, exc_type, exc, tb):
+                recorder.exited += 1
+                return False
+
+        return _NoSyncContext()
+
+
+class _PlainModule:
+    pass
+
+
+class DistributedUtilsTests(unittest.TestCase):
+    def test_any_true_returns_local_flag_without_distributed_training(self) -> None:
+        self.assertFalse(dist.any_true(False))
+        self.assertTrue(dist.any_true(True))
+
+    def test_any_true_reduces_truthy_flags_across_ranks(self) -> None:
+        def _set_true(tensor: torch.Tensor, op=None) -> None:
+            tensor.fill_(1)
+
+        with patch("spatialdino.distributed.dist.is_available", return_value=True), patch(
+            "spatialdino.distributed.dist.is_initialized",
+            return_value=True,
+        ), patch(
+            "spatialdino.distributed.dist.all_reduce",
+            side_effect=_set_true,
+        ):
+            self.assertTrue(dist.any_true(torch.tensor(0, dtype=torch.int32)))
+
+    def test_should_sync_gradients_without_accumulation(self) -> None:
+        self.assertTrue(
+            dist.should_sync_gradients(
+                world_size=2,
+                accum_iter=1,
+                micro_steps_in_step=0,
+            )
+        )
+
+    def test_should_sync_gradients_on_final_accumulation_microbatch(self) -> None:
+        self.assertFalse(
+            dist.should_sync_gradients(
+                world_size=2,
+                accum_iter=2,
+                micro_steps_in_step=0,
+            )
+        )
+        self.assertTrue(
+            dist.should_sync_gradients(
+                world_size=2,
+                accum_iter=2,
+                micro_steps_in_step=1,
+            )
+        )
+
+    def test_should_sync_gradients_without_distributed_training(self) -> None:
+        self.assertTrue(
+            dist.should_sync_gradients(
+                world_size=1,
+                accum_iter=4,
+                micro_steps_in_step=0,
+            )
+        )
+
+    def test_maybe_no_sync_uses_context_only_when_sync_is_deferred(self) -> None:
+        recorder = _NoSyncRecorder()
+
+        with dist.maybe_no_sync(recorder, should_sync=False):
+            pass
+
+        self.assertEqual(recorder.calls, 1)
+        self.assertEqual(recorder.entered, 1)
+        self.assertEqual(recorder.exited, 1)
+
+        with dist.maybe_no_sync(recorder, should_sync=True):
+            pass
+
+        self.assertEqual(recorder.calls, 1)
+
+    def test_maybe_no_sync_is_a_no_op_for_plain_modules(self) -> None:
+        with dist.maybe_no_sync(_PlainModule(), should_sync=False):
+            pass

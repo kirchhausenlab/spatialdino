@@ -23,6 +23,7 @@ dependencies = [
     "torch-pca>=1.1.0",
     "torchvision>=0.23.0",
     "tqdm>=4.67.1",
+    "wandb>=0.25.1",
     "webdataset>=1.0.2",
     "xformers>=0.0.32.post2",
 ]

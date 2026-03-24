@@ -205,6 +205,12 @@ class Encoder(nn.Module):
         nn.init.normal_(self.cls_token, std=1e-6)
         self.apply(self._init_weights)
 
+    def _ensure_tt_registers_supported(self) -> None:
+        if self.num_tt_register_tokens:
+            raise ValueError(
+                "Test-time register tokens are only supported in predict() / streaming inference."
+            )
+
     def _init_weights(self, m: nn.Module) -> None:
         """_summary_
         - Standard ViT weight initialization
@@ -302,6 +308,7 @@ class Encoder(nn.Module):
         - Return both normalized and pre-normalized outputs for different use cases
         - Supports batch processing of multiple volumes simultaneously
         """
+        self._ensure_tt_registers_supported()
         x = [
             self.prepare_tokens_with_masks(x, masks)
             for x, masks in zip(x_list, masks_list)
@@ -339,6 +346,7 @@ class Encoder(nn.Module):
         **Norm**
         for downstream tasks of classification, segmentation, etc.
         """
+        self._ensure_tt_registers_supported()
         if isinstance(x, list):
             return self.forward_features_list(x, masks)
 

@@ -183,9 +183,10 @@ class SmoothedValue:
         Distributed synchronization of the metric
         Warning: does not synchronize the deque!
         """
-        if not dist.is_available() and dist.is_initialized():
+        if not dist.is_available() or not dist.is_initialized():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device="cuda")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()

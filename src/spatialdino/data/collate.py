@@ -64,6 +64,12 @@ def random_mask(
     return mask
 
 
+def _normalize_mask_type(mask_type: str) -> str:
+    if mask_type == "random":
+        return "rand"
+    return mask_type
+
+
 def mask_generator(
     high: int,
     grid_size: Tuple[int, int, int],
@@ -72,6 +78,8 @@ def mask_generator(
     min_num_patches: int = 4,
     mask_type: str = "block",
 ) -> torch.Tensor:
+    mask_type = _normalize_mask_type(mask_type)
+
     if mask_type == "block":
         max_aspect = max_aspect or 1 / min_aspect
         log_aspect_ratio = (math.log(min_aspect), math.log(max_aspect))

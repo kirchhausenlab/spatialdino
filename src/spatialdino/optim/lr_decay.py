@@ -63,6 +63,9 @@ def get_params_groups_with_decay(model, lr_decay_rate=1.0, patch_embed_lr_mult=1
     elif hasattr(model, "blocks"):
         logger.info("first code branch")
         n_blocks = len(model.blocks)
+    elif hasattr(model, "student") and "encoder" in model.student:
+        logger.info("ssl wrapper branch")
+        n_blocks = model.student["encoder"].n_blocks
     elif hasattr(model, "backbone"):
         logger.info("second code branch")
         n_blocks = len(model.backbone.blocks)
