@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import webdataset as wds
@@ -99,7 +99,29 @@ def _log_pretrain_step(
                 time=str(step_time),
                 data=str(data_time),
             )
-        )
+            )
+
+
+def _should_update_optimizer_step(
+    accum_iter: int,
+    micro_steps_in_step: int,
+) -> bool:
+    return micro_steps_in_step + 1 >= accum_iter
+
+
+def _wrap_model_for_training(
+    model: SSL,
+    distributed: bool,
+    local_rank: int,
+    find_unused_parameters: bool,
+) -> Union[SSL, DDP]:
+    if not distributed:
+        return model
+    return DDP(
+        model,
+        device_ids=[local_rank],
+        find_unused_parameters=find_unused_parameters,
+    )
 
 
 def _pairwise_dino_loss(
@@ -167,6 +189,8 @@ def main():
         distributed=config.distributed,
         backend=config.backend,
     )
+    if not torch.cuda.is_available():
+        raise RuntimeError("Pretraining requires CUDA. CPU execution is not supported.")
     torch.cuda.empty_cache()
 
     logger.info(
@@ -278,9 +302,10 @@ def main():
     logger.info("accumulate grad iterations: %d" % config.accum_iter)
     logger.info("effective batch size: %d" % eff_batch_size)
 
-    model_ddp = DDP(
-        model,
-        device_ids=[local_rank],
+    train_model = _wrap_model_for_training(
+        model=model,
+        distributed=config.distributed,
+        local_rank=local_rank,
         find_unused_parameters=config.find_unused_parameters,
     )
 
@@ -321,7 +346,7 @@ def main():
         config=config,
         step=step,
         model=model,
-        model_ddp=model_ddp,
+        train_model=train_model,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
         train_dataloader=train_dataloader,
@@ -337,7 +362,7 @@ def train(
     config: DictConfig,
     step: int,
     model: SSL,
-    model_ddp: DDP,
+    train_model: Union[SSL, DDP],
     optimizer: torch.optim.Optimizer,
     train_dataloader: DataLoader,
     rank: int,
@@ -453,10 +478,14 @@ def train(
             accum_iter=accum_iter,
             micro_steps_in_step=micro_steps_in_step,
         )
+        update = _should_update_optimizer_step(
+            accum_iter=accum_iter,
+            micro_steps_in_step=micro_steps_in_step,
+        )
 
         # Avoid per-microbatch all-reduces when accumulating gradients with DDP.
-        with dist.maybe_no_sync(model_ddp, should_sync=should_sync_gradients):
-            student_global_output, student_local_output = model_ddp(
+        with dist.maybe_no_sync(train_model, should_sync=should_sync_gradients):
+            student_global_output, student_local_output = train_model(
                 x={
                     "collated_global_crops": collated_global_crops,
                     "collated_local_crops": collated_local_crops,
@@ -587,7 +616,6 @@ def train(
                 loss.backward()
 
         micro_steps_in_step += 1
-        update = should_sync_gradients
 
         if update:
             if loss_scaler is not None:

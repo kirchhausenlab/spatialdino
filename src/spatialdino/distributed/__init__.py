@@ -104,7 +104,7 @@ def should_sync_gradients(
 
 
 def maybe_no_sync(module, should_sync: bool):
-    if should_sync:
+    if should_sync or not hasattr(module, "no_sync"):
         return nullcontext()
     return module.no_sync()
 

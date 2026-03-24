@@ -30,6 +30,10 @@ class _NoSyncRecorder:
         return _NoSyncContext()
 
 
+class _PlainModule:
+    pass
+
+
 class DistributedUtilsTests(unittest.TestCase):
     def test_any_true_returns_local_flag_without_distributed_training(self) -> None:
         self.assertFalse(dist.any_true(False))
@@ -96,3 +100,7 @@ class DistributedUtilsTests(unittest.TestCase):
             pass
 
         self.assertEqual(recorder.calls, 1)
+
+    def test_maybe_no_sync_is_a_no_op_for_plain_modules(self) -> None:
+        with dist.maybe_no_sync(_PlainModule(), should_sync=False):
+            pass

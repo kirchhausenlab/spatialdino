@@ -4,6 +4,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -59,3 +60,48 @@ class PretrainTodoFixTests(unittest.TestCase):
         self.assertEqual(mask.dtype, torch.bool)
         self.assertEqual(mask.shape, (2, 2, 2))
         self.assertEqual(int(mask.sum().item()), 3)
+
+    def test_optimizer_update_timing_is_independent_of_ddp_sync(self) -> None:
+        self.assertFalse(
+            pretrain._should_update_optimizer_step(
+                accum_iter=2,
+                micro_steps_in_step=0,
+            )
+        )
+        self.assertTrue(
+            pretrain._should_update_optimizer_step(
+                accum_iter=2,
+                micro_steps_in_step=1,
+            )
+        )
+
+    def test_wrap_model_for_training_returns_plain_model_without_distributed(self) -> None:
+        model = object()
+
+        wrapped = pretrain._wrap_model_for_training(
+            model=model,
+            distributed=False,
+            local_rank=0,
+            find_unused_parameters=False,
+        )
+
+        self.assertIs(wrapped, model)
+
+    def test_wrap_model_for_training_uses_ddp_when_distributed(self) -> None:
+        model = object()
+        sentinel = object()
+
+        with patch.object(pretrain, "DDP", return_value=sentinel) as ddp:
+            wrapped = pretrain._wrap_model_for_training(
+                model=model,
+                distributed=True,
+                local_rank=3,
+                find_unused_parameters=True,
+            )
+
+        self.assertIs(wrapped, sentinel)
+        ddp.assert_called_once_with(
+            model,
+            device_ids=[3],
+            find_unused_parameters=True,
+        )
