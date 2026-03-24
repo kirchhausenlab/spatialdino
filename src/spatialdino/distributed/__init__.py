@@ -3,6 +3,7 @@ import datetime
 import os
 import time
 from collections import defaultdict, deque
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Tuple
 
@@ -90,6 +91,22 @@ def cleanup(distributed: bool = True) -> None:
     dist.barrier()
     if dist.is_initialized():
         dist.destroy_process_group()
+
+
+def should_sync_gradients(
+    world_size: int,
+    accum_iter: int,
+    micro_steps_in_step: int,
+) -> bool:
+    if world_size <= 1 or accum_iter <= 1:
+        return True
+    return micro_steps_in_step + 1 >= accum_iter
+
+
+def maybe_no_sync(module, should_sync: bool):
+    if should_sync:
+        return nullcontext()
+    return module.no_sync()
 
 
 def all_reduce_mean(x):

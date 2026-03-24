@@ -2,14 +2,14 @@
 
 This is the consolidated to-do list for the pretraining stack, based on the review of `scripts/train/pretrain.py`, the SSL/loss code, the data path, and the three submitted branches.
 
-1. [ ] Initialize the teacher from the student before EMA training starts.
-2. [ ] Decide and document the canonical meaning of a training "step" in pretraining: optimizer update vs microbatch iteration.
-3. [ ] Make `max_steps` consistent with that definition everywhere in pretraining.
-4. [ ] Make LR, weight decay, momentum, teacher temperature, and last-layer schedules use the same step clock as the training loop.
-5. [ ] Make checkpoint save timing use optimizer-step semantics rather than microbatch semantics.
-6. [ ] Make checkpoint resume consistent with gradient accumulation so resuming does not lose partial progress or advance schedules incorrectly.
-7. [ ] Treat `accum_iter=1` as the no-accumulation mode and ensure pretraining remains correct in that setting.
-8. [ ] Add correct `DDP.no_sync()` handling for accumulation, if accumulation remains supported.
+1. [x] Initialize the teacher from the student before EMA training starts.
+2. [x] Decide and document the canonical meaning of a training "step" in pretraining: optimizer update vs microbatch iteration.
+3. [x] Make `max_steps` consistent with that definition everywhere in pretraining.
+4. [x] Make LR, weight decay, momentum, teacher temperature, and last-layer schedules use the same step clock as the training loop.
+5. [x] Make checkpoint save timing use optimizer-step semantics rather than microbatch semantics.
+6. [x] Make checkpoint resume consistent with gradient accumulation so resuming does not lose partial progress or advance schedules incorrectly.
+7. [x] Treat `accum_iter=1` as the no-accumulation mode and ensure pretraining remains correct in that setting.
+8. [x] Add correct `DDP.no_sync()` handling for accumulation, if accumulation remains supported.
 9. [ ] Make the advertised non-distributed pretraining path actually work, or remove/support-gate it explicitly.
 10. [ ] Fix unsafe distributed failure handling so one-rank NaN/non-finite loss does not leave the other ranks hanging.
 11. [ ] Make metric synchronization guards correct in the logging utilities.
@@ -18,9 +18,9 @@ This is the consolidated to-do list for the pretraining stack, based on the revi
 14. [ ] Confirm and fix Sinkhorn global batch-size handling in the DINO loss across ranks.
 15. [ ] Confirm whether KoLeo should be averaged or summed across global crops, then make optimization and logging match.
 16. [ ] Make the top-level logged `loss` consistent with the reduced component losses across ranks.
-17. [ ] Fix malformed logging calls in pretraining, especially the final averaged-stats log call.
-18. [ ] Make WandB logging cadence use optimizer-step semantics when accumulation is enabled.
-19. [ ] Make checkpoint cadence use optimizer-step semantics when accumulation is enabled.
+17. [x] Fix malformed logging calls in pretraining, especially the final averaged-stats log call.
+18. [x] Make WandB logging cadence use optimizer-step semantics when accumulation is enabled.
+19. [x] Make checkpoint cadence use optimizer-step semantics when accumulation is enabled.
 20. [ ] Fix the `mask_type` config/API mismatch: docs/comments say `"random"` while the implementation expects `"rand"`.
 21. [ ] Harden `median_fill()` against all-zero volumes.
 22. [ ] Make the crop-selection pipeline degrade gracefully on low-signal/empty samples instead of hard-asserting and crashing the run.
@@ -32,7 +32,7 @@ This is the consolidated to-do list for the pretraining stack, based on the revi
 28. [ ] Smoke-test the `Dataset_correction` branch before merging because it changes the pretraining data path.
 29. [ ] Add at least one smoke test for pretraining startup: config parse, model build, one forward pass, one teacher pass, one loss computation.
 30. [ ] Add a test or validation path for resume-from-checkpoint behavior.
-31. [ ] Add a test or validation path for `accum_iter > 1`.
+31. [x] Add a test or validation path for `accum_iter > 1`.
 32. [ ] Add a test or validation path for distributed-only assumptions vs single-process behavior.
 
 ## Suggested Order

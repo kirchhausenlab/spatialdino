@@ -395,99 +395,110 @@ def train(
         loss_dict = {}
 
         dtype = DTYPE_MAPPING[config.dtype]
-
-        student_global_output, student_local_output = model_ddp(
-            x={
-                "collated_global_crops": collated_global_crops,
-                "collated_local_crops": collated_local_crops,
-            },
-            masks={
-                "collated_global_crops": collated_masks,
-                "collated_local_crops": None,
-            },
-            upperbound=upperbound,
-            n_masked_patches=n_masked_patches,
-            mask_indices_list=mask_indices_list,
-            device_type=config.device_type,
-            dtype=dtype,
-            enabled=config.use_amp,
+        should_sync_gradients = dist.should_sync_gradients(
+            world_size=world_size,
+            accum_iter=accum_iter,
+            micro_steps_in_step=micro_steps_in_step,
         )
 
-        teacher_global_output = model.forward_teacher(
-            x=collated_global_crops,
-            masks=None,
-            upperbound=upperbound,
-            n_masked_patches=n_masked_patches,
-            mask_indices_list=mask_indices_list,
-            n_masked_patches_tensor=n_masked_patches_tensor,
-            teacher_temp=teacher_temp,
-            latent_loss_fn=latent_loss_fn,
-            device_type=config.device_type,
-            dtype=dtype,
-            enabled=config.use_amp,
-        )
-
-        n_local_crops_loss_terms = max(config.n_local_crops * config.n_global_crops, 1)
-        n_global_crops_loss_terms = (config.n_global_crops - 1) * config.n_global_crops
-
-        if do_dino:
-            dino_global_cls_loss = latent_loss_fn["cls_token"](
-                student_output_list=[student_global_output["cls_token_after_head"]],
-                teacher_out_softmaxed_centered_list=[
-                    teacher_global_output["cls_token_softmaxed_centered"].flatten(0, 1)
-                ],
-            ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
-            loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
-            latent_loss += config.dino_loss_weight * dino_global_cls_loss
-
-            dino_local_cls_loss = latent_loss_fn["cls_token"](
-                student_output_list=student_local_output["cls_token_after_head"].chunk(
-                    config.n_local_crops
-                ),
-                teacher_out_softmaxed_centered_list=teacher_global_output[
-                    "cls_token_softmaxed_centered"
-                ],
-            ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
-            loss_dict["dino_local_cls_loss"] = dino_local_cls_loss
-
-            latent_loss += config.dino_loss_weight * dino_local_cls_loss
-
-            if do_koleo:
-                koleo_loss = sum(
-                    latent_loss_fn["koleo"](p.squeeze(0))
-                    for p in student_global_output["cls_token_after_head"].chunk(
-                        config.n_global_crops
-                    )
-                )
-                loss_dict["koleo_loss"] = koleo_loss / config.n_global_crops
-                latent_loss += config.koleo_loss_weight * koleo_loss
-
-        if do_ibot:
-            ibot_patch_loss = latent_loss_fn["patch_tokens"].forward_masked(
-                student_global_output["patch_tokens_after_head"],
-                teacher_global_output["patch_tokens_softmaxed_centered"],
-                student_masks_flat=collated_masks,
+        # Avoid per-microbatch all-reduces when accumulating gradients with DDP.
+        with dist.maybe_no_sync(model_ddp, should_sync=should_sync_gradients):
+            student_global_output, student_local_output = model_ddp(
+                x={
+                    "collated_global_crops": collated_global_crops,
+                    "collated_local_crops": collated_local_crops,
+                },
+                masks={
+                    "collated_global_crops": collated_masks,
+                    "collated_local_crops": None,
+                },
+                upperbound=upperbound,
                 n_masked_patches=n_masked_patches,
-                masks_weight=masks_weight,
+                mask_indices_list=mask_indices_list,
+                device_type=config.device_type,
+                dtype=dtype,
+                enabled=config.use_amp,
             )
 
-            loss_dict["ibot_patch_loss"] = ibot_patch_loss / config.n_global_crops
+            teacher_global_output = model.forward_teacher(
+                x=collated_global_crops,
+                masks=None,
+                upperbound=upperbound,
+                n_masked_patches=n_masked_patches,
+                mask_indices_list=mask_indices_list,
+                n_masked_patches_tensor=n_masked_patches_tensor,
+                teacher_temp=teacher_temp,
+                latent_loss_fn=latent_loss_fn,
+                device_type=config.device_type,
+                dtype=dtype,
+                enabled=config.use_amp,
+            )
 
-            latent_loss += config.ibot_loss_weight * ibot_patch_loss
+            n_local_crops_loss_terms = max(
+                config.n_local_crops * config.n_global_crops, 1
+            )
+            n_global_crops_loss_terms = (
+                config.n_global_crops - 1
+            ) * config.n_global_crops
 
-        loss_dict["latent_loss"] = latent_loss
-        loss += latent_loss
+            if do_dino:
+                dino_global_cls_loss = latent_loss_fn["cls_token"](
+                    student_output_list=[student_global_output["cls_token_after_head"]],
+                    teacher_out_softmaxed_centered_list=[
+                        teacher_global_output["cls_token_softmaxed_centered"].flatten(0, 1)
+                    ],
+                ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
+                loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
+                latent_loss += config.dino_loss_weight * dino_global_cls_loss
 
-        loss /= accum_iter
+                dino_local_cls_loss = latent_loss_fn["cls_token"](
+                    student_output_list=student_local_output["cls_token_after_head"].chunk(
+                        config.n_local_crops
+                    ),
+                    teacher_out_softmaxed_centered_list=teacher_global_output[
+                        "cls_token_softmaxed_centered"
+                    ],
+                ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
+                loss_dict["dino_local_cls_loss"] = dino_local_cls_loss
 
-        if loss_scaler is not None:
-            loss_scaler.scale(loss).backward()
+                latent_loss += config.dino_loss_weight * dino_local_cls_loss
 
-        else:
-            loss.backward()
+                if do_koleo:
+                    koleo_loss = sum(
+                        latent_loss_fn["koleo"](p.squeeze(0))
+                        for p in student_global_output["cls_token_after_head"].chunk(
+                            config.n_global_crops
+                        )
+                    )
+                    loss_dict["koleo_loss"] = koleo_loss / config.n_global_crops
+                    latent_loss += config.koleo_loss_weight * koleo_loss
+
+            if do_ibot:
+                ibot_patch_loss = latent_loss_fn["patch_tokens"].forward_masked(
+                    student_global_output["patch_tokens_after_head"],
+                    teacher_global_output["patch_tokens_softmaxed_centered"],
+                    student_masks_flat=collated_masks,
+                    n_masked_patches=n_masked_patches,
+                    masks_weight=masks_weight,
+                )
+
+                loss_dict["ibot_patch_loss"] = ibot_patch_loss / config.n_global_crops
+
+                latent_loss += config.ibot_loss_weight * ibot_patch_loss
+
+            loss_dict["latent_loss"] = latent_loss
+            loss += latent_loss
+
+            loss /= accum_iter
+
+            if loss_scaler is not None:
+                loss_scaler.scale(loss).backward()
+
+            else:
+                loss.backward()
 
         micro_steps_in_step += 1
-        update = micro_steps_in_step == accum_iter
+        update = should_sync_gradients
 
         if update:
             if loss_scaler is not None:
