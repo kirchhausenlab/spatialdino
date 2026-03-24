@@ -59,7 +59,7 @@ def init_backbone(config: DictConfig) -> Encoder:
         drop_path_rate=config.drop_path_rate,
         drop_path_uniform=config.drop_path_uniform,
         init_values=config.layerscale,
-        num_tt_register_tokens=config.num_tt_register_tokens,
+        num_tt_register_tokens=getattr(config, "num_tt_register_tokens", 0),
         interpolate_offset=config.interpolate_offset,
         interpolate_antialias=config.interpolate_antialias,
         interpolate_align_corners=config.interpolate_align_corners,

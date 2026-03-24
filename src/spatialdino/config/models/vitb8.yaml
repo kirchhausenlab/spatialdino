@@ -14,7 +14,6 @@ ffn_layer: mlp
 depth: 12
 num_heads: 12
 mlp_ratio: 4
-num_tt_register_tokens: 1
 interpolate_offset: 0.1
 interpolate_antialias: true
 interpolate_align_corners: true

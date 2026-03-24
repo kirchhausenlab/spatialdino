@@ -8,6 +8,7 @@ file_end: null
 global_hist_min: null
 global_hist_max: null
 model: vits8
+num_tt_register_tokens: 1
 
 device_type: "cuda"
 dtype: "bf16"

@@ -10,9 +10,10 @@ from omegaconf import OmegaConf
 
 from spatialdino.loss.dino_clstoken_loss import DINOLoss, split_sample_major_batch
 from spatialdino.loss.ibot_patch_loss import iBOTPatchLoss
+from spatialdino.models.layers.encoder import Encoder
 from spatialdino.models.ssl import SSL
 from spatialdino.models.ssl.utils import save_model
-from spatialdino.models.utils import load_model
+from spatialdino.models.utils import init_backbone, load_model
 
 
 def make_ssl_config():
@@ -40,7 +41,66 @@ def make_ssl_config():
     )
 
 
+def make_backbone_config():
+    return OmegaConf.create(
+        {
+            "global_crop_size": [8, 8, 8],
+            "patch_size": [4, 4, 4],
+            "stride": [4, 4, 4],
+            "in_chans": 1,
+            "embed_dim": 16,
+            "depth": 1,
+            "num_heads": 4,
+            "mlp_ratio": 2.0,
+            "qkv_bias": True,
+            "proj_bias": True,
+            "ffn_bias": True,
+            "ffn_layer": "mlp",
+            "drop_path_rate": 0.0,
+            "drop_path_uniform": False,
+            "layerscale": None,
+            "interpolate_offset": 0.1,
+            "interpolate_antialias": True,
+            "interpolate_align_corners": True,
+            "pos_embed_type": "none",
+            "backbone_path": None,
+        }
+    )
+
+
 class SSLTests(unittest.TestCase):
+    def test_init_backbone_defaults_test_time_registers_to_zero(self) -> None:
+        model = init_backbone(make_backbone_config())
+
+        self.assertEqual(model.num_tt_register_tokens, 0)
+
+    def test_encoder_forward_rejects_test_time_registers(self) -> None:
+        model = Encoder(
+            img_size=(8, 8, 8),
+            patch_size=(4, 4, 4),
+            stride=(4, 4, 4),
+            in_chans=1,
+            embed_dim=16,
+            depth=1,
+            num_heads=4,
+            mlp_ratio=2.0,
+            qkv_bias=True,
+            proj_bias=True,
+            ffn_bias=True,
+            ffn_layer="mlp",
+            drop_path_rate=0.0,
+            drop_path_uniform=False,
+            init_values=None,
+            num_tt_register_tokens=1,
+            interpolate_offset=0.1,
+            interpolate_antialias=True,
+            interpolate_align_corners=True,
+            pos_embed_type="none",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Test-time register tokens"):
+            model(torch.randn(1, 1, 8, 8, 8))
+
     def test_split_sample_major_batch_groups_views_across_samples(self) -> None:
         sample_major_tokens = torch.tensor([
             [0.0],
