@@ -13,7 +13,7 @@ use_amp: true
 distributed: true
 backend: "cpu:gloo,cuda:nccl"
 
-mask_type: "block" # "block", "random"
+mask_type: "block" # "block", "rand" (alias: "random")
 min_mask_ratio: 0.1 # Minimum masking ratio (1 - percentage of remained patches)
 max_mask_ratio: 0.5 # Maximum masking ratio (1 - percentage of remained patches)
 mask_sample_probability: 0.5

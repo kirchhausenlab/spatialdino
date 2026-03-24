@@ -145,6 +145,18 @@ def _reduce_loss_dict(loss_dict: Dict[str, torch.Tensor]) -> Dict[str, float]:
     return reduced_loss_dict
 
 
+def _compute_weighted_loss_total(
+    loss_dict: Dict[str, float],
+    config: DictConfig,
+) -> float:
+    return (
+        config.dino_loss_weight * loss_dict.get("dino_global_cls_loss", 0.0)
+        + config.dino_loss_weight * loss_dict.get("dino_local_cls_loss", 0.0)
+        + config.koleo_loss_weight * loss_dict.get("koleo_loss", 0.0)
+        + config.ibot_loss_weight * loss_dict.get("ibot_patch_loss", 0.0)
+    )
+
+
 def main():
     config = parse_config(CONFIG_PATH.joinpath("pretrain.yaml"))
 
@@ -520,8 +532,8 @@ def train(
                     koleo_loss = sum(
                         latent_loss_fn["koleo"](p.squeeze(0))
                         for p in student_global_cls_outputs
-                    )
-                    loss_dict["koleo_loss"] = koleo_loss / config.n_global_crops
+                    ) / max(config.n_global_crops, 1)
+                    loss_dict["koleo_loss"] = koleo_loss
                     latent_loss += config.koleo_loss_weight * koleo_loss
 
             if do_ibot:
@@ -533,24 +545,30 @@ def train(
                     masks_weight=masks_weight,
                 )
 
-                loss_dict["ibot_patch_loss"] = ibot_patch_loss / config.n_global_crops
+                loss_dict["ibot_patch_loss"] = ibot_patch_loss
 
                 latent_loss += config.ibot_loss_weight * ibot_patch_loss
 
-            loss_dict["latent_loss"] = latent_loss
             loss += latent_loss
 
             local_has_nonfinite_loss = ~torch.isfinite(
-                torch.stack([value.detach().float() for value in loss_dict.values()])
+                torch.stack(
+                    [latent_loss.detach().float()]
+                    + [value.detach().float() for value in loss_dict.values()]
+                )
             ).all()
             has_nonfinite_loss = dist.any_true(local_has_nonfinite_loss)
             if has_nonfinite_loss:
                 if local_has_nonfinite_loss.item():
+                    local_loss_dict = {
+                        k: float(v.detach().cpu()) for k, v in loss_dict.items()
+                    }
+                    local_loss_dict["latent_loss"] = float(latent_loss.detach().cpu())
                     logger.error(
                         "Encountered non-finite local loss on rank %d at optimizer step %d: %s",
                         rank,
                         step + 1,
-                        {k: float(v.detach().cpu()) for k, v in loss_dict.items()},
+                        local_loss_dict,
                     )
                 else:
                     logger.error(
@@ -589,6 +607,10 @@ def train(
             model.update_teacher(teacher_momentum=mom)
 
         loss_dict_reduced = _reduce_loss_dict(loss_dict)
+        loss_dict_reduced["latent_loss"] = _compute_weighted_loss_total(
+            loss_dict_reduced,
+            config,
+        )
 
         loss_value = loss_dict_reduced["latent_loss"]
 
