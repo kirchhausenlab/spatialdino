@@ -129,8 +129,8 @@ def load_model(
 
     optimizer.load_state_dict(checkpoint["optimizer"])
 
-    if "scaler" in checkpoint:
-        loss_scaler.load_state_dict(checkpoint["scaler"])  # type: ignore
+    if "scaler" in checkpoint and loss_scaler is not None:
+        loss_scaler.load_state_dict(checkpoint["scaler"])
 
     if checkpoint.get("step_semantics") == "optimizer_updates_completed":
         return checkpoint["step"]

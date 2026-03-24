@@ -248,6 +248,60 @@ class SSLTests(unittest.TestCase):
 
         self.assertEqual(resumed_step, 5)
 
+    @unittest.skipUnless(torch.cuda.is_available(), "GradScaler state requires CUDA.")
+    def test_checkpoint_with_scaler_can_resume_without_amp(self) -> None:
+        model = SSL(make_ssl_config()).cuda()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        scaler = torch.amp.GradScaler(device="cuda")
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            save_model(
+                output_dir=output_dir,
+                step=5,
+                model=model,
+                optimizer=optimizer,
+                loss_scaler=scaler,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_step = load_model(
+                checkpoint_path=str(output_dir / "step=5" / "ckpt.pth"),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+                loss_scaler=None,
+            )
+
+        self.assertEqual(resumed_step, 5)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "GradScaler state requires CUDA.")
+    def test_checkpoint_without_scaler_can_resume_with_amp(self) -> None:
+        model = SSL(make_ssl_config())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            save_model(
+                output_dir=output_dir,
+                step=5,
+                model=model,
+                optimizer=optimizer,
+                loss_scaler=None,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_scaler = torch.amp.GradScaler(device="cuda")
+            resumed_step = load_model(
+                checkpoint_path=str(output_dir / "step=5" / "ckpt.pth"),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+                loss_scaler=resumed_scaler,
+            )
+
+        self.assertEqual(resumed_step, 5)
+
     def test_legacy_checkpoints_still_resume_with_next_step_semantics(self) -> None:
         model = SSL(make_ssl_config())
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)

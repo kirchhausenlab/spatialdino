@@ -25,6 +25,23 @@ pretrain = _load_pretrain_module()
 
 
 class PretrainTodoFixTests(unittest.TestCase):
+    def test_validate_crop_counts_requires_positive_global_and_local_crops(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "n_global_crops"):
+            pretrain._validate_crop_counts(
+                SimpleNamespace(
+                    n_global_crops=0,
+                    n_local_crops=1,
+                )
+            )
+
+        with self.assertRaisesRegex(AssertionError, "n_local_crops"):
+            pretrain._validate_crop_counts(
+                SimpleNamespace(
+                    n_global_crops=1,
+                    n_local_crops=0,
+                )
+            )
+
     def test_compute_weighted_loss_total_respects_config_weights(self) -> None:
         config = SimpleNamespace(
             dino_loss_weight=1.5,

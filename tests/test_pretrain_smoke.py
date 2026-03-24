@@ -133,6 +133,40 @@ def _make_smoke_batch(config, seed: int):
 
 class PretrainSmokeTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "Pretrain smoke test requires CUDA.")
+    def test_train_returns_empty_metrics_when_no_optimizer_steps_run(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            config = _make_tiny_pretrain_config(output_dir)
+            config.max_steps = 0
+
+            torch.cuda.set_device(0)
+            model = build_ssl_model(config).cuda()
+            optimizer = torch.optim.AdamW(
+                get_params_groups_with_decay(
+                    model=model,
+                    lr_decay_rate=config.layerwise_decay,
+                    patch_embed_lr_mult=config.patch_embed_lr_mult,
+                ),
+                lr=config.lr,
+                betas=tuple(config.betas),
+            )
+
+            metrics = pretrain.train(
+                config=config,
+                step=0,
+                model=model,
+                train_model=model,
+                optimizer=optimizer,
+                train_dataloader=[],
+                rank=0,
+                world_size=1,
+                loss_scaler=None,
+                run=None,
+            )
+
+        self.assertEqual(metrics, {})
+
+    @unittest.skipUnless(torch.cuda.is_available(), "Pretrain smoke test requires CUDA.")
     def test_non_distributed_pretrain_smoke_covers_resume_and_single_process_path(self) -> None:
         with TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)

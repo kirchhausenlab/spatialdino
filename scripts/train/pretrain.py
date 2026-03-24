@@ -41,6 +41,11 @@ torch.backends.cuda.matmul.allow_tf32 = (
 logger = logging.getLogger("pretrain")
 
 
+def _validate_crop_counts(config: DictConfig) -> None:
+    assert config.n_global_crops > 0, "n_global_crops must be greater than 0"
+    assert config.n_local_crops > 0, "n_local_crops must be greater than 0"
+
+
 def _should_run_interval(step: int, interval: int, max_steps: int) -> bool:
     return step % interval == 0 or step == max_steps
 
@@ -210,6 +215,7 @@ def main():
     logger.info(f"Global crop size: {config.global_crop_size}")
     logger.info(f"Local crop size: {config.local_crop_size}")
     logger.info(f"Isotropic scale factor: {config.isotropic_scale_factor}")
+    _validate_crop_counts(config)
 
     image_key = "image"
     mask_key = "mask"
@@ -715,6 +721,14 @@ def train(
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+
+    if not metric_logger.meters["lr"].count:
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        logger.info("No optimizer steps were run.")
+        logger.info("Training time {}".format(total_time_str))
+        model.eval()
+        return {}
 
     logger.info("Averaged stats: %s", metric_logger)
     total_time = time.time() - start_time
