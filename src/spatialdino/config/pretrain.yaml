@@ -4,9 +4,9 @@ logging:
   entity: artificial-intelligence-research
 
 # Training parameters
-batch_size: 14 # Batch size per GPU (effective batch size is batch_size * n_global_crops * # gpus)
-accum_iter: 7 # Gradient accumulation steps
-max_steps: 250000
+batch_size: 14 # Batch size per GPU per microbatch
+accum_iter: 1 # Microbatches per optimizer step
+max_steps: 250000 # Optimizer updates
 device_type: "cuda"
 dtype: "bf16"
 use_amp: true
@@ -20,8 +20,8 @@ mask_sample_probability: 0.5
 n_global_crops: 2
 n_local_crops: 8
 find_unused_parameters: false # Distributed DDP find unused parameters
-save_interval: 1000 # Steps to save checkpoint
-log_interval: 10 # Steps to log
+save_interval: 1000 # Optimizer steps between checkpoints
+log_interval: 10 # Optimizer steps between logs
 
 # Model parameters
 model: vits8
@@ -33,8 +33,8 @@ lr: null # Learning rate (absolute lr)
 betas: [0.9, 0.999]
 blr: 2.0e-04 # Base learning rate: absolute_lr = base_lr * total_batch_size / 256
 min_lr: 1.0e-06 # Lower lr bound for cyclic schedulers
-freeze_last_layer_steps: 300
-warmup_steps: 24000
+freeze_last_layer_steps: 300 # Optimizer steps
+warmup_steps: 24000 # Optimizer steps
 optim: "adamw"
 layerwise_decay: 1.0
 patch_embed_lr_mult: 0.2
@@ -45,7 +45,7 @@ centering: "sinkhorn_knopp" # only applies to ce loss, "centering" for centering
 center_momentum: 0.9 # only applies to centering
 momentum_teacher: 0.994
 final_momentum_teacher: 1.0
-warmup_teacher_temp_steps: 9000
+warmup_teacher_temp_steps: 9000 # Optimizer steps
 warmup_teacher_temp: 0.04
 teacher_temp: 0.07
 student_temp: 0.1

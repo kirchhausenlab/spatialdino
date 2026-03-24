@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 from omegaconf import OmegaConf
 
 from spatialdino.models.ssl import SSL
+from spatialdino.models.ssl.utils import save_model
+from spatialdino.models.utils import load_model
 
 
 def make_ssl_config():
@@ -47,3 +51,51 @@ class SSLTests(unittest.TestCase):
                 self.assertTrue(torch.equal(student_state[key], teacher_state[key]))
 
         self.assertTrue(all(not param.requires_grad for param in model.teacher.parameters()))
+
+    def test_pretrain_checkpoint_round_trip_uses_completed_optimizer_steps(self) -> None:
+        model = SSL(make_ssl_config())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+        with TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            save_model(
+                output_dir=output_dir,
+                step=5,
+                model=model,
+                optimizer=optimizer,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_step = load_model(
+                checkpoint_path=str(output_dir / "step=5" / "ckpt.pth"),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+            )
+
+        self.assertEqual(resumed_step, 5)
+
+    def test_legacy_checkpoints_still_resume_with_next_step_semantics(self) -> None:
+        model = SSL(make_ssl_config())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+        with TemporaryDirectory() as tmpdir:
+            checkpoint_path = Path(tmpdir) / "legacy_ckpt.pth"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "step": 5,
+                },
+                checkpoint_path,
+            )
+
+            resumed_model = SSL(make_ssl_config())
+            resumed_optimizer = torch.optim.SGD(resumed_model.parameters(), lr=0.1)
+            resumed_step = load_model(
+                checkpoint_path=str(checkpoint_path),
+                model=resumed_model,
+                optimizer=resumed_optimizer,
+            )
+
+        self.assertEqual(resumed_step, 6)

@@ -132,4 +132,7 @@ def load_model(
     if "scaler" in checkpoint:
         loss_scaler.load_state_dict(checkpoint["scaler"])  # type: ignore
 
+    if checkpoint.get("step_semantics") == "optimizer_updates_completed":
+        return checkpoint["step"]
+
     return checkpoint["step"] + 1

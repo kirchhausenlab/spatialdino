@@ -3,6 +3,7 @@ import logging
 import math
 import sys
 import time
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Dict, Optional
@@ -40,6 +41,67 @@ torch.backends.cuda.matmul.allow_tf32 = (
     True  # PyTorch 1.12 sets this to False by default
 )
 logger = logging.getLogger("pretrain")
+
+
+def _should_run_interval(step: int, interval: int, max_steps: int) -> bool:
+    return step % interval == 0 or step == max_steps
+
+
+def _log_pretrain_step(
+    metric_logger: MetricLogger,
+    header: str,
+    step: int,
+    max_steps: int,
+    step_time: SmoothedValue,
+    data_time: SmoothedValue,
+    rank: int,
+) -> None:
+    metric_logger.dump_in_output_file(
+        iteration=step,
+        iter_time=step_time.avg,
+        data_time=data_time.avg,
+        rank=rank,
+    )
+
+    eta_seconds = step_time.global_avg * (max_steps - step)
+    eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+    space_fmt = ":" + str(len(str(max_steps))) + "d"
+
+    log_list = [
+        header,
+        "[{0" + space_fmt + "}/{1}]",
+        "eta: {eta}",
+        "{meters}",
+        "time: {time}",
+        "data: {data}",
+    ]
+    if torch.cuda.is_available():
+        log_list += ["max mem: {memory:.0f}"]
+
+    log_msg = metric_logger.delimiter.join(log_list)
+    if torch.cuda.is_available():
+        logger.info(
+            log_msg.format(
+                step,
+                max_steps,
+                eta=eta_string,
+                meters=str(metric_logger),
+                time=str(step_time),
+                data=str(data_time),
+                memory=torch.cuda.max_memory_allocated() / (1024.0 * 1024.0),
+            )
+        )
+    else:
+        logger.info(
+            log_msg.format(
+                step,
+                max_steps,
+                eta=eta_string,
+                meters=str(metric_logger),
+                time=str(step_time),
+                data=str(data_time),
+            )
+        )
 
 
 def main():
@@ -282,27 +344,35 @@ def train(
             center_momentum=config.center_momentum,
         ).to(device)
 
-    iteration = step * accum_iter
+    optimizer.zero_grad(set_to_none=True)
+    step_loss_sums: Dict[str, float] = defaultdict(float)
+    micro_steps_in_step = 0
+    step_time = SmoothedValue(fmt="{avg:.6f}")
+    data_time = SmoothedValue(fmt="{avg:.6f}")
+    step_start_time = time.time()
+    step_data_time = 0.0
+    data_iterator = iter(train_dataloader)
+    end = time.time()
 
-    for batch in metric_logger.log_every(
-        iterable=train_dataloader,
-        print_freq=config.log_interval,
-        header=header,
-        n_iterations=config.max_steps,
-        start_iteration=iteration,
-        rank=rank,
-    ):
-        if iteration >= config.max_steps:
+    while step < config.max_steps:
+        if micro_steps_in_step == 0:
+            step_start_time = end
+            step_data_time = 0.0
+
+        try:
+            batch = next(data_iterator)
+        except StopIteration:
             break
 
-        update = (iteration + 1) % accum_iter == 0
+        step_data_time += time.time() - end
 
         lr = lr_schedule[step]
         wd = wd_schedule[step]
         mom = momentum_schedule[step]
         teacher_temp = teacher_temp_schedule[step]
         last_layer_lr = last_layer_lr_schedule[step]
-        if (iteration + 2) % accum_iter == 0:
+
+        if micro_steps_in_step == 0:
             apply_optim_scheduler(optimizer, lr, wd, last_layer_lr)
 
         collated_global_crops = batch["collated_global_crops"].to(
@@ -416,6 +486,9 @@ def train(
         else:
             loss.backward()
 
+        micro_steps_in_step += 1
+        update = micro_steps_in_step == accum_iter
+
         if update:
             if loss_scaler is not None:
                 if config.clip_grad:
@@ -441,50 +514,88 @@ def train(
             k: v.item() / dist.get_world_size() for k, v in loss_dict.items()
         }
 
-        loss_value = loss.detach().cpu().item()
+        loss_value = loss_dict_reduced["latent_loss"]
 
         if not math.isfinite(loss_value):
             logger.error("Loss is {}, stopping training".format(loss_value))
             logger.error(f"Loss dict: {loss_dict}")
             sys.exit(1)
 
-        metric_logger.update(
-            loss=loss_value,
-            lr=lr,
-            **loss_dict_reduced,
-        )
-
-        if run is not None and (iteration + 1) % config.log_interval == 0:
-            run.log(
-                {
-                    "loss": loss_value,
-                    "lr": lr,
-                    **loss_dict_reduced,
-                },
-                step=iteration,
-            )
-
-        if (iteration + 1) % config.save_interval == 0 or (
-            iteration + 1
-        ) == config.max_steps:
-            logger.info(f"Saving checkpoint at step {step}")
-            save_model(
-                output_dir=ckpt_dir,
-                step=step,
-                model=model,
-                optimizer=optimizer,
-                loss_scaler=loss_scaler,
-            )
+        for key, value in loss_dict_reduced.items():
+            step_loss_sums[key] += value
 
         if update:
-            step += 1
+            completed_step = step + 1
+            averaged_step_losses = {
+                key: value / micro_steps_in_step
+                for key, value in step_loss_sums.items()
+            }
+            step_time.update(time.time() - step_start_time)
+            data_time.update(step_data_time)
 
-        iteration += 1
+            metric_logger.update(
+                loss=averaged_step_losses["latent_loss"],
+                lr=lr,
+                **averaged_step_losses,
+            )
+
+            if _should_run_interval(
+                completed_step,
+                config.log_interval,
+                config.max_steps,
+            ):
+                _log_pretrain_step(
+                    metric_logger=metric_logger,
+                    header=header,
+                    step=completed_step,
+                    max_steps=config.max_steps,
+                    step_time=step_time,
+                    data_time=data_time,
+                    rank=rank,
+                )
+                if run is not None:
+                    run.log(
+                        {
+                            "loss": averaged_step_losses["latent_loss"],
+                            "lr": lr,
+                            **averaged_step_losses,
+                        },
+                        step=completed_step,
+                    )
+
+            if _should_run_interval(
+                completed_step,
+                config.save_interval,
+                config.max_steps,
+            ):
+                logger.info(f"Saving checkpoint at step {completed_step}")
+                save_model(
+                    output_dir=ckpt_dir,
+                    step=completed_step,
+                    model=model,
+                    optimizer=optimizer,
+                    loss_scaler=loss_scaler,
+                )
+
+            step = completed_step
+            micro_steps_in_step = 0
+            step_loss_sums.clear()
+
+        end = time.time()
+
+    if micro_steps_in_step:
+        logger.warning(
+            "Dataloader exhausted with %d/%d accumulated microbatches for optimizer step %d; dropping the partial step.",
+            micro_steps_in_step,
+            accum_iter,
+            step + 1,
+        )
+        optimizer.zero_grad(set_to_none=True)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
 
-    logger.info("Averaged stats:", metric_logger)
+    logger.info("Averaged stats: %s", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info("Training time {}".format(total_time_str))

@@ -20,6 +20,7 @@ def save_model(
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "step": step,
+        "step_semantics": "optimizer_updates_completed",
     }
 
     save_backbone(checkpoint_dir, model.teacher.encoder)  # type: ignore
