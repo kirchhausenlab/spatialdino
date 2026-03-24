@@ -1,5 +1,3 @@
-from copy import deepcopy
-from functools import partial
 from typing import Any, Callable, Dict, Optional, Tuple
 from omegaconf import DictConfig
 import torch
@@ -79,8 +77,13 @@ class SSL(nn.Module):
                 out_dim=config.n_prototypes,
             )
 
+        self.init_teacher_from_student()
+
         for param in self.teacher.parameters():
             param.requires_grad = False
+
+    def init_teacher_from_student(self) -> None:
+        self.teacher.load_state_dict(self.student.state_dict())
 
     def train(self, mode: bool = True) -> "SSL":
         super().train(mode)
