@@ -1,5 +1,6 @@
-experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb
-backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=249999/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
+experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb-bs_336
+ckpt_step: 249999
+backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=${ckpt_step}/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
 seed: 0
 file_path: null
 save_path: null

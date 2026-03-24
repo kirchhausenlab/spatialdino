@@ -1,9 +1,9 @@
 import logging
 import math
 from pathlib import Path
+from typing import Any, Dict, Iterator, Tuple
 import numpy as np
 import torch
-from natsort import natsorted
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
@@ -17,6 +17,7 @@ from spatialdino.data.inference import (
 )
 from spatialdino.logging import setup_logging
 from spatialdino.models.utils import init_backbone
+from spatialdino.inference.input_files import list_tiff_paths
 from spatialdino.inference.streaming import StreamingEncoder
 from spatialdino.utils.misc import set_seed
 
@@ -28,6 +29,19 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 logger = logging.getLogger("inference_3d")
+
+
+def iter_batch_samples(
+    batch: Dict[str, Any],
+) -> Iterator[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    for idx, vol_metadata in enumerate(batch["vol_metadata"]):
+        yield (
+            {
+                "image": batch["images"][idx],
+                "mask": batch["masks"][idx],
+            },
+            vol_metadata,
+        )
 
 
 def main() -> None:
@@ -56,7 +70,7 @@ def main() -> None:
     streaming_encoder = StreamingEncoder(model, device, config) if use_streaming else None
 
     file_path = config.file_path
-    fnames = natsorted(list(Path(file_path).glob("*.tif")))
+    fnames = list_tiff_paths(file_path)
     file_start = int(getattr(config, "file_start", 0) or 0)
     file_end = getattr(config, "file_end", None)
     fnames = fnames[file_start:file_end]
@@ -95,72 +109,66 @@ def main() -> None:
 
     def predict() -> None:
         """Run inference on the model."""
-        for i, batch in enumerate(prog):
-            B = len(batch["vol_metadata"])
-            for inner_idx in range(B):
-                data = {
-                    "image": batch["images"][inner_idx],
-                    "mask": batch["masks"][inner_idx],
-                }
-                vol_metadata = batch["vol_metadata"][inner_idx]
-            res = inference_transform(
-                data=data,
-                vol_metadata=vol_metadata,
-                chunk_interpolate=config.chunk_interpolate,
-                interpolate_chunk_size=config.interpolate_volume_chunk_size,
-                device="cpu" if use_streaming else device,
-            )
-            volume = torch.as_tensor(res["volume"])  # [C, Z, Y, X]
-
-            save_path = Path(vol_metadata["save_path"])
-            save_path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Saving to {save_path}")
-
-            if use_streaming:
-                lr_feats = streaming_encoder.predict(
-                    volume,
+        for batch in prog:
+            for data, vol_metadata in iter_batch_samples(batch):
+                res = inference_transform(
+                    data=data,
                     vol_metadata=vol_metadata,
-                    vit_feat="patch_attn",
-                    norm_feat=config.norm_feat,
-                ).squeeze(0)
-                lr_feats = lr_feats.float()
-            else:
-                lr_feats = (
-                    model(
-                        img=volume.unsqueeze_(0),
+                    chunk_interpolate=config.chunk_interpolate,
+                    interpolate_chunk_size=config.interpolate_volume_chunk_size,
+                    device="cpu" if use_streaming else device,
+                )
+                volume = torch.as_tensor(res["volume"])  # [C, Z, Y, X]
+
+                save_path = Path(vol_metadata["save_path"])
+                save_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Saving to {save_path}")
+
+                if use_streaming:
+                    lr_feats = streaming_encoder.predict(
+                        volume,
+                        vol_metadata=vol_metadata,
                         vit_feat="patch_attn",
                         norm_feat=config.norm_feat,
-                        dtype=dtype,
-                        use_amp=config.use_amp,
-                        device_type=config.device_type,
-                        device=device,
+                    ).squeeze(0)
+                    lr_feats = lr_feats.float()
+                else:
+                    lr_feats = (
+                        model(
+                            img=volume.unsqueeze_(0),
+                            vit_feat="patch_attn",
+                            norm_feat=config.norm_feat,
+                            dtype=dtype,
+                            use_amp=config.use_amp,
+                            device_type=config.device_type,
+                            device=device,
+                        )
+                        .cpu()
+                        .squeeze_(0)
+                        .float()
                     )
-                    .cpu()
-                    .squeeze_(0)
-                    .float()
-                )
 
-            padding = vol_metadata["padding"]
-            scale_factor = (
-                volume.shape[-3] / lr_feats.shape[-3],
-                volume.shape[-2] / lr_feats.shape[-2],
-                volume.shape[-1] / lr_feats.shape[-1],
-            )
-            padding_lr = (
-                math.floor(padding[0] / scale_factor[0]),
-                math.floor(padding[1] / scale_factor[1]),
-                math.floor(padding[2] / scale_factor[2]),
-            )
-            lr_feats = lr_feats[
-                :,
-                padding_lr[0] // 2 : lr_feats.shape[-3] - padding_lr[0] // 2,
-                padding_lr[1] // 2 : lr_feats.shape[-2] - padding_lr[1] // 2,
-                padding_lr[2] // 2 : lr_feats.shape[-1] - padding_lr[2] // 2,
-            ]
-            lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
-            feats_path = save_path.joinpath("lr_feats.npy")
-            np.save(feats_path, lr_feats.cpu().numpy())
-            logger.info(f"Saved features to {feats_path}")
+                padding = vol_metadata["padding"]
+                scale_factor = (
+                    volume.shape[-3] / lr_feats.shape[-3],
+                    volume.shape[-2] / lr_feats.shape[-2],
+                    volume.shape[-1] / lr_feats.shape[-1],
+                )
+                padding_lr = (
+                    math.floor(padding[0] / scale_factor[0]),
+                    math.floor(padding[1] / scale_factor[1]),
+                    math.floor(padding[2] / scale_factor[2]),
+                )
+                lr_feats = lr_feats[
+                    :,
+                    padding_lr[0] // 2 : lr_feats.shape[-3] - padding_lr[0] // 2,
+                    padding_lr[1] // 2 : lr_feats.shape[-2] - padding_lr[1] // 2,
+                    padding_lr[2] // 2 : lr_feats.shape[-1] - padding_lr[2] // 2,
+                ]
+                lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
+                feats_path = save_path.joinpath("lr_feats.npy")
+                np.save(feats_path, lr_feats.cpu().numpy())
+                logger.info(f"Saved features to {feats_path}")
 
     predict()
 

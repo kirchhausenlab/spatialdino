@@ -104,36 +104,37 @@ class InferenceDataset(Dataset):
         save_path = self.save_path.joinpath(file.stem)
         save_path.mkdir(parents=True, exist_ok=True)
         raw_volume_original = io.imread(file)
-        raw_volume = raw_volume_original.astype(np.float32)
+        raw_volume_unnorm = raw_volume_original
 
-        assert raw_volume.ndim == 3, (
-            f"raw_volume dim {raw_volume.ndim} != 3, expected [Z, Y, X] dims"
-        )
-
-        io.imsave(
-            save_path.joinpath("volume_unnorm.tif"),
-            raw_volume_original,
-            check_contrast=False,
+        assert raw_volume_unnorm.ndim == 3, (
+            f"raw_volume dim {raw_volume_unnorm.ndim} != 3, expected [Z, Y, X] dims"
         )
 
         if self.crop_params != (0, 0, 0, 0, 0, 0):
             # Use provided crop parameters with existing logic
             start_z, end_z, start_y, end_y, start_x, end_x = self.crop_params
-            end_z = end_z if end_z > 0 else raw_volume.shape[0]
-            end_y = end_y if end_y > 0 else raw_volume.shape[1]
-            end_x = end_x if end_x > 0 else raw_volume.shape[2]
+            end_z = end_z if end_z > 0 else raw_volume_unnorm.shape[0]
+            end_y = end_y if end_y > 0 else raw_volume_unnorm.shape[1]
+            end_x = end_x if end_x > 0 else raw_volume_unnorm.shape[2]
             crop_params = (start_z, end_z, start_y, end_y, start_x, end_x)
 
-            validate_crop_params(crop_params, raw_volume.shape)
-    
+            validate_crop_params(crop_params, raw_volume_unnorm.shape)
+
             # Extract the crop coordinates for slicing
             start_z, end_z, start_y, end_y, start_x, end_x = crop_params
-            raw_volume = raw_volume[
+            raw_volume_unnorm = raw_volume_unnorm[
                 start_z:end_z,
                 start_y:end_y,
                 start_x:end_x,
             ]
 
+        io.imsave(
+            save_path.joinpath("volume_unnorm.tif"),
+            raw_volume_unnorm,
+            check_contrast=False,
+        )
+
+        raw_volume = raw_volume_unnorm.astype(np.float32)
         raw_volume = median_fill(raw_volume)
 
         if self.isotropic_scale_factor != (1.0, 1.0, 1.0):
@@ -158,11 +159,11 @@ class InferenceDataset(Dataset):
 
         Z, Y, X = original_dims
 
-        assert self.config.upsample_factor >= 1
+        assert all(factor >= 1 for factor in self.upsample_factor)
 
-        Z = int(Z * self.config.upsample_factor * self.isotropic_scale_factor[0])
-        Y = int(Y * self.config.upsample_factor * self.isotropic_scale_factor[1])
-        X = int(X * self.config.upsample_factor * self.isotropic_scale_factor[2])
+        Z = int(Z * self.upsample_factor[0])
+        Y = int(Y * self.upsample_factor[1])
+        X = int(X * self.upsample_factor[2])
 
         if isinstance(self.config.chunk_size, (int, float)):
             assert 0.0 < self.config.chunk_size <= 1.0, (
@@ -243,16 +244,12 @@ class InferenceTransform:
             float(self.upsample_factor[1]),
             float(self.upsample_factor[2]),
         )  # type: ignore
-        isotropic_scale_factor_float = (
-            float(self.isotropic_scale_factor[0]),
-            float(self.isotropic_scale_factor[1]),
-            float(self.isotropic_scale_factor[2]),
-        )  # type: ignore
 
         self.transform_fn = partial(
             make_inference_transform,
             upsample_factor=upsample_factor_float,
-            isotropic_scale_factor=isotropic_scale_factor_float,
+            # The dataset already applies anisotropy correction before normalization.
+            isotropic_scale_factor=(1.0, 1.0, 1.0),
             chunk_interpolate=True,
             antialias=False,
             image_key="image",

@@ -6,11 +6,11 @@ import torch
 import torch.amp
 import torch.distributed
 import torch.nn.functional as F
-from natsort import natsorted
 from skimage import io
 
 from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data.utils import median_fill, validate_crop_params
+from spatialdino.inference.input_files import list_tiff_paths
 from spatialdino.utils.misc import make_3tuple
 
 
@@ -26,7 +26,7 @@ logger = logging.getLogger("inference_3d")
 
 def main() -> None:
     config = parse_config(CONFIG_PATH.joinpath("inference.yaml"))  # type: ignore
-    fnames = natsorted(list(Path(config.file_path).glob("*.tif")))  # type: ignore
+    fnames = list_tiff_paths(config.file_path)  # type: ignore[arg-type]
     file_start = int(getattr(config, "file_start", 0) or 0)
     file_end = getattr(config, "file_end", None)
     fnames = fnames[file_start:file_end]
