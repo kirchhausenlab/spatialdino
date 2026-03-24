@@ -1,12 +1,10 @@
 import datetime
 import logging
-import math
-import sys
 import time
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import webdataset as wds
@@ -25,7 +23,7 @@ from spatialdino.data.dataset import custom_train_unbatched, make_webdataset
 from spatialdino.data.transforms import PreTrainTransform
 from spatialdino.logging import MetricLogger, SmoothedValue, setup_logging
 from spatialdino.logging.wandb import init_wandb
-from spatialdino.loss.dino_clstoken_loss import DINOLoss
+from spatialdino.loss.dino_clstoken_loss import DINOLoss, split_sample_major_batch
 from spatialdino.loss.ibot_patch_loss import iBOTPatchLoss
 from spatialdino.loss.koleo_loss import KoLeoLoss
 from spatialdino.models.ssl import SSL
@@ -102,6 +100,49 @@ def _log_pretrain_step(
                 data=str(data_time),
             )
         )
+
+
+def _pairwise_dino_loss(
+    loss_fn: DINOLoss,
+    student_views: Tuple[torch.Tensor, ...],
+    teacher_views: Tuple[torch.Tensor, ...],
+    skip_matching_teacher_view: bool = False,
+) -> torch.Tensor:
+    if student_views:
+        total_loss = student_views[0].new_zeros(())
+    elif teacher_views:
+        total_loss = teacher_views[0].new_zeros(())
+    else:
+        raise ValueError("Expected at least one student or teacher view.")
+
+    for student_index, student_view in enumerate(student_views):
+        current_teacher_views = teacher_views
+        if skip_matching_teacher_view:
+            current_teacher_views = (
+                teacher_views[:student_index] + teacher_views[student_index + 1 :]
+            )
+        if not current_teacher_views:
+            continue
+        total_loss = total_loss + loss_fn(
+            student_output_list=[student_view],
+            teacher_out_softmaxed_centered_list=current_teacher_views,
+        )
+
+    return total_loss
+
+
+def _reduce_loss_dict(loss_dict: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    reduced_loss_dict = {}
+    world_size = dist.get_world_size()
+
+    for key, value in loss_dict.items():
+        reduced_value = value.detach().clone()
+        if world_size > 1:
+            torch.distributed.all_reduce(reduced_value)
+            reduced_value /= world_size
+        reduced_loss_dict[key] = reduced_value.item()
+
+    return reduced_loss_dict
 
 
 def main():
@@ -434,31 +475,43 @@ def train(
                 enabled=config.use_amp,
             )
 
-            n_local_crops_loss_terms = max(
-                config.n_local_crops * config.n_global_crops, 1
+            n_local_crops_loss_terms = config.n_local_crops * config.n_global_crops
+            n_global_crops_loss_terms = max(config.n_global_crops - 1, 0) * (
+                config.n_global_crops
             )
-            n_global_crops_loss_terms = (
-                config.n_global_crops - 1
-            ) * config.n_global_crops
+            n_dino_loss_terms = max(
+                n_global_crops_loss_terms + n_local_crops_loss_terms,
+                1,
+            )
 
             if do_dino:
-                dino_global_cls_loss = latent_loss_fn["cls_token"](
-                    student_output_list=[student_global_output["cls_token_after_head"]],
-                    teacher_out_softmaxed_centered_list=[
-                        teacher_global_output["cls_token_softmaxed_centered"].flatten(0, 1)
-                    ],
-                ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
+                student_global_cls_outputs = split_sample_major_batch(
+                    student_global_output["cls_token_after_head"],
+                    config.n_global_crops,
+                )
+                teacher_global_cls_outputs = split_sample_major_batch(
+                    teacher_global_output["cls_token_softmaxed_centered"],
+                    config.n_global_crops,
+                )
+                student_local_cls_outputs = split_sample_major_batch(
+                    student_local_output["cls_token_after_head"],
+                    config.n_local_crops,
+                )
+
+                dino_global_cls_loss = _pairwise_dino_loss(
+                    loss_fn=latent_loss_fn["cls_token"],
+                    student_views=student_global_cls_outputs,
+                    teacher_views=teacher_global_cls_outputs,
+                    skip_matching_teacher_view=True,
+                ) / n_dino_loss_terms
                 loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
                 latent_loss += config.dino_loss_weight * dino_global_cls_loss
 
-                dino_local_cls_loss = latent_loss_fn["cls_token"](
-                    student_output_list=student_local_output["cls_token_after_head"].chunk(
-                        config.n_local_crops
-                    ),
-                    teacher_out_softmaxed_centered_list=teacher_global_output[
-                        "cls_token_softmaxed_centered"
-                    ],
-                ) / (n_global_crops_loss_terms + n_local_crops_loss_terms)
+                dino_local_cls_loss = _pairwise_dino_loss(
+                    loss_fn=latent_loss_fn["cls_token"],
+                    student_views=student_local_cls_outputs,
+                    teacher_views=teacher_global_cls_outputs,
+                ) / n_dino_loss_terms
                 loss_dict["dino_local_cls_loss"] = dino_local_cls_loss
 
                 latent_loss += config.dino_loss_weight * dino_local_cls_loss
@@ -466,9 +519,7 @@ def train(
                 if do_koleo:
                     koleo_loss = sum(
                         latent_loss_fn["koleo"](p.squeeze(0))
-                        for p in student_global_output["cls_token_after_head"].chunk(
-                            config.n_global_crops
-                        )
+                        for p in student_global_cls_outputs
                     )
                     loss_dict["koleo_loss"] = koleo_loss / config.n_global_crops
                     latent_loss += config.koleo_loss_weight * koleo_loss
@@ -488,6 +539,26 @@ def train(
 
             loss_dict["latent_loss"] = latent_loss
             loss += latent_loss
+
+            local_has_nonfinite_loss = ~torch.isfinite(
+                torch.stack([value.detach().float() for value in loss_dict.values()])
+            ).all()
+            has_nonfinite_loss = dist.any_true(local_has_nonfinite_loss)
+            if has_nonfinite_loss:
+                if local_has_nonfinite_loss.item():
+                    logger.error(
+                        "Encountered non-finite local loss on rank %d at optimizer step %d: %s",
+                        rank,
+                        step + 1,
+                        {k: float(v.detach().cpu()) for k, v in loss_dict.items()},
+                    )
+                else:
+                    logger.error(
+                        "Encountered non-finite loss on another rank at optimizer step %d; aborting all ranks.",
+                        step + 1,
+                    )
+                optimizer.zero_grad(set_to_none=True)
+                raise RuntimeError("Encountered non-finite loss during pretraining.")
 
             loss /= accum_iter
 
@@ -517,20 +588,9 @@ def train(
             # perform teacher EMA update
             model.update_teacher(teacher_momentum=mom)
 
-        if dist.get_world_size() > 1:
-            for v in loss_dict.values():
-                torch.distributed.all_reduce(v)
-
-        loss_dict_reduced = {
-            k: v.item() / dist.get_world_size() for k, v in loss_dict.items()
-        }
+        loss_dict_reduced = _reduce_loss_dict(loss_dict)
 
         loss_value = loss_dict_reduced["latent_loss"]
-
-        if not math.isfinite(loss_value):
-            logger.error("Loss is {}, stopping training".format(loss_value))
-            logger.error(f"Loss dict: {loss_dict}")
-            sys.exit(1)
 
         for key, value in loss_dict_reduced.items():
             step_loss_sums[key] += value

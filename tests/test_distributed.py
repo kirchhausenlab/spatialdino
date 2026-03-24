@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+
+import torch
 
 import spatialdino.distributed as dist
 
@@ -28,6 +31,23 @@ class _NoSyncRecorder:
 
 
 class DistributedUtilsTests(unittest.TestCase):
+    def test_any_true_returns_local_flag_without_distributed_training(self) -> None:
+        self.assertFalse(dist.any_true(False))
+        self.assertTrue(dist.any_true(True))
+
+    def test_any_true_reduces_truthy_flags_across_ranks(self) -> None:
+        def _set_true(tensor: torch.Tensor, op=None) -> None:
+            tensor.fill_(1)
+
+        with patch("spatialdino.distributed.dist.is_available", return_value=True), patch(
+            "spatialdino.distributed.dist.is_initialized",
+            return_value=True,
+        ), patch(
+            "spatialdino.distributed.dist.all_reduce",
+            side_effect=_set_true,
+        ):
+            self.assertTrue(dist.any_true(torch.tensor(0, dtype=torch.int32)))
+
     def test_should_sync_gradients_without_accumulation(self) -> None:
         self.assertTrue(
             dist.should_sync_gradients(

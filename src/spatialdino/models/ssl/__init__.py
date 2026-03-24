@@ -152,7 +152,7 @@ class SSL(nn.Module):
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
-    ) -> Dict[str, torch.Tensor]:
+        ) -> Dict[str, torch.Tensor]:
         with torch.no_grad():
             with torch.amp.autocast(
                 device_type=device_type,
@@ -160,14 +160,6 @@ class SSL(nn.Module):
                 enabled=enabled,
             ):
                 output = self.teacher["encoder"](x, masks=masks)
-                output["x_norm_clstoken"] = torch.flip(
-                    output["x_norm_clstoken"].view(
-                        self.config.n_global_crops, -1, self.config.embed_dim
-                    ),
-                    (0,),
-                ).flatten(
-                    0, 1
-                )  # flipped so A is matched to B in the global crops dino loss
             if self.do_dino:
                 output["cls_token_after_head"] = self.teacher["dino_head"](
                     output["x_norm_clstoken"]
@@ -178,10 +170,6 @@ class SSL(nn.Module):
                             output["cls_token_after_head"],
                             teacher_temp=teacher_temp,
                         )
-                    ).view(
-                        self.config.n_global_crops,
-                        -1,
-                        *output["cls_token_after_head"].shape[1:],
                     )
                     latent_loss_fn["cls_token"].update_center(
                         output["cls_token_after_head"]
@@ -192,10 +180,6 @@ class SSL(nn.Module):
                             output["cls_token_after_head"],
                             teacher_temp=teacher_temp,
                         )
-                    ).view(
-                        self.config.n_global_crops,
-                        -1,
-                        *output["cls_token_after_head"].shape[1:],
                     )
                 else:
                     raise ValueError(

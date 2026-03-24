@@ -3,10 +3,13 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import torch
 from omegaconf import OmegaConf
 
+from spatialdino.loss.dino_clstoken_loss import DINOLoss, split_sample_major_batch
+from spatialdino.loss.ibot_patch_loss import iBOTPatchLoss
 from spatialdino.models.ssl import SSL
 from spatialdino.models.ssl.utils import save_model
 from spatialdino.models.utils import load_model
@@ -38,6 +41,116 @@ def make_ssl_config():
 
 
 class SSLTests(unittest.TestCase):
+    def test_split_sample_major_batch_groups_views_across_samples(self) -> None:
+        sample_major_tokens = torch.tensor([
+            [0.0],
+            [1.0],
+            [2.0],
+            [3.0],
+            [4.0],
+            [5.0],
+        ])
+
+        view_major_tokens = split_sample_major_batch(sample_major_tokens, n_views=2)
+
+        self.assertEqual(len(view_major_tokens), 2)
+        self.assertTrue(torch.equal(view_major_tokens[0], torch.tensor([[0.0], [2.0], [4.0]])))
+        self.assertTrue(torch.equal(view_major_tokens[1], torch.tensor([[1.0], [3.0], [5.0]])))
+
+    def test_split_sample_major_batch_supports_cross_view_global_pairing(self) -> None:
+        loss_fn = DINOLoss(out_dim=2, student_temp=1.0)
+        student_outputs = torch.tensor([
+            [8.0, 0.0],
+            [0.0, 8.0],
+            [8.0, 0.0],
+            [0.0, 8.0],
+        ])
+        teacher_outputs = torch.tensor([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ])
+
+        student_views = split_sample_major_batch(student_outputs, n_views=2)
+        teacher_views = split_sample_major_batch(teacher_outputs, n_views=2)
+
+        self_pair_loss = sum(
+            loss_fn([student_views[i]], (teacher_views[i],))
+            for i in range(2)
+        )
+        cross_view_loss = sum(
+            loss_fn([student_views[i]], teacher_views[:i] + teacher_views[i + 1 :])
+            for i in range(2)
+        )
+
+        self.assertLess(self_pair_loss.item(), cross_view_loss.item())
+
+    def test_dino_sinkhorn_uses_global_batch_size_when_distributed(self) -> None:
+        loss_fn = DINOLoss(out_dim=2, student_temp=1.0)
+        teacher_output = torch.tensor([[0.2, 1.1], [1.7, -0.3]], dtype=torch.float32)
+
+        def _double_in_place(tensor: torch.Tensor, async_op: bool = False):
+            tensor.mul_(2)
+            return None
+
+        with patch(
+            "spatialdino.loss.dino_clstoken_loss.dist.is_available",
+            return_value=True,
+        ), patch(
+            "spatialdino.loss.dino_clstoken_loss.dist.is_initialized",
+            return_value=True,
+        ), patch(
+            "spatialdino.loss.dino_clstoken_loss.dist.all_reduce",
+            side_effect=_double_in_place,
+        ):
+            actual = loss_fn.sinkhorn_knopp_teacher(
+                teacher_output,
+                teacher_temp=1.0,
+                n_iterations=2,
+            )
+
+        expected = teacher_output.float()
+        Q = torch.exp(expected).t()
+        K = Q.shape[0]
+        B = Q.new_tensor(float(Q.shape[1] * 2))
+        Q /= torch.sum(Q) * 2
+
+        for _ in range(2):
+            sum_of_rows = torch.sum(Q, dim=1, keepdim=True) * 2
+            Q /= sum_of_rows
+            Q /= K
+            Q /= torch.sum(Q, dim=0, keepdim=True)
+            Q /= B
+
+        expected = (Q * B).t()
+
+        self.assertTrue(torch.allclose(actual, expected, atol=1e-6))
+
+    def test_ibot_sinkhorn_skips_collectives_without_initialized_process_group(self) -> None:
+        loss_fn = iBOTPatchLoss(patch_out_dim=2, student_temp=1.0)
+        teacher_output = torch.tensor([[0.2, 1.1], [1.7, -0.3]], dtype=torch.float32)
+        n_masked_patches = torch.tensor([teacher_output.shape[0]], dtype=torch.long)
+
+        with patch(
+            "spatialdino.loss.ibot_patch_loss.dist.is_available",
+            return_value=True,
+        ), patch(
+            "spatialdino.loss.ibot_patch_loss.dist.is_initialized",
+            return_value=False,
+        ), patch(
+            "spatialdino.loss.ibot_patch_loss.dist.all_reduce",
+            side_effect=AssertionError("all_reduce should not be called"),
+        ):
+            output = loss_fn.sinkhorn_knopp_teacher(
+                teacher_output,
+                teacher_temp=1.0,
+                n_masked_patches_tensor=n_masked_patches,
+                n_iterations=1,
+            )
+
+        self.assertEqual(output.shape, teacher_output.shape)
+
     def test_teacher_starts_from_student_weights_and_is_frozen(self) -> None:
         model = SSL(make_ssl_config())
 

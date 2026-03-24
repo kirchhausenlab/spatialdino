@@ -1,9 +1,13 @@
 # Modified from https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/loss/ibot_patch_loss.py#L20
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 from torch.amp import custom_fwd
+
+
+def _is_distributed_training() -> bool:
+    return dist.is_available() and dist.is_initialized()
 
 
 class iBOTPatchLoss(nn.Module):
@@ -43,25 +47,25 @@ class iBOTPatchLoss(nn.Module):
         self, teacher_output, teacher_temp, n_masked_patches_tensor, n_iterations=3
     ):
         teacher_output = teacher_output.float()
-        # world_size = dist.get_world_size() if dist.is_initialized() else 1
+        is_distributed = _is_distributed_training()
         Q = torch.exp(
             teacher_output / teacher_temp
         ).t()  # Q is K-by-B for consistency with notations from our paper
-        # B = Q.shape[1] * world_size # number of samples to assign
-        B = n_masked_patches_tensor
-        dist.all_reduce(B)
+        B = n_masked_patches_tensor.to(device=Q.device, dtype=Q.dtype).clone()
+        if is_distributed:
+            dist.all_reduce(B)
         K = Q.shape[0]  # how many prototypes
 
         # make the matrix sums to 1
         sum_Q = torch.sum(Q)
-        if dist.is_initialized():
+        if is_distributed:
             dist.all_reduce(sum_Q)
         Q /= sum_Q
 
         for it in range(n_iterations):
             # normalize each row: total weight per prototype must be 1/K
             sum_of_rows = torch.sum(Q, dim=1, keepdim=True)
-            if dist.is_initialized():
+            if is_distributed:
                 dist.all_reduce(sum_of_rows)
             Q /= sum_of_rows
             Q /= K
@@ -124,13 +128,13 @@ class iBOTPatchLoss(nn.Module):
         self.async_batch_center = torch.sum(
             teacher_patch_tokens.mean(1), dim=0, keepdim=True
         )
-        if dist.is_initialized():
+        if _is_distributed_training():
             self.reduce_handle = dist.all_reduce(self.async_batch_center, async_op=True)
 
     @torch.no_grad()
     def apply_center_update(self):
         if not self.updated:
-            world_size = dist.get_world_size() if dist.is_initialized() else 1
+            world_size = dist.get_world_size() if _is_distributed_training() else 1
 
             if self.reduce_handle is not None:
                 self.reduce_handle.wait()

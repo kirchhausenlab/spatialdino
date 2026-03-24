@@ -5,7 +5,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -118,3 +118,18 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+
+
+def any_true(flag: Union[bool, torch.Tensor]) -> bool:
+    if isinstance(flag, torch.Tensor):
+        if flag.numel() != 1:
+            raise ValueError("Expected a scalar tensor flag.")
+        flag_tensor = flag.detach().to(dtype=torch.int32)
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        flag_tensor = torch.tensor(int(flag), dtype=torch.int32, device=device)
+
+    if is_dist_avail_and_initialized():
+        dist.all_reduce(flag_tensor, op=dist.ReduceOp.MAX)
+
+    return bool(flag_tensor.item())

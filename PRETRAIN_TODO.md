@@ -11,11 +11,11 @@ This is the consolidated to-do list for the pretraining stack, based on the revi
 7. [x] Treat `accum_iter=1` as the no-accumulation mode and ensure pretraining remains correct in that setting.
 8. [x] Add correct `DDP.no_sync()` handling for accumulation, if accumulation remains supported.
 9. [ ] Make the advertised non-distributed pretraining path actually work, or remove/support-gate it explicitly.
-10. [ ] Fix unsafe distributed failure handling so one-rank NaN/non-finite loss does not leave the other ranks hanging.
-11. [ ] Make metric synchronization guards correct in the logging utilities.
-12. [ ] Ensure iBOT and DINO Sinkhorn code paths only use distributed collectives when distributed training is actually initialized.
-13. [ ] Confirm and fix the DINO global CLS loss pairing logic.
-14. [ ] Confirm and fix Sinkhorn global batch-size handling in the DINO loss across ranks.
+10. [x] Fix unsafe distributed failure handling so one-rank NaN/non-finite loss does not leave the other ranks hanging.
+11. [x] Make metric synchronization guards correct in the logging utilities.
+12. [x] Ensure iBOT and DINO Sinkhorn code paths only use distributed collectives when distributed training is actually initialized.
+13. [x] Confirm and fix the DINO global CLS loss pairing logic.
+14. [x] Confirm and fix Sinkhorn global batch-size handling in the DINO loss across ranks.
 15. [ ] Confirm whether KoLeo should be averaged or summed across global crops, then make optimization and logging match.
 16. [ ] Make the top-level logged `loss` consistent with the reduced component losses across ranks.
 17. [x] Fix malformed logging calls in pretraining, especially the final averaged-stats log call.
