@@ -1,3 +1,4 @@
+import logging
 from skimage import io
 from functools import partial
 from typing import Any, Dict, Final, Iterable, List, Optional, Tuple, Union
@@ -19,6 +20,8 @@ from spatialdino.data.utils import (
 from spatialdino.utils.misc import make_3tuple
 import torch.nn.functional as F
 
+logger = logging.getLogger("inference_data")
+
 
 def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
     global_hist_min = getattr(config, "global_hist_min", None)
@@ -39,6 +42,69 @@ def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
         )
 
     return global_hist_min, global_hist_max
+
+
+def sanitize_nonfinite_volume(
+    volume: np.ndarray,
+    *,
+    volume_path: Union[Path, str],
+) -> np.ndarray:
+    finite_mask = np.isfinite(volume)
+    if finite_mask.all():
+        return volume
+
+    finite_values = volume[finite_mask]
+    if finite_values.size == 0:
+        raise ValueError(f"{volume_path} contains no finite voxels.")
+
+    finite_min = float(finite_values.min())
+    finite_max = float(finite_values.max())
+    finite_median = float(np.median(finite_values))
+
+    nan_mask = np.isnan(volume)
+    posinf_mask = np.isposinf(volume)
+    neginf_mask = np.isneginf(volume)
+
+    if np.any(nan_mask):
+        volume[nan_mask] = finite_median
+    if np.any(posinf_mask):
+        volume[posinf_mask] = finite_max
+    if np.any(neginf_mask):
+        volume[neginf_mask] = finite_min
+
+    logger.warning(
+        "Sanitized non-finite voxels in %s (%d NaN, %d +inf, %d -inf).",
+        volume_path,
+        int(nan_mask.sum()),
+        int(posinf_mask.sum()),
+        int(neginf_mask.sum()),
+    )
+
+    return volume
+
+
+def get_inference_pad_value(
+    image: np.ndarray,
+    mask: np.ndarray,
+    *,
+    volume_path: Union[Path, str],
+) -> float:
+    masked_values = image[mask]
+    masked_finite_values = masked_values[np.isfinite(masked_values)]
+    if masked_finite_values.size > 0:
+        return float(np.median(masked_finite_values))
+
+    finite_values = image[np.isfinite(image)]
+    if finite_values.size > 0:
+        logger.warning(
+            "Inference mask is empty or non-finite for %s; using whole-volume finite median for padding.",
+            volume_path,
+        )
+        return float(np.median(finite_values))
+
+    raise ValueError(
+        f"{volume_path} contains no finite voxels after preprocessing; cannot determine pad value."
+    )
 
 
 class InferenceDataset(Dataset):
@@ -135,6 +201,7 @@ class InferenceDataset(Dataset):
         )
 
         raw_volume = raw_volume_unnorm.astype(np.float32)
+        raw_volume = sanitize_nonfinite_volume(raw_volume, volume_path=file)
         raw_volume = median_fill(raw_volume)
 
         if self.isotropic_scale_factor != (1.0, 1.0, 1.0):
@@ -271,8 +338,11 @@ class InferenceTransform:
     ) -> Dict[str, torch.Tensor]:
         """Apply the transform to the data."""
         target_vol_size = vol_metadata["target_vol_size"]
-
-        median = np.median(data["image"][data["mask"]])
+        median = get_inference_pad_value(
+            data["image"],
+            data["mask"],
+            volume_path=vol_metadata.get("save_path", "<unknown volume>"),
+        )
 
         transform_fn = self.transform_fn(
             target_img_size=target_vol_size,

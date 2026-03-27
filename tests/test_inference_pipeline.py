@@ -118,6 +118,61 @@ class InferencePipelineTests(unittest.TestCase):
             np.testing.assert_array_equal(imsave.call_args.args[1], expected)
             self.assertEqual(Path(imsave.call_args.args[0]).name, "volume_unnorm.tif")
 
+    def test_inference_dataset_sanitizes_non_finite_voxels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            volume = np.array(
+                [
+                    [[1.0, np.nan], [2.0, np.inf]],
+                    [[3.0, -np.inf], [4.0, 5.0]],
+                ],
+                dtype=np.float32,
+            )
+            input_path = root / "sample.tiff"
+
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                chunk_size=(2, 2, 2),
+                global_hist_min=0.0,
+                global_hist_max=5.0,
+            )
+            dataset = InferenceDataset(config=config, fnames=[input_path])
+
+            with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
+                "spatialdino.data.inference.io.imsave"
+            ):
+                item = dataset[0]
+
+            self.assertTrue(np.isfinite(item["image"]).all())
+            self.assertFalse(np.isnan(item["image"]).any())
+            self.assertFalse(np.isinf(item["image"]).any())
+
+    def test_inference_dataset_rejects_volume_with_no_finite_voxels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            volume = np.full((2, 2, 2), np.nan, dtype=np.float32)
+            input_path = root / "invalid.tiff"
+
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                chunk_size=(2, 2, 2),
+            )
+            dataset = InferenceDataset(config=config, fnames=[input_path])
+
+            with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
+                "spatialdino.data.inference.io.imsave"
+            ):
+                with self.assertRaisesRegex(ValueError, "contains no finite voxels"):
+                    _ = dataset[0]
+
     def test_inference_transform_does_not_apply_anisotropy_twice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -166,3 +221,31 @@ class InferencePipelineTests(unittest.TestCase):
                 rtol=1e-5,
                 atol=1e-5,
             )
+
+    def test_inference_transform_uses_whole_volume_median_when_mask_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            image = np.arange(2 * 4 * 6, dtype=np.float32).reshape(2, 4, 6)
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                chunk_size=(2, 4, 6),
+                global_hist_min=0.0,
+                global_hist_max=1.0,
+            )
+            transform = InferenceTransform(config=config)
+            res = transform(
+                data={"image": image, "mask": np.zeros(image.shape[0], dtype=bool)},
+                vol_metadata={
+                    "target_vol_size": image.shape,
+                    "save_path": str(output_dir / "sample"),
+                },
+                chunk_interpolate=False,
+                device="cpu",
+            )
+
+            expected = np.full((1, *image.shape), np.median(image), dtype=np.float32)
+            np.testing.assert_allclose(res["volume"].numpy(), expected)
