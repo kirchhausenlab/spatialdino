@@ -21,10 +21,16 @@ All datasets and pre-trained models are publicly available through AWS S3. The d
 
 ### Download Commands
 
-**Download datasets:**
+**Download training datasets:**
 
 ```bash
 aws s3 cp s3://spatialdino/dataset_part1/ ./datasets/ --recursive --no-sign-request
+```
+
+**Download inference datasets:**
+
+```bash
+aws s3 cp s3://spatialdino/inference_data/ ./inference_data/ --recursive --no-sign-request
 ```
 
 **Download models:**
