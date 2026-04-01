@@ -158,9 +158,9 @@ class ProbabilityMapScriptTests(unittest.TestCase):
     def test_collect_samples_matches_reference_quantized_sampling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sample_dir = root / "sample_a"
-            sample_dir.mkdir()
             seg_tif = root / "seg.tif"
+            (root / "lr_feats").mkdir()
+            (root / "raw").mkdir()
 
             lr_feats = np.array(
                 [
@@ -169,17 +169,16 @@ class ProbabilityMapScriptTests(unittest.TestCase):
                 ],
                 dtype=np.float32,
             )
-            np.save(sample_dir / "lr_feats.npy", lr_feats)
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            np.save(root / "lr_feats" / "sample_a.npy", lr_feats)
+            tifffile.imwrite(root / "raw" / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint16))
             seg = np.zeros((4, 4, 4), dtype=np.uint8)
             seg[:, :, 2:] = 1
             tifffile.imwrite(seg_tif, seg)
 
             timepoint = probability_map_script.TimepointPaths(
                 name="sample_a",
-                subfolder=sample_dir,
-                lr_path=sample_dir / "lr_feats.npy",
-                raw_path=sample_dir / "volume_unnorm.tif",
+                lr_path=root / "lr_feats" / "sample_a.npy",
+                raw_path=root / "raw" / "sample_a.tif",
             )
 
             actual_bg, actual_fg, actual_names = probability_map_script.collect_samples_from_timepoint(
@@ -210,6 +209,8 @@ class ProbabilityMapScriptTests(unittest.TestCase):
     def test_run_probability_map_writes_expected_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "lr_feats").mkdir()
+            (root / "raw").mkdir()
             output_dir = root / "segmentations"
             seg_tif = root / "seg.tif"
             seg = np.zeros((4, 4, 4), dtype=np.uint8)
@@ -222,18 +223,17 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             base_feature1[:, 1, :] = 5.0
 
             for offset, name in enumerate(("sample_a", "sample_b")):
-                sample_dir = root / name
-                sample_dir.mkdir()
                 feats = np.stack((base_feature0 + offset, base_feature1 + offset), axis=-1)
-                np.save(sample_dir / "lr_feats.npy", feats)
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                np.save(root / "lr_feats" / f"{name}.npy", feats)
+                tifffile.imwrite(root / "raw" / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint16))
 
             params = probability_map_script.ProbabilityMapParams(
                 run_density_estimation=True,
+                run_stage_2=True,
                 training_timepoint="sample_a",
                 seg_tif=seg_tif,
                 valid_mask_tif=None,
-                densities_path=root / "probmap_densities.npz",
+                densities_path=output_dir / "probmap_densities.npz",
                 output_path=output_dir,
                 density_method="gpu-hist",
                 feature_batch=1,
@@ -249,10 +249,10 @@ class ProbabilityMapScriptTests(unittest.TestCase):
 
             densities_path = probability_map_script.run_probability_map(root, params=params)
 
-            self.assertEqual(densities_path, root / "probmap_densities.npz")
+            self.assertEqual(densities_path, output_dir / "probmap_densities.npz")
             self.assertTrue(densities_path.is_file())
             for name in ("sample_a", "sample_b"):
-                instance_seg_path = output_dir / f"{name}.tif"
+                instance_seg_path = output_dir / "seg_probmap" / f"{name}.tif"
                 self.assertTrue(instance_seg_path.is_file())
                 instance_seg = tifffile.imread(instance_seg_path)
                 self.assertEqual(instance_seg.shape, (4, 4, 4))

@@ -29,6 +29,16 @@ from spatialdino_server.fs_roots import _configured_fs_roots_from_env
 from spatialdino_server import jobs_api
 from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
+from spatialdino.inference.input_files import list_tiff_paths
+from spatialdino.inference.output_layout import (
+    PROBMAP_DENSITIES_FILENAME,
+    discover_inference_timepoints,
+    has_duplicate_timepoint_names,
+    inference_lr_feats_path,
+    inference_managed_output_paths,
+    norm_per_vol_stats_path as inference_norm_per_vol_stats_path,
+    probability_map_densities_path,
+)
 
 
 JOB_LOGS_DIRNAME = ".spatialdino_job_logs"
@@ -325,6 +335,7 @@ class RunProcessFeaturesRequest(BaseModel):
 class RunSegmentationRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     output_path: str | None = None
+    densities_path: str | None = None
     gpu_index: int | None = None
     mode: str = Field("voronoi_otsu", min_length=1)
     enable_voronoi_otsu: bool = True
@@ -416,19 +427,7 @@ def _validate_inference_crop_params(
 
 
 def _list_inference_tiff_paths(input_path: Path) -> list[Path]:
-    tiff_paths: list[Path] = []
-    with os.scandir(input_path) as entries:
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
-            if not entry.is_file():
-                continue
-            if not entry.name.lower().endswith((".tif", ".tiff")):
-                continue
-            tiff_paths.append(Path(entry.path))
-
-    tiff_paths.sort(key=lambda path: (path.name.casefold(), path.name))
-    return tiff_paths
+    return [path.resolve() for path in list_tiff_paths(input_path)]
 
 
 def _selected_inference_tiff_paths(input_path: Path, file_start: int, file_end: int | None) -> list[Path]:
@@ -447,6 +446,30 @@ def _list_child_directories(input_path: Path) -> list[Path]:
 
     child_dirs.sort(key=lambda path: (path.name.casefold(), path.name))
     return child_dirs
+
+
+def _post_processing_timepoints_or_error(raw_path: str) -> tuple[dict[str, Any] | None, list[str] | None]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+
+    if not input_path.exists():
+        return _invalid_process_features_input("missing", "Input folder does not exist."), None
+    if not input_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Input path is not a folder."), None
+
+    try:
+        timepoints = discover_inference_timepoints(input_path)
+    except FileNotFoundError as exc:
+        return _invalid_process_features_input("missing_required_files", str(exc)), None
+    except ValueError as exc:
+        message = str(exc)
+        if "does not contain any timepoints" in message:
+            return _invalid_process_features_input(
+                "missing_required_files",
+                "Input folder must contain matching lr_feats/*.npy and raw/*.tif files.",
+            ), None
+        return _invalid_process_features_input("missing_required_files", message), None
+
+    return None, [timepoint.name for timepoint in timepoints]
 
 
 def _invalid_process_features_input(reason_code: str, message: str) -> dict[str, Any]:
@@ -475,40 +498,16 @@ def _parse_tracking_vote_thresholds(raw_value: str) -> tuple[int, ...] | None:
 
 
 def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
-    input_path = _resolve_allowed_inference_path(raw_path)
+    error, timepoint_names = _post_processing_timepoints_or_error(raw_path)
+    if error is not None or timepoint_names is None:
+        return error or _invalid_process_features_input("missing_required_files", "Invalid input folder.")
 
-    if not input_path.exists():
-        return _invalid_process_features_input("missing", "Input folder does not exist.")
-    if not input_path.is_dir():
-        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
-
-    subfolders = _list_child_directories(input_path)
-    if not subfolders:
-        return _invalid_process_features_input("no_subfolders", "Input folder contains no subfolders.")
-
-    for subfolder in subfolders:
-        missing_files: list[str] = []
-        if not subfolder.joinpath("lr_feats.npy").is_file():
-            missing_files.append("lr_feats.npy")
-        if not subfolder.joinpath("volume_unnorm.tif").is_file():
-            missing_files.append("volume_unnorm.tif")
-
-        if missing_files:
-            if len(missing_files) == 1:
-                missing_text = missing_files[0]
-            else:
-                missing_text = ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
-            return _invalid_process_features_input(
-                "missing_required_files",
-                f"Subfolder {subfolder.name} is missing {missing_text}.",
-            )
-
-    subfolder_count = len(subfolders)
+    subfolder_count = len(timepoint_names)
     return {
         "valid": True,
-        "message": f"Valid feature folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
+        "message": f"Valid feature folder. Found {subfolder_count} timepoint{'s' if subfolder_count != 1 else ''}.",
         "subfolderCount": subfolder_count,
-        "subfolderNames": [subfolder.name for subfolder in subfolders],
+        "subfolderNames": timepoint_names,
     }
 
 
@@ -518,7 +517,7 @@ def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
         return validation
 
     input_path = _resolve_allowed_inference_path(raw_path)
-    densities_path = input_path / "probmap_densities.npz"
+    densities_path = probability_map_densities_path(input_path)
     return {
         **validation,
         "probmapDensitiesPath": str(densities_path),
@@ -527,50 +526,24 @@ def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
 
 
 def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
-    input_path = _resolve_allowed_inference_path(raw_path)
+    error, timepoint_names = _post_processing_timepoints_or_error(raw_path)
+    if error is not None or timepoint_names is None:
+        return error or _invalid_process_features_input("missing_required_files", "Invalid input folder.")
 
-    if not input_path.exists():
-        return _invalid_process_features_input("missing", "Input folder does not exist.")
-    if not input_path.is_dir():
-        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
-
-    candidate_subfolders: list[Path] = []
-    for subfolder in _list_child_directories(input_path):
-        has_lr_feats = subfolder.joinpath("lr_feats.npy").is_file()
-        has_volume = subfolder.joinpath("volume_unnorm.tif").is_file()
-        if not has_lr_feats and not has_volume:
-            continue
-        if not has_lr_feats or not has_volume:
-            missing_files: list[str] = []
-            if not has_lr_feats:
-                missing_files.append("lr_feats.npy")
-            if not has_volume:
-                missing_files.append("volume_unnorm.tif")
-            missing_text = (
-                missing_files[0]
-                if len(missing_files) == 1
-                else ", ".join(missing_files[:-1]) + f", and {missing_files[-1]}"
-            )
-            return _invalid_process_features_input(
-                "missing_required_files",
-                f"Subfolder {subfolder.name} is missing {missing_text}.",
-            )
-        candidate_subfolders.append(subfolder)
-
-    subfolder_count = len(candidate_subfolders)
+    subfolder_count = len(timepoint_names)
     if subfolder_count == 0:
-        return _invalid_process_features_input("no_subfolders", "Input folder contains no valid timepoint subfolders.")
+        return _invalid_process_features_input("no_subfolders", "Input folder contains no valid timepoints.")
     if subfolder_count < 2:
         return _invalid_process_features_input(
             "insufficient_subfolders",
-            "Tracking requires at least 2 subfolders/timepoints.",
+            "Tracking requires at least 2 timepoints.",
         )
 
     return {
         "valid": True,
-        "message": f"Valid feature folder. Found {subfolder_count} subfolder{'s' if subfolder_count != 1 else ''}.",
+        "message": f"Valid feature folder. Found {subfolder_count} timepoint{'s' if subfolder_count != 1 else ''}.",
         "subfolderCount": subfolder_count,
-        "subfolderNames": [subfolder.name for subfolder in candidate_subfolders],
+        "subfolderNames": timepoint_names,
     }
 
 
@@ -614,6 +587,11 @@ def validate_inference_input_folder(raw_path: str) -> dict[str, Any]:
     tiff_paths = _list_inference_tiff_paths(input_path)
     if not tiff_paths:
         return _invalid_inference_input("no_tiff_files", "Input folder contains no .tif or .tiff files.")
+    if has_duplicate_timepoint_names(tiff_paths):
+        return _invalid_inference_input(
+            "duplicate_timepoint_names",
+            "Input TIFF files must have unique names after removing the extension.",
+        )
 
     reference_shape: tuple[int, ...] | None = None
     reference_shape_xyz: dict[str, int] | None = None
@@ -683,7 +661,6 @@ SEGMENTATION_MODE_OPTIONS = {
     SEGMENTATION_MODE_VORONOI_OTSU,
     SEGMENTATION_MODE_PROBABILITY_MAP,
 }
-PROBABILITY_MAP_DENSITIES_FILENAME = "probmap_densities.npz"
 PROBABILITY_MAP_DENSITY_METHODS = {"kde", "gpu-hist"}
 NORMALIZATION_MODE_OPTIONS = {
     NORMALIZATION_MODE_PER_VOLUME,
@@ -710,24 +687,25 @@ def _invalid_process_features_run(reason_code: str, message: str) -> dict[str, A
 
 
 def _validate_post_processing_output_path(
-    raw_output_path: str,
+    raw_output_path: str | None,
     *,
     input_path: Path,
     label: str,
 ) -> tuple[dict[str, Any] | None, Path | None]:
+    text = (raw_output_path or "").strip()
+    if not text:
+        return None, input_path
     output_path = _resolve_allowed_inference_path(raw_output_path)
     if output_path.exists() and not output_path.is_dir():
         return _invalid_process_features_run("output_not_directory", f"{label} path is not a folder."), None
-    if _is_relative_to(output_path, input_path):
-        return _invalid_process_features_run(
-            "output_inside_input",
-            f"{label} folder cannot be the inference output folder, or a subfolder of it.",
-        ), None
     return None, output_path
 
 
-def _overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -> dict[str, Any]:
-    message = "Output folder is not empty. Confirm overwrite to erase its contents and continue."
+def _inference_overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -> dict[str, Any]:
+    message = (
+        "Inference-managed outputs already exist. Confirm overwrite to replace lr_feats/, raw/, tmp/, "
+        "and norm_per_vol.txt while preserving other files in the folder."
+    )
     return {
         "valid": True,
         "message": message,
@@ -736,6 +714,25 @@ def _overwrite_confirmation(output_path: Path, count: int, preview: list[str]) -
         "outputEntryCount": count,
         "outputEntriesPreview": preview,
     }
+
+
+def _summarize_existing_inference_outputs(output_path: Path) -> tuple[int, list[str]]:
+    existing_names: list[str] = []
+    for managed_path in inference_managed_output_paths(output_path):
+        if not managed_path.exists():
+            continue
+        suffix = "/" if managed_path.is_dir() else ""
+        existing_names.append(f"{managed_path.name}{suffix}")
+    return len(existing_names), existing_names[:10]
+
+
+def _clear_inference_managed_outputs(output_path: Path) -> None:
+    output_path.mkdir(parents=True, exist_ok=True)
+    for managed_path in inference_managed_output_paths(output_path):
+        if managed_path.is_dir():
+            shutil.rmtree(managed_path, ignore_errors=True)
+        elif managed_path.exists():
+            managed_path.unlink()
 
 
 def _coerce_start(value: int | None) -> int:
@@ -843,16 +840,16 @@ def _build_segmentation_launch_config(
         return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
 
     input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_error, output_path = _validate_post_processing_output_path(
+        payload.output_path,
+        input_path=input_path,
+        label="Segmentation output",
+    )
+    if output_error is not None or output_path is None:
+        return output_error or _invalid_process_features_run("output_not_directory", "Segmentation output is invalid."), None
     subfolder_count = int(input_validation["subfolderCount"])
 
     if segmentation_mode == SEGMENTATION_MODE_VORONOI_OTSU:
-        output_error, output_path = _validate_post_processing_output_path(
-            payload.output_path or "",
-            input_path=input_path,
-            label="Segmentation output",
-        )
-        if output_error is not None:
-            return output_error, None
         launch_config: dict[str, Any] = {
             "input_path": input_path,
             "output_path": output_path,
@@ -880,12 +877,11 @@ def _build_segmentation_launch_config(
 
     run_density_estimation = bool(payload.run_density_estimation)
     run_stage_2 = bool(payload.run_stage_2)
-    densities_path = input_path / PROBABILITY_MAP_DENSITIES_FILENAME
     training_timepoint = (payload.training_timepoint or "").strip() or None
     subfolder_names = set(input_validation.get("subfolderNames", []))
     seg_tif_path: Path | None = None
     valid_mask_tif_path: Path | None = None
-    output_path: Path | None = None
+    densities_path: Path
 
     if not run_density_estimation and not run_stage_2:
         return _invalid_process_features_run(
@@ -893,18 +889,8 @@ def _build_segmentation_launch_config(
             "Choose at least one stage: Run stage 1 and/or Run stage 2.",
         ), None
 
-    if run_stage_2:
-        output_error, output_path = _validate_post_processing_output_path(
-            payload.output_path or "",
-            input_path=input_path,
-            label="Segmentation output",
-        )
-        if output_error is not None:
-            return output_error, None
-    else:
-        output_path = densities_path
-
     if run_density_estimation:
+        densities_path = probability_map_densities_path(output_path)
         if training_timepoint is None:
             return _invalid_process_features_run(
                 "missing_training_timepoint",
@@ -929,11 +915,13 @@ def _build_segmentation_launch_config(
                     "missing_valid_mask_tif",
                     "Valid voxels mask does not exist.",
                 ), None
-    elif run_stage_2 and not densities_path.is_file():
-        return _invalid_process_features_run(
-            "missing_probmap_densities",
-            f"Could not find {PROBABILITY_MAP_DENSITIES_FILENAME} in the input folder root.",
-        ), None
+    else:
+        densities_raw = (payload.densities_path or "").strip()
+        if not densities_raw:
+            return _invalid_process_features_run("missing_probmap_densities", "Choose a Stage 1 output file."), None
+        densities_path = _resolve_allowed_inference_path(densities_raw)
+        if not densities_path.is_file():
+            return _invalid_process_features_run("missing_probmap_densities", "Stage 1 output file does not exist."), None
 
     progress_total = (2 if run_density_estimation else 0) + (subfolder_count if run_stage_2 else 0)
     launch_config: dict[str, Any] = {
@@ -1409,9 +1397,9 @@ def _build_inference_launch_config(
     selected_stems = [path.stem for path in selected_input_paths]
 
     overwrite_warning: dict[str, Any] | None = None
-    output_entry_count, output_preview = _summarize_directory(output_path)
+    output_entry_count, output_preview = _summarize_existing_inference_outputs(output_path)
     if output_entry_count > 0 and not payload.overwrite:
-        overwrite_warning = _overwrite_confirmation(output_path, output_entry_count, output_preview)
+        overwrite_warning = _inference_overwrite_confirmation(output_path, output_entry_count, output_preview)
         if require_overwrite_confirmation:
             return overwrite_warning, None
 
@@ -1517,6 +1505,8 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             "scripts/post_processing/probability_map.py",
             "--input-path",
             str(launch_config["input_path"]),
+            "--output-path",
+            str(launch_config["output_path"]),
             "--densities-path",
             str(launch_config["densities_path"]),
             "--device",
@@ -1539,7 +1529,7 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             str(launch_config["seed"]),
         ]
         if launch_config.get("run_stage_2", True):
-            command.extend(["--output-path", str(launch_config["output_path"]), "--run-stage-2"])
+            command.append("--run-stage-2")
         else:
             command.append("--skip-stage-2")
         if launch_config.get("kde_bandwidth") is not None:
@@ -1684,7 +1674,7 @@ def _render_shell_command(
 
 
 def _norm_per_vol_stats_path(output_path: Path) -> Path:
-    return output_path / "norm_per_vol.txt"
+    return inference_norm_per_vol_stats_path(output_path)
 
 
 def _parse_norm_per_vol_stats_text(text: str) -> tuple[float, float]:
@@ -1714,7 +1704,7 @@ def _canonicalize_runtime_path(path: Path | str) -> str:
 
 
 def _expected_feature_paths(output_path: Path, selected_stems: list[str]) -> list[Path]:
-    return [output_path / stem / "lr_feats.npy" for stem in selected_stems]
+    return [inference_lr_feats_path(output_path, stem) for stem in selected_stems]
 
 
 def _existing_expected_feature_paths(expected_feature_paths: list[Path]) -> list[Path]:
@@ -1843,7 +1833,7 @@ def _append_job_log_line(job: jobs_api.JobState, line: str, log_handle: TextIO |
 def _update_job_progress_from_output(
     job: jobs_api.JobState,
     line: str,
-    expected_output_dirs: set[str],
+    expected_saving_paths: set[str],
     expected_feature_paths: set[str],
     saved_feature_paths: set[str],
 ) -> None:
@@ -1853,7 +1843,7 @@ def _update_job_progress_from_output(
         saved_feature_key = _canonicalize_runtime_path(saved_path_text)
         if saved_feature_key not in expected_feature_paths:
             return
-        save_name = Path(saved_path_text).parent.name or saved_path_text
+        save_name = Path(saved_path_text).stem or saved_path_text
         with job.lock:
             if job.status != "running" or job.stop_requested or saved_feature_key in saved_feature_paths:
                 return
@@ -1866,9 +1856,9 @@ def _update_job_progress_from_output(
     if saving_match:
         save_path_text = saving_match.group(1).strip()
         save_path_key = _canonicalize_runtime_path(save_path_text)
-        if save_path_key not in expected_output_dirs:
+        if save_path_key not in expected_saving_paths:
             return
-        save_name = Path(save_path_text).name or save_path_text
+        save_name = Path(save_path_text).stem or save_path_text
         with job.lock:
             if job.status == "running" and not job.stop_requested:
                 job.current = f"Processing {save_name}"
@@ -1967,7 +1957,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
     output_path = Path(launch_config["output_path"])
     expected_feature_paths = _expected_feature_paths(output_path, launch_config["selected_stems"])
     expected_feature_path_keys = {_canonicalize_runtime_path(path) for path in expected_feature_paths}
-    expected_output_dir_keys = {_canonicalize_runtime_path(path.parent) for path in expected_feature_paths}
+    expected_saving_path_keys = expected_feature_path_keys
     saved_feature_paths: set[str] = set()
     repo_root = get_repo_root()
     log_handle = _open_job_log(job)
@@ -1993,8 +1983,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
             return
 
         if launch_config["overwrite"]:
-            output_path.mkdir(parents=True, exist_ok=True)
-            _clear_directory_contents(output_path)
+            _clear_inference_managed_outputs(output_path)
 
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -2068,7 +2057,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                     _update_job_progress_from_output(
                         job,
                         line,
-                        expected_output_dir_keys,
+                        expected_saving_path_keys,
                         expected_feature_path_keys,
                         saved_feature_paths,
                     )
@@ -2097,7 +2086,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                 job.current = "Failed"
                 if return_code == 0:
                     missing_stems = [
-                        path.parent.name for path in expected_feature_paths if not path.is_file()
+                        path.stem for path in expected_feature_paths if not path.is_file()
                     ]
                     missing_preview = ", ".join(missing_stems[:3])
                     if len(missing_stems) > 3:
@@ -2105,7 +2094,7 @@ def _run_inference_job(job: jobs_api.JobState, launch_config: dict[str, Any]) ->
                     missing_suffix = f" Missing outputs: {missing_preview}." if missing_preview else ""
                     job.error = (
                         f"Inference exited successfully but produced {saved_feature_count}/{job.total} expected "
-                        f"lr_feats.npy files.{missing_suffix}"
+                        f"feature files.{missing_suffix}"
                     )
                     job.processed = saved_feature_count
                     final_log_line = f"[server] {job.error}"

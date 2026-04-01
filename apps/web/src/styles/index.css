@@ -2214,6 +2214,7 @@ html[data-theme="dark"] .modalOverlay {
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
+  min-width: 0;
   padding: 2px 6px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
   border-radius: var(--radius);
@@ -2236,10 +2237,15 @@ html[data-theme="dark"] .modalOverlay {
 
 .pickerPathInputWrap {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .pickerPathInput {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 24px;
   padding: 0 28px 0 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
@@ -2247,6 +2253,9 @@ html[data-theme="dark"] .modalOverlay {
   background: color-mix(in srgb, var(--accent) 3%, var(--surface));
   color: var(--text);
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pickerPathInput:focus-visible {
@@ -2371,6 +2380,7 @@ html[data-theme="dark"] .modalOverlay {
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
+  flex: 0 0 auto;
   justify-content: flex-end;
   margin-left: auto;
 }
@@ -2549,18 +2559,22 @@ html[data-theme="dark"] .modalOverlay {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .pickerFooterPath {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 .pickerFooterPathLabel {
   font-size: 12px;
   color: var(--muted);
+  flex: 0 0 auto;
 }
 
 .pickerFooterPathValue {
@@ -2575,7 +2589,9 @@ html[data-theme="dark"] .modalOverlay {
   display: flex;
   align-items: center;
   min-width: 0;
-  flex: 1;
+  width: min(44ch, 100%);
+  max-width: 100%;
+  flex: 0 1 44ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2585,4 +2601,5 @@ html[data-theme="dark"] .modalOverlay {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
 }

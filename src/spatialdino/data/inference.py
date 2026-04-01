@@ -1,3 +1,4 @@
+import logging
 from skimage import io
 from functools import partial
 from typing import Any, Dict, Final, Iterable, List, Optional, Tuple, Union
@@ -16,8 +17,17 @@ from spatialdino.data.utils import (
     median_fill,
     validate_crop_params,
 )
+from spatialdino.inference.output_layout import (
+    inference_lr_feats_dir,
+    inference_lr_feats_path,
+    inference_raw_dir,
+    inference_raw_path,
+    timepoint_name_for_input,
+)
 from spatialdino.utils.misc import make_3tuple
 import torch.nn.functional as F
+
+logger = logging.getLogger("inference_data")
 
 
 def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
@@ -41,6 +51,69 @@ def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
     return global_hist_min, global_hist_max
 
 
+def sanitize_nonfinite_volume(
+    volume: np.ndarray,
+    *,
+    volume_path: Union[Path, str],
+) -> np.ndarray:
+    finite_mask = np.isfinite(volume)
+    if finite_mask.all():
+        return volume
+
+    finite_values = volume[finite_mask]
+    if finite_values.size == 0:
+        raise ValueError(f"{volume_path} contains no finite voxels.")
+
+    finite_min = float(finite_values.min())
+    finite_max = float(finite_values.max())
+    finite_median = float(np.median(finite_values))
+
+    nan_mask = np.isnan(volume)
+    posinf_mask = np.isposinf(volume)
+    neginf_mask = np.isneginf(volume)
+
+    if np.any(nan_mask):
+        volume[nan_mask] = finite_median
+    if np.any(posinf_mask):
+        volume[posinf_mask] = finite_max
+    if np.any(neginf_mask):
+        volume[neginf_mask] = finite_min
+
+    logger.warning(
+        "Sanitized non-finite voxels in %s (%d NaN, %d +inf, %d -inf).",
+        volume_path,
+        int(nan_mask.sum()),
+        int(posinf_mask.sum()),
+        int(neginf_mask.sum()),
+    )
+
+    return volume
+
+
+def get_inference_pad_value(
+    image: np.ndarray,
+    mask: np.ndarray,
+    *,
+    volume_path: Union[Path, str],
+) -> float:
+    masked_values = image[mask]
+    masked_finite_values = masked_values[np.isfinite(masked_values)]
+    if masked_finite_values.size > 0:
+        return float(np.median(masked_finite_values))
+
+    finite_values = image[np.isfinite(image)]
+    if finite_values.size > 0:
+        logger.warning(
+            "Inference mask is empty or non-finite for %s; using whole-volume finite median for padding.",
+            volume_path,
+        )
+        return float(np.median(finite_values))
+
+    raise ValueError(
+        f"{volume_path} contains no finite voxels after preprocessing; cannot determine pad value."
+    )
+
+
 class InferenceDataset(Dataset):
     EMPTY_VOXEL_THRESHOLD: Final[float] = EMPTY_VOXEL_THRESHOLD
     DTYPE_MAPPING: Final[Dict[str, torch.dtype]] = DTYPE_MAPPING
@@ -56,6 +129,10 @@ class InferenceDataset(Dataset):
         self.fnames = fnames
         self.save_path = Path(self.config.save_path)
         self.save_path.mkdir(parents=True, exist_ok=True)
+        self.lr_feats_dir = inference_lr_feats_dir(self.save_path)
+        self.raw_dir = inference_raw_dir(self.save_path)
+        self.lr_feats_dir.mkdir(parents=True, exist_ok=True)
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.upsample_factor = make_3tuple(self.config.upsample_factor)
         self.isotropic_scale_factor = make_3tuple(self.config.isotropic_scale_factor)
         self.patch_size = make_3tuple(self.config.patch_size)
@@ -101,39 +178,42 @@ class InferenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         file = self.fnames[idx]
-        save_path = self.save_path.joinpath(file.stem)
-        save_path.mkdir(parents=True, exist_ok=True)
+        timepoint_name = timepoint_name_for_input(file)
+        raw_path = inference_raw_path(self.save_path, timepoint_name)
+        lr_path = inference_lr_feats_path(self.save_path, timepoint_name)
         raw_volume_original = io.imread(file)
-        raw_volume = raw_volume_original.astype(np.float32)
+        raw_volume_unnorm = raw_volume_original
 
-        assert raw_volume.ndim == 3, (
-            f"raw_volume dim {raw_volume.ndim} != 3, expected [Z, Y, X] dims"
-        )
-
-        io.imsave(
-            save_path.joinpath("volume_unnorm.tif"),
-            raw_volume_original,
-            check_contrast=False,
+        assert raw_volume_unnorm.ndim == 3, (
+            f"raw_volume dim {raw_volume_unnorm.ndim} != 3, expected [Z, Y, X] dims"
         )
 
         if self.crop_params != (0, 0, 0, 0, 0, 0):
             # Use provided crop parameters with existing logic
             start_z, end_z, start_y, end_y, start_x, end_x = self.crop_params
-            end_z = end_z if end_z > 0 else raw_volume.shape[0]
-            end_y = end_y if end_y > 0 else raw_volume.shape[1]
-            end_x = end_x if end_x > 0 else raw_volume.shape[2]
+            end_z = end_z if end_z > 0 else raw_volume_unnorm.shape[0]
+            end_y = end_y if end_y > 0 else raw_volume_unnorm.shape[1]
+            end_x = end_x if end_x > 0 else raw_volume_unnorm.shape[2]
             crop_params = (start_z, end_z, start_y, end_y, start_x, end_x)
 
-            validate_crop_params(crop_params, raw_volume.shape)
-    
+            validate_crop_params(crop_params, raw_volume_unnorm.shape)
+
             # Extract the crop coordinates for slicing
             start_z, end_z, start_y, end_y, start_x, end_x = crop_params
-            raw_volume = raw_volume[
+            raw_volume_unnorm = raw_volume_unnorm[
                 start_z:end_z,
                 start_y:end_y,
                 start_x:end_x,
             ]
 
+        io.imsave(
+            raw_path,
+            raw_volume_unnorm,
+            check_contrast=False,
+        )
+
+        raw_volume = raw_volume_unnorm.astype(np.float32)
+        raw_volume = sanitize_nonfinite_volume(raw_volume, volume_path=file)
         raw_volume = median_fill(raw_volume)
 
         if self.isotropic_scale_factor != (1.0, 1.0, 1.0):
@@ -158,11 +238,11 @@ class InferenceDataset(Dataset):
 
         Z, Y, X = original_dims
 
-        assert self.config.upsample_factor >= 1
+        assert all(factor >= 1 for factor in self.upsample_factor)
 
-        Z = int(Z * self.config.upsample_factor * self.isotropic_scale_factor[0])
-        Y = int(Y * self.config.upsample_factor * self.isotropic_scale_factor[1])
-        X = int(X * self.config.upsample_factor * self.isotropic_scale_factor[2])
+        Z = int(Z * self.upsample_factor[0])
+        Y = int(Y * self.upsample_factor[1])
+        X = int(X * self.upsample_factor[2])
 
         if isinstance(self.config.chunk_size, (int, float)):
             assert 0.0 < self.config.chunk_size <= 1.0, (
@@ -215,7 +295,10 @@ class InferenceDataset(Dataset):
                 "padding": padding,
                 "target_shape": target_shape,
                 "chunk_size": chunk_size,
-                "save_path": str(save_path),
+                "save_path": str(self.save_path),
+                "timepoint_name": timepoint_name,
+                "raw_path": str(raw_path),
+                "lr_feats_path": str(lr_path),
             },
         }
 
@@ -243,16 +326,12 @@ class InferenceTransform:
             float(self.upsample_factor[1]),
             float(self.upsample_factor[2]),
         )  # type: ignore
-        isotropic_scale_factor_float = (
-            float(self.isotropic_scale_factor[0]),
-            float(self.isotropic_scale_factor[1]),
-            float(self.isotropic_scale_factor[2]),
-        )  # type: ignore
 
         self.transform_fn = partial(
             make_inference_transform,
             upsample_factor=upsample_factor_float,
-            isotropic_scale_factor=isotropic_scale_factor_float,
+            # The dataset already applies anisotropy correction before normalization.
+            isotropic_scale_factor=(1.0, 1.0, 1.0),
             chunk_interpolate=True,
             antialias=False,
             image_key="image",
@@ -274,8 +353,11 @@ class InferenceTransform:
     ) -> Dict[str, torch.Tensor]:
         """Apply the transform to the data."""
         target_vol_size = vol_metadata["target_vol_size"]
-
-        median = np.median(data["image"][data["mask"]])
+        median = get_inference_pad_value(
+            data["image"],
+            data["mask"],
+            volume_path=vol_metadata.get("save_path", "<unknown volume>"),
+        )
 
         transform_fn = self.transform_fn(
             target_img_size=target_vol_size,

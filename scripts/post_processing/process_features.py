@@ -7,12 +7,17 @@ import math
 import os
 from pathlib import Path
 import shutil
-from typing import Iterable
 
 import numpy as np
 import tifffile
 import torch
 import torch.nn.functional as F
+from spatialdino.inference.output_layout import (
+    HR_FEATS_DIRNAME,
+    discover_inference_timepoints,
+    process_features_hr_timepoint_dir,
+    process_features_pca_dir,
+)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -26,13 +31,17 @@ DEFAULT_PCA_BATCH_BYTES = 256 * 1024 * 1024
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Process saved spatialDINO features.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
+    parser.add_argument(
+        "--input-path",
+        required=True,
+        help="Inference output folder containing lr_feats/ and raw/.",
+    )
     parser.add_argument(
         "--output-path",
         default=None,
-        help="Folder where processed outputs are written. Defaults to the input folder.",
+        help="Root folder where processed outputs are written. Defaults to the input folder.",
     )
-    parser.add_argument("--save-pca", action="store_true", help="Save PCA volumes inside each sample folder.")
+    parser.add_argument("--save-pca", action="store_true", help="Save PCA volumes inside pca_<n_components>/.")
     parser.add_argument("--pca-components", type=int, default=3, help="Number of PCA components to save.")
     parser.add_argument("--pca-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif")
     parser.add_argument(
@@ -48,12 +57,6 @@ def parse_args() -> argparse.Namespace:
         help="Number of worker threads used for writing output files."
     )
     return parser.parse_args()
-
-
-def list_subfolders(input_path: Path) -> list[Path]:
-    subfolders = [path for path in input_path.iterdir() if path.is_dir()]
-    subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
-    return subfolders
 
 
 def read_tiff_shape(path: Path) -> tuple[int, int, int]:
@@ -185,7 +188,8 @@ def submit_save_task(
 
 
 def export_pca(
-    subfolder: Path,
+    output_root: Path,
+    timepoint_name: str,
     lr_feats: np.ndarray,
     *,
     target_shape: tuple[int, int, int],
@@ -197,7 +201,7 @@ def export_pca(
     pca_lr_channels = np.moveaxis(pca_lr, -1, 0)
     pca_hr_channels = upsample_channels(pca_lr_channels, target_shape=target_shape, device=device)
     pca_hr_uint8 = normalize_channels_to_uint8(pca_hr_channels)
-    save_path = subfolder / f"PCA_{n_components}{save_format}"
+    save_path = process_features_pca_dir(output_root, n_components) / f"{timepoint_name}{save_format}"
     if save_format == ".npy":
         save_volume(save_path, np.moveaxis(pca_hr_uint8, 0, -1), save_format)
         return
@@ -206,18 +210,12 @@ def export_pca(
         save_volume(save_path, pca_hr_uint8[0], save_format)
         return
 
-    if n_components == 3:
-        save_volume(save_path, np.moveaxis(pca_hr_uint8, 0, -1), save_format)
-        return
-
-    component_width = max(2, len(str(n_components - 1)))
-    for component_index in range(n_components):
-        component_path = subfolder / f"PCA_{n_components}_component_{component_index:0{component_width}d}{save_format}"
-        save_volume(component_path, pca_hr_uint8[component_index], save_format)
+    save_volume(save_path, np.moveaxis(pca_hr_uint8, 0, -1), save_format)
 
 
 def export_high_resolution_features(
-    subfolder: Path,
+    output_root: Path,
+    timepoint_name: str,
     lr_feats: np.ndarray,
     *,
     target_shape: tuple[int, int, int],
@@ -228,7 +226,7 @@ def export_high_resolution_features(
     channel_count = int(lr_feats.shape[-1])
     channel_width = max(3, len(str(channel_count - 1)))
     chunk_size = choose_feature_chunk_size(target_shape, channel_count)
-    hr_dir = subfolder / "hr_feats"
+    hr_dir = process_features_hr_timepoint_dir(output_root, timepoint_name)
     if hr_dir.exists():
         shutil.rmtree(hr_dir)
     hr_dir.mkdir(parents=True, exist_ok=True)
@@ -255,19 +253,51 @@ def export_high_resolution_features(
         wait_for_futures(futures)
 
 
-def validate_folder(subfolder: Path) -> tuple[Path, Path]:
-    lr_path = subfolder / "lr_feats.npy"
-    volume_path = subfolder / "volume_unnorm.tif"
-    if not lr_path.is_file():
-        raise FileNotFoundError(f"{subfolder.name} is missing lr_feats.npy.")
-    if not volume_path.is_file():
-        raise FileNotFoundError(f"{subfolder.name} is missing volume_unnorm.tif.")
-    return lr_path, volume_path
+def remove_output_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+        return
+    if path.exists():
+        path.unlink()
 
 
-def process_subfolder(
-    input_subfolder: Path,
-    output_subfolder: Path,
+def list_requested_output_paths(
+    output_path: Path,
+    *,
+    save_pca: bool,
+    pca_components: int,
+    save_high_resolution_features: bool,
+) -> list[Path]:
+    paths: list[Path] = []
+    if save_high_resolution_features:
+        paths.append(output_path / HR_FEATS_DIRNAME)
+    if save_pca:
+        paths.append(process_features_pca_dir(output_path, pca_components))
+    return paths
+
+
+def cleanup_output_root(
+    output_path: Path,
+    *,
+    save_pca: bool,
+    pca_components: int,
+    save_high_resolution_features: bool,
+) -> None:
+    output_path.mkdir(parents=True, exist_ok=True)
+    for path in list_requested_output_paths(
+        output_path,
+        save_pca=save_pca,
+        pca_components=pca_components,
+        save_high_resolution_features=save_high_resolution_features,
+    ):
+        remove_output_path(path)
+
+
+def process_timepoint(
+    timepoint_name: str,
+    lr_path: Path,
+    volume_path: Path,
+    output_root: Path,
     *,
     save_pca: bool,
     pca_components: int,
@@ -277,7 +307,6 @@ def process_subfolder(
     device: torch.device,
     io_workers: int,
 ) -> None:
-    lr_path, volume_path = validate_folder(input_subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
         raise ValueError(f"{lr_path} must be a 4D array with shape [Z, Y, X, C].")
@@ -285,7 +314,8 @@ def process_subfolder(
     target_shape = read_tiff_shape(volume_path)
     if save_pca:
         export_pca(
-            output_subfolder,
+            output_root,
+            timepoint_name,
             lr_feats,
             target_shape=target_shape,
             n_components=pca_components,
@@ -294,18 +324,14 @@ def process_subfolder(
         )
     if save_high_resolution_features:
         export_high_resolution_features(
-            output_subfolder,
+            output_root,
+            timepoint_name,
             lr_feats,
             target_shape=target_shape,
             save_format=high_resolution_format,
             device=device,
             io_workers=io_workers,
         )
-
-
-def iter_subfolders(input_path: Path) -> Iterable[Path]:
-    for subfolder in list_subfolders(input_path):
-        yield subfolder
 
 
 def main() -> None:
@@ -326,19 +352,24 @@ def main() -> None:
     device = torch.device("cuda:0")
     torch.cuda.set_device(device)
 
-    subfolders = list(iter_subfolders(input_path))
-    if not subfolders:
-        raise ValueError(f"Input folder contains no subfolders: {input_path}")
+    timepoints = discover_inference_timepoints(input_path)
+    cleanup_output_root(
+        output_path,
+        save_pca=bool(args.save_pca),
+        pca_components=int(args.pca_components),
+        save_high_resolution_features=bool(args.save_high_resolution_features),
+    )
 
     print(f"[process-features] Using device {device}", flush=True)
-    print(f"[process-features] Found {len(subfolders)} subfolders", flush=True)
+    print(f"[process-features] Found {len(timepoints)} timepoints", flush=True)
 
-    for index, subfolder in enumerate(subfolders, start=1):
-        print(f"[process-features] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
-        destination_subfolder = subfolder if output_path == input_path else output_path / subfolder.name
-        process_subfolder(
-            subfolder,
-            destination_subfolder,
+    for index, timepoint in enumerate(timepoints, start=1):
+        print(f"[process-features] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
+        process_timepoint(
+            timepoint.name,
+            timepoint.lr_path,
+            timepoint.raw_path,
+            output_path,
             save_pca=bool(args.save_pca),
             pca_components=int(args.pca_components),
             pca_format=args.pca_format,
@@ -347,7 +378,7 @@ def main() -> None:
             device=device,
             io_workers=max(1, int(args.io_workers)),
         )
-        print(f"[process-features] Completed {subfolder.name}", flush=True)
+        print(f"[process-features] Completed {timepoint.name}", flush=True)
         if device.type == "cuda":
             torch.cuda.empty_cache()
 

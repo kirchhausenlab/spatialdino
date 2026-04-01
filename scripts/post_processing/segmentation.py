@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
-from typing import Iterable
+import shutil
 
 import numpy as np
 import pyclesperanto as cle
 import tifffile
 import torch
 import torch.nn.functional as F
+from spatialdino.inference.output_layout import (
+    discover_inference_timepoints,
+    segmentation_voronoi_dir,
+)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -21,8 +24,8 @@ ATTENTION_HEAD_CHANNELS = 6
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Voronoi-Otsu segmentation on saved spatialDINO features.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-sample subfolders.")
-    parser.add_argument("--output-path", required=True, help="Folder where segmentation masks are written.")
+    parser.add_argument("--input-path", required=True, help="Inference output folder containing lr_feats/ and raw/.")
+    parser.add_argument("--output-path", required=True, help="Root folder where segmentation outputs are written.")
     parser.add_argument(
         "--enable-voronoi-otsu",
         action="store_true",
@@ -41,13 +44,6 @@ def parse_args() -> argparse.Namespace:
         help="Rolling-ball radius used for background subtraction.",
     )
     return parser.parse_args()
-
-
-def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
-    excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
-    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
-    subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
-    return subfolders
 
 
 def read_tiff_shape(path: Path) -> tuple[int, int, int]:
@@ -92,27 +88,23 @@ def upsample_scalar_volume(
     return output_tensor.cpu().numpy()
 
 
-def validate_folder(subfolder: Path) -> tuple[Path, Path]:
-    lr_path = subfolder / "lr_feats.npy"
-    volume_path = subfolder / "volume_unnorm.tif"
-    if not lr_path.is_file():
-        raise FileNotFoundError(f"{subfolder.name} is missing lr_feats.npy.")
-    if not volume_path.is_file():
-        raise FileNotFoundError(f"{subfolder.name} is missing volume_unnorm.tif.")
-    return lr_path, volume_path
+def cleanup_output_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
 
 
-def segment_subfolder(
-    subfolder: Path,
+def segment_timepoint(
+    timepoint_name: str,
+    lr_path: Path,
+    volume_path: Path,
     *,
-    output_path: Path,
+    output_root: Path,
     gaussian_blur_sigma: int,
     rolling_ball_radius: float,
     device: torch.device,
     cle_device: object,
     log_kernel: np.ndarray,
 ) -> Path:
-    lr_path, volume_path = validate_folder(subfolder)
     lr_feats = np.load(lr_path, mmap_mode="r")
     if lr_feats.ndim != 4:
         raise ValueError(f"{lr_path} must be a 4D array with shape [Z, Y, X, C].")
@@ -146,8 +138,9 @@ def segment_subfolder(
     )
     seg = cle.voronoi_otsu_labeling(gaussian_blur, spot_sigma=2, outline_sigma=2, device=cle_device)
     seg_array = np.asarray(seg).astype(np.uint32, copy=False)
+    output_path = segmentation_voronoi_dir(output_root)
     output_path.mkdir(parents=True, exist_ok=True)
-    mask_path = output_path / f"{subfolder.name}.tif"
+    mask_path = output_path / f"{timepoint_name}.tif"
     tifffile.imwrite(
         mask_path,
         seg_array,
@@ -156,11 +149,6 @@ def segment_subfolder(
         photometric="minisblack",
     )
     return mask_path
-
-
-def iter_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> Iterable[Path]:
-    for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
-        yield subfolder
 
 
 def main() -> None:
@@ -187,28 +175,29 @@ def main() -> None:
     cle_device = cle.get_device()
     kernel_fixed = np.transpose(_log_kernel((3, 3, 2), 1.0), (2, 1, 0))
 
-    subfolders = list(iter_subfolders(input_path, exclude_paths=(output_path,)))
-    if not subfolders:
-        raise ValueError(f"Input folder contains no subfolders: {input_path}")
+    timepoints = discover_inference_timepoints(input_path)
+    cleanup_output_dir(segmentation_voronoi_dir(output_path))
 
     output_path.mkdir(parents=True, exist_ok=True)
 
     print(f"[segmentation] Using torch device {device}", flush=True)
     print(f"[segmentation] Using pyclesperanto device {cle_device}", flush=True)
-    print(f"[segmentation] Found {len(subfolders)} subfolders", flush=True)
+    print(f"[segmentation] Found {len(timepoints)} timepoints", flush=True)
 
-    for index, subfolder in enumerate(subfolders, start=1):
-        print(f"[segmentation] Processing {subfolder.name} ({index}/{len(subfolders)})", flush=True)
-        segment_subfolder(
-            subfolder,
-            output_path=output_path,
+    for index, timepoint in enumerate(timepoints, start=1):
+        print(f"[segmentation] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
+        segment_timepoint(
+            timepoint.name,
+            timepoint.lr_path,
+            timepoint.raw_path,
+            output_root=output_path,
             gaussian_blur_sigma=int(args.gaussian_blur_sigma),
             rolling_ball_radius=float(args.rolling_ball_radius),
             device=device,
             cle_device=cle_device,
             log_kernel=kernel_fixed,
         )
-        print(f"[segmentation] Completed {subfolder.name}", flush=True)
+        print(f"[segmentation] Completed {timepoint.name}", flush=True)
         torch.cuda.empty_cache()
 
     print("[segmentation] Done", flush=True)
