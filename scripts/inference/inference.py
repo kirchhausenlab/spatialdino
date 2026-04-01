@@ -120,9 +120,9 @@ def main() -> None:
                 )
                 volume = torch.as_tensor(res["volume"])  # [C, Z, Y, X]
 
-                save_path = Path(vol_metadata["save_path"])
-                save_path.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Saving to {save_path}")
+                feats_path = Path(vol_metadata["lr_feats_path"])
+                feats_path.parent.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Saving to {feats_path}")
 
                 if use_streaming:
                     lr_feats = streaming_encoder.predict(
@@ -166,7 +166,6 @@ def main() -> None:
                     padding_lr[2] // 2 : lr_feats.shape[-1] - padding_lr[2] // 2,
                 ]
                 lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
-                feats_path = save_path.joinpath("lr_feats.npy")
                 np.save(feats_path, lr_feats.cpu().numpy())
                 logger.info(f"Saved features to {feats_path}")
 

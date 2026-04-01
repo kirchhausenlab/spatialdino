@@ -50,6 +50,22 @@ def make_zip_bytes(files: dict[str, bytes]) -> bytes:
     return handle.getvalue()
 
 
+def write_inference_output_timepoint(
+    root: Path,
+    name: str,
+    *,
+    lr_shape: tuple[int, ...] = (2, 2, 2, 390),
+    raw_shape: tuple[int, ...] = (4, 4, 4),
+    raw_dtype: object = np.uint8,
+) -> None:
+    lr_dir = root / "lr_feats"
+    raw_dir = root / "raw"
+    lr_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    np.save(lr_dir / f"{name}.npy", np.zeros(lr_shape, dtype=np.float32))
+    tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros(raw_shape, dtype=raw_dtype))
+
+
 class AppTests(unittest.TestCase):
     def setUp(self) -> None:
         with jobs_api._jobs_lock:
@@ -470,10 +486,7 @@ class AppTests(unittest.TestCase):
             input_dir = root / "features"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+                write_inference_output_timepoint(input_dir, name, lr_shape=(2, 2), raw_shape=(2, 3, 4))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
                 payload = app_module.validate_process_features_input_folder(str(input_dir))
@@ -482,7 +495,7 @@ class AppTests(unittest.TestCase):
             payload,
             {
                 "valid": True,
-                "message": "Valid feature folder. Found 2 subfolders.",
+                "message": "Valid feature folder. Found 2 timepoints.",
                 "subfolderCount": 2,
                 "subfolderNames": ["sample_a", "sample_b"],
             },
@@ -498,8 +511,8 @@ class AppTests(unittest.TestCase):
                 payload = app_module.validate_process_features_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
-        self.assertEqual(payload["reasonCode"], "no_subfolders")
-        self.assertEqual(payload["message"], "Input folder contains no subfolders.")
+        self.assertEqual(payload["reasonCode"], "missing_required_files")
+        self.assertEqual(payload["message"], "Input folder must contain matching lr_feats/*.npy and raw/*.tif files.")
 
     def test_validate_process_features_input_folder_ignores_hidden_subfolders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -507,10 +520,7 @@ class AppTests(unittest.TestCase):
             input_dir = root / "features"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+                write_inference_output_timepoint(input_dir, name, lr_shape=(2, 2), raw_shape=(2, 3, 4))
             hidden_dir = input_dir / ".hidden_sample"
             hidden_dir.mkdir()
 
@@ -525,44 +535,41 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir()
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 3, 4), dtype=np.uint8))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
                 payload = app_module.validate_process_features_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_a is missing lr_feats.npy.")
+        self.assertEqual(payload["message"], "Missing feature file for sample_a: sample_a.npy.")
 
     def test_validate_process_features_input_folder_rejects_missing_volume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2), dtype=np.float32))
+            lr_dir = input_dir / "lr_feats"
+            lr_dir.mkdir()
+            np.save(lr_dir / "sample_a.npy", np.zeros((2, 2), dtype=np.float32))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
                 payload = app_module.validate_process_features_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "missing_required_files")
-        self.assertEqual(payload["message"], "Subfolder sample_a is missing volume_unnorm.tif.")
+        self.assertEqual(payload["message"], "Missing raw file for sample_a: sample_a.tif.")
 
     def test_build_process_features_launch_config_accepts_valid_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "processed-output"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            write_inference_output_timepoint(input_dir, "sample_a")
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
@@ -604,11 +611,8 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "processed-output"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            write_inference_output_timepoint(input_dir, "sample_a")
 
             payload = app_module.RunProcessFeaturesRequest(
                 input_path=str(input_dir),
@@ -636,11 +640,8 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "segmentation-output"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            write_inference_output_timepoint(input_dir, "sample_a")
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -685,10 +686,7 @@ class AppTests(unittest.TestCase):
             input_dir = root / "features"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+                write_inference_output_timepoint(input_dir, name)
             np.savez_compressed(input_dir / "probmap_densities.npz", x1=np.array([], dtype=object))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -706,10 +704,7 @@ class AppTests(unittest.TestCase):
             output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+                write_inference_output_timepoint(input_dir, name)
             seg_tif = root / "seg.tif"
             valid_mask_tif = root / "valid_mask.tif"
             tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
@@ -757,7 +752,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["fg_prob_threshold"], 0.9)
         self.assertEqual(launch_config["seed"], 9)
         self.assertEqual(launch_config["progress_total"], 4)
-        self.assertEqual(launch_config["densities_path"], input_dir / "probmap_densities.npz")
+        self.assertEqual(launch_config["densities_path"], output_dir / "probmap_densities.npz")
         self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_segmentation_command(launch_config)
@@ -776,11 +771,8 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "segmentation-output"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            write_inference_output_timepoint(input_dir, "sample_a")
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -788,6 +780,7 @@ class AppTests(unittest.TestCase):
                 gpu_index=0,
                 mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
                 run_density_estimation=False,
+                densities_path=None,
             )
 
             with (
@@ -809,10 +802,7 @@ class AppTests(unittest.TestCase):
             input_dir = root / "features"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
                 payload = app_module.validate_tracking_input_folder(str(input_dir))
@@ -821,7 +811,7 @@ class AppTests(unittest.TestCase):
             payload,
             {
                 "valid": True,
-                "message": "Valid feature folder. Found 2 subfolders.",
+                "message": "Valid feature folder. Found 2 timepoints.",
                 "subfolderCount": 2,
                 "subfolderNames": ["sample_a", "sample_b"],
             },
@@ -831,18 +821,15 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+            write_inference_output_timepoint(input_dir, "sample_a", raw_dtype=np.uint16)
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
                 payload = app_module.validate_tracking_input_folder(str(input_dir))
 
         self.assertEqual(payload["valid"], False)
         self.assertEqual(payload["reasonCode"], "insufficient_subfolders")
-        self.assertEqual(payload["message"], "Tracking requires at least 2 subfolders/timepoints.")
+        self.assertEqual(payload["message"], "Tracking requires at least 2 timepoints.")
 
     def test_validate_tracking_segmentation_folder_rejects_missing_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -852,10 +839,7 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
             tifffile.imwrite(segmentation_dir / "sample_a.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -876,10 +860,7 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
                 tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -901,10 +882,7 @@ class AppTests(unittest.TestCase):
             input_dir = root / "features"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
             hidden_dir = input_dir / ".hidden_sample"
             hidden_dir.mkdir()
 
@@ -923,10 +901,7 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
                 tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
@@ -986,10 +961,7 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
                 tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
@@ -1120,10 +1092,7 @@ class AppTests(unittest.TestCase):
             input_dir.mkdir()
             segmentation_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint16))
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
                 tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
 
             payload = app_module.RunTrackingRequest(
@@ -1145,11 +1114,8 @@ class AppTests(unittest.TestCase):
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "segmentation-output"
-            sample_dir = input_dir / "sample_a"
             input_dir.mkdir()
-            sample_dir.mkdir()
-            np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-            tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+            write_inference_output_timepoint(input_dir, "sample_a")
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -1192,10 +1158,7 @@ class AppTests(unittest.TestCase):
             output_dir = root / "segmentation-output"
             input_dir.mkdir()
             for name in ("sample_a", "sample_b"):
-                sample_dir = input_dir / name
-                sample_dir.mkdir()
-                np.save(sample_dir / "lr_feats.npy", np.zeros((2, 2, 2, 390), dtype=np.float32))
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", np.zeros((4, 4, 4), dtype=np.uint8))
+                write_inference_output_timepoint(input_dir, name)
             seg_tif = root / "seg.tif"
             tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
 
@@ -1233,7 +1196,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.total, 4)
             self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
-    def test_run_inference_requests_overwrite_confirmation_for_nonempty_output(self) -> None:
+    def test_run_inference_requests_overwrite_confirmation_for_existing_inference_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "input"
@@ -1243,7 +1206,7 @@ class AppTests(unittest.TestCase):
             output_dir.mkdir()
             models_dir.mkdir()
             tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
-            (output_dir / "existing.txt").write_text("x", encoding="utf-8")
+            write_inference_output_timepoint(output_dir, "stack0001")
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1273,8 +1236,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response["submitted"], False)
         self.assertEqual(response["valid"], True)
         self.assertEqual(response["requiresOverwriteConfirmation"], True)
-        self.assertEqual(response["outputEntryCount"], 1)
-        self.assertEqual(response["outputEntriesPreview"], ["existing.txt"])
+        self.assertEqual(response["outputEntryCount"], 2)
+        self.assertEqual(response["outputEntriesPreview"], ["lr_feats/", "raw/"])
         with jobs_api._jobs_lock:
             self.assertEqual(jobs_api._jobs, {})
 
@@ -1520,7 +1483,7 @@ class AppTests(unittest.TestCase):
             output_dir.mkdir()
             models_dir.mkdir()
             tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
-            (output_dir / "existing.txt").write_text("x", encoding="utf-8")
+            write_inference_output_timepoint(output_dir, "stack0001")
             (models_dir / "backbone.pth").write_text("", encoding="utf-8")
 
             payload = app_module.RunInferenceRequest(
@@ -1551,7 +1514,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response["requiresOverwriteConfirmation"], True)
         self.assertEqual(
             response["overwriteMessage"],
-            "Output folder is not empty. Confirm overwrite to erase its contents and continue.",
+            "Inference-managed outputs already exist. Confirm overwrite to replace lr_feats/, raw/, tmp/, and norm_per_vol.txt while preserving other files in the folder.",
         )
         self.assertIn("CUDA_VISIBLE_DEVICES=0", response["command"])
         self.assertIn("PYTHONUNBUFFERED=1", response["command"])
@@ -1660,13 +1623,13 @@ class AppTests(unittest.TestCase):
             status="running",
             total=1,
         )
-        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
-        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/lr_feats/stack0001.npy")}
+        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/lr_feats/stack0001.npy")}
         saved_feature_paths: set[str] = set()
 
         app_module._update_job_progress_from_output(
             job,
-            "Saving to /tmp/out/stack0001",
+            "Saving to /tmp/out/lr_feats/stack0001.npy",
             expected_output_dirs,
             expected_feature_paths,
             saved_feature_paths,
@@ -1677,7 +1640,7 @@ class AppTests(unittest.TestCase):
 
         app_module._update_job_progress_from_output(
             job,
-            "Saved features to /tmp/out/stack0001/lr_feats.npy",
+            "Saved features to /tmp/out/lr_feats/stack0001.npy",
             expected_output_dirs,
             expected_feature_paths,
             saved_feature_paths,
@@ -1694,20 +1657,20 @@ class AppTests(unittest.TestCase):
             status="running",
             total=1,
         )
-        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/stack0001")}
-        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/stack0001/lr_feats.npy")}
+        expected_output_dirs = {app_module._canonicalize_runtime_path("/tmp/out/lr_feats/stack0001.npy")}
+        expected_feature_paths = {app_module._canonicalize_runtime_path("/tmp/out/lr_feats/stack0001.npy")}
         saved_feature_paths: set[str] = set()
 
         app_module._update_job_progress_from_output(
             job,
-            "Saving to /tmp/out/stack0002",
+            "Saving to /tmp/out/lr_feats/stack0002.npy",
             expected_output_dirs,
             expected_feature_paths,
             saved_feature_paths,
         )
         app_module._update_job_progress_from_output(
             job,
-            "Saved features to /tmp/out/stack0002/lr_feats.npy",
+            "Saved features to /tmp/out/lr_feats/stack0002.npy",
             expected_output_dirs,
             expected_feature_paths,
             saved_feature_paths,
@@ -1721,9 +1684,8 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output_dir = root / "output"
-            (output_dir / "stack0001").mkdir(parents=True)
-            (output_dir / "stack0002").mkdir(parents=True)
-            (output_dir / "stack0002" / "lr_feats.npy").write_bytes(b"")
+            (output_dir / "lr_feats").mkdir(parents=True)
+            (output_dir / "lr_feats" / "stack0002.npy").write_bytes(b"")
 
             expected_paths = app_module._expected_feature_paths(output_dir, ["stack0001"])
             existing_paths = app_module._existing_expected_feature_paths(expected_paths)
@@ -1745,8 +1707,8 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output_dir = root / "output"
-            (output_dir / "other").mkdir(parents=True)
-            (output_dir / "other" / "lr_feats.npy").write_bytes(b"")
+            (output_dir / "lr_feats").mkdir(parents=True)
+            (output_dir / "lr_feats" / "other.npy").write_bytes(b"")
             job = jobs_api.JobState(
                 job_id="job-1",
                 owner_client_id="client-1234",
@@ -1772,7 +1734,7 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(job.status, "failed")
                 self.assertEqual(job.current, "Failed")
                 self.assertEqual(job.exit_code, 0)
-                self.assertIn("0/1 expected lr_feats.npy files", job.error)
+                self.assertIn("0/1 expected feature files", job.error)
                 self.assertIn("stack0001", job.error)
                 self.assertTrue(job.log_available)
                 self.assertIsNotNone(job.command)
@@ -1781,7 +1743,7 @@ class AppTests(unittest.TestCase):
             self.assertTrue(Path(job.log_path).is_file())
             log_text = Path(job.log_path).read_text(encoding="utf-8")
             self.assertIn("[server] Command:", log_text)
-            self.assertIn("0/1 expected lr_feats.npy files", log_text)
+            self.assertIn("0/1 expected feature files", log_text)
 
     def test_run_inference_job_auto_global_norm_runs_prepass_then_inference(self) -> None:
         class FakeProcess:
@@ -1843,7 +1805,7 @@ class AppTests(unittest.TestCase):
                 )
 
             def write_inference_output() -> None:
-                feats_path = output_dir / "stack0001" / "lr_feats.npy"
+                feats_path = output_dir / "lr_feats" / "stack0001.npy"
                 feats_path.parent.mkdir(parents=True, exist_ok=True)
                 feats_path.write_bytes(b"")
 
@@ -1857,8 +1819,8 @@ class AppTests(unittest.TestCase):
                     )
                 return FakeProcess(
                     (
-                        f"Saving to {output_dir / 'stack0001'}\n",
-                        f"Saved features to {output_dir / 'stack0001' / 'lr_feats.npy'}\n",
+                        f"Saving to {output_dir / 'lr_feats' / 'stack0001.npy'}\n",
+                        f"Saved features to {output_dir / 'lr_feats' / 'stack0001.npy'}\n",
                     ),
                     0,
                     on_wait=write_inference_output,

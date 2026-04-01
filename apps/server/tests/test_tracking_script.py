@@ -79,14 +79,13 @@ class TrackingScriptTests(unittest.TestCase):
     def test_run_tracking_writes_final_tracks_csv_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "lr_feats").mkdir()
+            (root / "raw").mkdir()
             segmentation_dir = root / "segmentations"
             segmentation_dir.mkdir()
             for index, x_start, amplitude in ((1, 1, 120), (2, 2, 140)):
-                sample_dir = root / f"stack{index:04d}"
-                sample_dir.mkdir()
-
                 feats = np.zeros((2, 2, 2, 390), dtype=np.float32)
-                np.save(sample_dir / "lr_feats.npy", feats)
+                np.save(root / "lr_feats" / f"stack{index:04d}.npy", feats)
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
@@ -94,7 +93,7 @@ class TrackingScriptTests(unittest.TestCase):
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
                 tifffile.imwrite(
-                    sample_dir / "volume_unnorm.tif",
+                    root / "raw" / f"stack{index:04d}.tif",
                     raw,
                     photometric="minisblack",
                 )
@@ -135,21 +134,20 @@ class TrackingScriptTests(unittest.TestCase):
     def test_run_tracking_can_leave_z_unflipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "lr_feats").mkdir()
+            (root / "raw").mkdir()
             segmentation_dir = root / "segmentations"
             segmentation_dir.mkdir()
             for index, x_start, amplitude in ((1, 1, 120), (2, 2, 140)):
-                sample_dir = root / f"stack{index:04d}"
-                sample_dir.mkdir()
-
                 feats = np.zeros((2, 2, 2, 390), dtype=np.float32)
-                np.save(sample_dir / "lr_feats.npy", feats)
+                np.save(root / "lr_feats" / f"stack{index:04d}.npy", feats)
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
                 tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", raw, photometric="minisblack")
+                tifffile.imwrite(root / "raw" / f"stack{index:04d}.tif", raw, photometric="minisblack")
 
             output_path = tracking_script.run_tracking(
                 root,
@@ -174,22 +172,21 @@ class TrackingScriptTests(unittest.TestCase):
     def test_run_tracking_can_write_to_custom_output_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "lr_feats").mkdir()
+            (root / "raw").mkdir()
             segmentation_dir = root / "segmentations"
             output_dir = root / "tracking-output"
             segmentation_dir.mkdir()
             for index, x_start, amplitude in ((1, 1, 120), (2, 2, 140)):
-                sample_dir = root / f"stack{index:04d}"
-                sample_dir.mkdir()
-
                 feats = np.zeros((2, 2, 2, 390), dtype=np.float32)
-                np.save(sample_dir / "lr_feats.npy", feats)
+                np.save(root / "lr_feats" / f"stack{index:04d}.npy", feats)
 
                 seg = np.zeros((4, 4, 4), dtype=np.uint32)
                 seg[1:3, 1:3, x_start : x_start + 2] = 1
                 tifffile.imwrite(segmentation_dir / f"stack{index:04d}.tif", seg, photometric="minisblack")
                 raw = np.zeros((4, 4, 4), dtype=np.uint16)
                 raw[1:3, 1:3, x_start : x_start + 2] = amplitude
-                tifffile.imwrite(sample_dir / "volume_unnorm.tif", raw, photometric="minisblack")
+                tifffile.imwrite(root / "raw" / f"stack{index:04d}.tif", raw, photometric="minisblack")
 
             output_path = tracking_script.run_tracking(
                 root,

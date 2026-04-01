@@ -17,6 +17,13 @@ from spatialdino.data.utils import (
     median_fill,
     validate_crop_params,
 )
+from spatialdino.inference.output_layout import (
+    inference_lr_feats_dir,
+    inference_lr_feats_path,
+    inference_raw_dir,
+    inference_raw_path,
+    timepoint_name_for_input,
+)
 from spatialdino.utils.misc import make_3tuple
 import torch.nn.functional as F
 
@@ -122,6 +129,10 @@ class InferenceDataset(Dataset):
         self.fnames = fnames
         self.save_path = Path(self.config.save_path)
         self.save_path.mkdir(parents=True, exist_ok=True)
+        self.lr_feats_dir = inference_lr_feats_dir(self.save_path)
+        self.raw_dir = inference_raw_dir(self.save_path)
+        self.lr_feats_dir.mkdir(parents=True, exist_ok=True)
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.upsample_factor = make_3tuple(self.config.upsample_factor)
         self.isotropic_scale_factor = make_3tuple(self.config.isotropic_scale_factor)
         self.patch_size = make_3tuple(self.config.patch_size)
@@ -167,8 +178,9 @@ class InferenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         file = self.fnames[idx]
-        save_path = self.save_path.joinpath(file.stem)
-        save_path.mkdir(parents=True, exist_ok=True)
+        timepoint_name = timepoint_name_for_input(file)
+        raw_path = inference_raw_path(self.save_path, timepoint_name)
+        lr_path = inference_lr_feats_path(self.save_path, timepoint_name)
         raw_volume_original = io.imread(file)
         raw_volume_unnorm = raw_volume_original
 
@@ -195,7 +207,7 @@ class InferenceDataset(Dataset):
             ]
 
         io.imsave(
-            save_path.joinpath("volume_unnorm.tif"),
+            raw_path,
             raw_volume_unnorm,
             check_contrast=False,
         )
@@ -283,7 +295,10 @@ class InferenceDataset(Dataset):
                 "padding": padding,
                 "target_shape": target_shape,
                 "chunk_size": chunk_size,
-                "save_path": str(save_path),
+                "save_path": str(self.save_path),
+                "timepoint_name": timepoint_name,
+                "raw_path": str(raw_path),
+                "lr_feats_path": str(lr_path),
             },
         }
 

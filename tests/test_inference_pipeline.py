@@ -112,11 +112,15 @@ class InferencePipelineTests(unittest.TestCase):
             with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
                 "spatialdino.data.inference.io.imsave"
             ) as imsave:
-                _ = dataset[0]
+                item = dataset[0]
 
             expected = volume[1:3, 1:4, 2:5]
             np.testing.assert_array_equal(imsave.call_args.args[1], expected)
-            self.assertEqual(Path(imsave.call_args.args[0]).name, "volume_unnorm.tif")
+            saved_path = Path(imsave.call_args.args[0])
+            self.assertEqual(saved_path.parts[-2:], ("raw", "sample.tif"))
+            self.assertEqual(item["vol_metadata"]["timepoint_name"], "sample")
+            self.assertEqual(Path(item["vol_metadata"]["raw_path"]).parts[-2:], ("raw", "sample.tif"))
+            self.assertEqual(Path(item["vol_metadata"]["lr_feats_path"]).parts[-2:], ("lr_feats", "sample.npy"))
 
     def test_inference_dataset_sanitizes_non_finite_voxels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

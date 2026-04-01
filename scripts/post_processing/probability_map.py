@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+import shutil
+from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 import tifffile
@@ -13,22 +13,20 @@ import torch
 import torch.nn.functional as F
 from scipy import ndimage
 from torch import Tensor
+from spatialdino.inference.output_layout import (
+    InferenceTimepointPaths as TimepointPaths,
+    PROBMAP_DENSITIES_FILENAME,
+    discover_inference_timepoints,
+    probability_map_densities_path,
+    segmentation_probmap_dir,
+)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
-DEFAULT_DENSITIES_FILENAME = "probmap_densities.npz"
 DEFAULT_Z_CHUNK_SIZE = 4
-
-
-@dataclass(frozen=True)
-class TimepointPaths:
-    name: str
-    subfolder: Path
-    lr_path: Path
-    raw_path: Path
 
 
 @dataclass(frozen=True)
@@ -63,9 +61,11 @@ class PackedDens:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run probability-map post-processing from lr_feats.npy.")
-    parser.add_argument("--input-path", required=True, help="Folder containing per-timepoint subfolders.")
-    parser.add_argument("--output-path", default=None, help="Folder where segmentation masks are written.")
+    parser = argparse.ArgumentParser(
+        description="Run probability-map post-processing from an inference output folder."
+    )
+    parser.add_argument("--input-path", required=True, help="Inference output folder containing lr_feats/ and raw/.")
+    parser.add_argument("--output-path", default=None, help="Root folder where segmentation outputs are written.")
     parser.add_argument(
         "--run-density-estimation",
         action="store_true",
@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--training-timepoint",
         default=None,
-        help="Timepoint subfolder name used for density estimation.",
+        help="Timepoint name used for density estimation.",
     )
     parser.add_argument("--seg-tif", default=None, help="Training segmentation TIFF used for density estimation.")
     parser.add_argument(
@@ -88,7 +88,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--densities-path",
         default=None,
-        help=f"Path to the saved densities cache. Default: <input-path>/{DEFAULT_DENSITIES_FILENAME}",
+        help=(
+            "Path to the saved densities cache. Defaults to "
+            f"<output-path>/{PROBMAP_DENSITIES_FILENAME} when Stage 1 runs, otherwise "
+            f"<input-path>/{PROBMAP_DENSITIES_FILENAME}."
+        ),
     )
     parser.add_argument("--device", default=None, help="'cuda' or 'cpu' (auto if omitted).")
     parser.add_argument("--feature-batch", type=int, default=32, help="Feature batch size for Stage 2 classification.")
@@ -168,28 +172,6 @@ def load_valid_mask(valid_mask_tif: Path, *, shape_zyx: tuple[int, int, int]) ->
     if valid_mask.shape != shape_zyx:
         raise ValueError(f"Valid mask shape {valid_mask.shape} != {shape_zyx}.")
     return valid_mask > 0
-
-
-def list_subfolders(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[Path]:
-    excluded = {Path(os.path.realpath(path)) for path in exclude_paths}
-    subfolders = [path for path in input_path.iterdir() if path.is_dir() and Path(os.path.realpath(path)) not in excluded]
-    subfolders.sort(key=lambda path: (path.name.casefold(), path.name))
-    return subfolders
-
-
-def discover_timepoints(input_path: Path, *, exclude_paths: Iterable[Path] = ()) -> list[TimepointPaths]:
-    discovered: list[TimepointPaths] = []
-    for subfolder in list_subfolders(input_path, exclude_paths=exclude_paths):
-        lr_path = subfolder / "lr_feats.npy"
-        raw_path = subfolder / "volume_unnorm.tif"
-        if not lr_path.is_file():
-            raise FileNotFoundError(f"{subfolder.name} is missing lr_feats.npy.")
-        if not raw_path.is_file():
-            raise FileNotFoundError(f"{subfolder.name} is missing volume_unnorm.tif.")
-        discovered.append(TimepointPaths(name=subfolder.name, subfolder=subfolder, lr_path=lr_path, raw_path=raw_path))
-    if not discovered:
-        raise ValueError(f"Input folder contains no subfolders: {input_path}")
-    return discovered
 
 
 def build_feature_names(channel_count: int) -> list[str]:
@@ -667,7 +649,7 @@ def semantic_to_instance_seg(semantic_seg: np.ndarray) -> np.ndarray:
 def classify_timepoint(
     timepoint: TimepointPaths,
     *,
-    output_path: Path,
+    output_root: Path,
     densities: PackedDens,
     feature_batch: int,
     bg_prob_threshold: float,
@@ -715,6 +697,7 @@ def classify_timepoint(
         semantic_chunk = (cnt_fg > cnt_bg).to(torch.uint8)
         stack_semantic[z_indices] = semantic_chunk.detach().cpu().numpy()
 
+    output_path = segmentation_probmap_dir(output_root)
     ensure_dir(output_path)
     instance_path = output_path / f"{timepoint.name}.tif"
     instance_seg = semantic_to_instance_seg(stack_semantic)
@@ -786,19 +769,14 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
     input_path = input_path.expanduser().resolve()
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
-    output_path = params.output_path.expanduser().resolve() if params.output_path is not None else None
-    if params.run_stage_2:
-        if output_path is None:
-            raise ValueError("Stage 2 requires an output folder.")
-        if output_path.exists() and not output_path.is_dir():
-            raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
+    output_root = input_path if params.output_path is None else params.output_path.expanduser().resolve()
+    if output_root.exists() and not output_root.is_dir():
+        raise FileNotFoundError(f"Output folder exists but is not a directory: {output_root}")
     device = resolve_device(params.device_name)
-    exclude_paths = (output_path,) if output_path is not None else ()
-    timepoints = discover_timepoints(input_path, exclude_paths=exclude_paths)
+    timepoints = discover_inference_timepoints(input_path)
     print(f"[probmap] Using device {device}", flush=True)
-    print(f"[probmap] Found {len(timepoints)} subfolders", flush=True)
-    if output_path is not None:
-        ensure_dir(output_path)
+    print(f"[probmap] Found {len(timepoints)} timepoints", flush=True)
+    ensure_dir(output_root)
 
     x1_all, f1_all, x2_all, f2_all = load_or_compute_densities(timepoints, params, device=device)
     if not params.run_stage_2:
@@ -806,13 +784,14 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
         print("[probmap] Done", flush=True)
         return params.densities_path
 
+    shutil.rmtree(segmentation_probmap_dir(output_root), ignore_errors=True)
     packed_densities = pack_densities(x1_all, f1_all, x2_all, f2_all, device=device)
 
     for index, timepoint in enumerate(timepoints, start=1):
         print(f"[probmap] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
         classify_timepoint(
             timepoint,
-            output_path=output_path,
+            output_root=output_root,
             densities=packed_densities,
             feature_batch=params.feature_batch,
             bg_prob_threshold=params.bg_prob_threshold,
@@ -831,10 +810,15 @@ def main() -> None:
     args = parse_args()
     input_path = Path(args.input_path).expanduser().resolve()
     output_path = Path(args.output_path).expanduser().resolve() if args.output_path else None
+    output_root = output_path if output_path is not None else input_path
     densities_path = (
         Path(args.densities_path).expanduser().resolve()
         if args.densities_path
-        else (input_path / DEFAULT_DENSITIES_FILENAME).resolve()
+        else (
+            probability_map_densities_path(output_root)
+            if args.run_density_estimation
+            else probability_map_densities_path(input_path)
+        ).resolve()
     )
     seg_tif = Path(args.seg_tif).expanduser().resolve() if args.seg_tif else None
     valid_mask_tif = Path(args.valid_mask_tif).expanduser().resolve() if args.valid_mask_tif else None
