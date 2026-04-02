@@ -6,8 +6,8 @@
 import os
 from typing import Callable, Optional
 import warnings
-
 from torch import Tensor, nn
+import logging
 import torch.nn.functional as F
 
 XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
@@ -18,7 +18,10 @@ if XFORMERS_ENABLED:
         XFORMERS_AVAILABLE = True
 
     except ImportError:
-        raise ImportError("xFormers is not available (SwiGLU)")
+        logging.warning(
+            "xFormers is not installed. falling back to non-xformer pathways"
+        )
+        XFORMERS_AVAILABLE = False
 else:
     XFORMERS_AVAILABLE = False
 
@@ -46,22 +49,24 @@ class SwiGLUFFN(nn.Module):
         return self.w3(hidden)
 
 
-class SwiGLUFFNFused(SwiGLU):
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
-        act_layer: Optional[Callable[..., nn.Module]] = None,
-        drop: float = 0.0,
-        bias: bool = True,
-    ) -> None:
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
-        super().__init__(
-            in_features=in_features,
-            hidden_features=hidden_features,
-            out_features=out_features,
-            bias=bias,
-        )
+if XFORMERS_AVAILABLE:
+
+    class SwiGLUFFNFused(SwiGLU):
+        def __init__(
+            self,
+            in_features: int,
+            hidden_features: Optional[int] = None,
+            out_features: Optional[int] = None,
+            act_layer: Optional[Callable[..., nn.Module]] = None,
+            drop: float = 0.0,
+            bias: bool = True,
+        ) -> None:
+            out_features = out_features or in_features
+            hidden_features = hidden_features or in_features
+            hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
+            super().__init__(
+                in_features=in_features,
+                hidden_features=hidden_features,
+                out_features=out_features,
+                bias=bias,
+            )
