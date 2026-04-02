@@ -16,7 +16,8 @@ class SSL(nn.Module):
         self.config.patch_size = self.patch_size
         self.config.img_size = self.img_size
         self.student = nn.ModuleDict()
-        self.student["encoder"] = Encoder(
+        num_register_tokens = getattr(config, "num_register_tokens", 0)
+        encoder_kwargs = dict(
             img_size=self.img_size,
             patch_size=self.patch_size,
             in_chans=config.in_chans,
@@ -31,31 +32,21 @@ class SSL(nn.Module):
             drop_path_rate=config.drop_path_rate,
             drop_path_uniform=config.drop_path_uniform,
             init_values=config.layerscale,
+            num_register_tokens=num_register_tokens,
             num_tt_register_tokens=0,
             interpolate_offset=config.interpolate_offset,
+            pos_embed_type=getattr(config, "pos_embed_type", "none"),
+            rope_theta=getattr(config, "rope_theta", 10000.0),
+            rope_normalize_coords=getattr(config, "rope_normalize_coords", False),
+            rope_coord_shift=getattr(config, "rope_coord_shift", None),
+            rope_coord_jitter=getattr(config, "rope_coord_jitter", None),
+            rope_coord_rescale=getattr(config, "rope_coord_rescale", None),
             **kwargs,
         )
+        self.student["encoder"] = Encoder(**encoder_kwargs)
 
         self.teacher = nn.ModuleDict()
-        self.teacher["encoder"] = Encoder(
-            img_size=self.img_size,
-            patch_size=self.patch_size,
-            in_chans=config.in_chans,
-            embed_dim=config.embed_dim,
-            depth=config.depth,
-            num_heads=config.num_heads,
-            mlp_ratio=config.mlp_ratio,
-            qkv_bias=config.qkv_bias,
-            proj_bias=config.proj_bias,
-            ffn_bias=config.ffn_bias,
-            ffn_layer=config.ffn_layer,
-            drop_path_rate=config.drop_path_rate,
-            drop_path_uniform=config.drop_path_uniform,
-            init_values=config.layerscale,
-            num_tt_register_tokens=0,
-            interpolate_offset=config.interpolate_offset,
-            **kwargs,
-        )
+        self.teacher["encoder"] = Encoder(**encoder_kwargs)
         self.do_dino = config.dino_loss_weight > 0
         self.do_ibot = config.ibot_loss_weight > 0
         if self.do_dino:
