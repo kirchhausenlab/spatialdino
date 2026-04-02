@@ -104,7 +104,7 @@ def _log_pretrain_step(
                 time=str(step_time),
                 data=str(data_time),
             )
-            )
+        )
 
 
 def _should_update_optimizer_step(
@@ -127,6 +127,12 @@ def _wrap_model_for_training(
         device_ids=[local_rank],
         find_unused_parameters=find_unused_parameters,
     )
+
+
+def _unwrap_model(model: Union[SSL, DDP]) -> SSL:
+    if isinstance(model, DDP):
+        return model.module
+    return model
 
 
 def _pairwise_dino_loss(
@@ -396,7 +402,6 @@ def main():
 def train(
     config: DictConfig,
     step: int,
-    model: SSL,
     train_model: Union[SSL, DDP],
     optimizer: torch.optim.Optimizer,
     train_dataloader: DataLoader,
@@ -407,7 +412,7 @@ def train(
     run: Optional[Run] = None,
 ) -> Dict[str, float]:
     start_time = time.time()
-    model.train()
+    train_model.train()
 
     (
         lr_schedule,
@@ -522,7 +527,7 @@ def train(
                 enabled=config.use_amp,
             )
 
-            teacher_global_output = model.forward_teacher(
+            teacher_global_output = _unwrap_model(train_model).forward_teacher(
                 x=collated_global_crops,
                 masks=None,
                 upperbound=upperbound,
@@ -559,32 +564,37 @@ def train(
                     config.n_local_crops,
                 )
 
-                dino_global_cls_loss = _pairwise_dino_loss(
-                    loss_fn=latent_loss_fn["cls_token"],
-                    student_views=student_global_cls_outputs,
-                    teacher_views=teacher_global_cls_outputs,
-                    skip_matching_teacher_view=True,
-                ) / n_dino_loss_terms
+                dino_global_cls_loss = (
+                    _pairwise_dino_loss(
+                        loss_fn=latent_loss_fn["cls_token"],
+                        student_views=student_global_cls_outputs,
+                        teacher_views=teacher_global_cls_outputs,
+                        skip_matching_teacher_view=True,
+                    )
+                    / n_dino_loss_terms
+                )
                 loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
                 latent_loss += config.dino_loss_weight * dino_global_cls_loss
 
-                dino_local_cls_loss = _pairwise_dino_loss(
-                    loss_fn=latent_loss_fn["cls_token"],
-                    student_views=student_local_cls_outputs,
-                    teacher_views=teacher_global_cls_outputs,
-                ) / n_dino_loss_terms
+                dino_local_cls_loss = (
+                    _pairwise_dino_loss(
+                        loss_fn=latent_loss_fn["cls_token"],
+                        student_views=student_local_cls_outputs,
+                        teacher_views=teacher_global_cls_outputs,
+                    )
+                    / n_dino_loss_terms
+                )
                 loss_dict["dino_local_cls_loss"] = dino_local_cls_loss
 
                 latent_loss += config.dino_loss_weight * dino_local_cls_loss
 
                 if do_koleo:
                     for p in student_global_cls_outputs:
-                        assert p.ndim == 2, (
-                            f"Expected KoLeo input chunks to be 2D [B, D], got shape {tuple(p.shape)}"
-                        )
+                        assert (
+                            p.ndim == 2
+                        ), f"Expected KoLeo input chunks to be 2D [B, D], got shape {tuple(p.shape)}"
                     koleo_loss = sum(
-                        latent_loss_fn["koleo"](p)
-                        for p in student_global_cls_outputs
+                        latent_loss_fn["koleo"](p) for p in student_global_cls_outputs
                     ) / max(config.n_global_crops, 1)
                     loss_dict["koleo_loss"] = koleo_loss
                     latent_loss += config.koleo_loss_weight * koleo_loss
@@ -645,18 +655,22 @@ def train(
             if loss_scaler is not None:
                 if config.clip_grad:
                     loss_scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        train_model.parameters(), config.clip_grad
+                    )
                 loss_scaler.step(optimizer)
                 loss_scaler.update()
             else:
                 if config.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        train_model.parameters(), config.clip_grad
+                    )
                 optimizer.step()
 
             optimizer.zero_grad(set_to_none=True)
 
             # perform teacher EMA update
-            model.update_teacher(teacher_momentum=mom)
+            _unwrap_model(train_model).update_teacher(teacher_momentum=mom)
 
         loss_dict_reduced = _reduce_loss_dict(loss_dict)
         loss_dict_reduced["latent_loss"] = _compute_weighted_loss_total(
@@ -717,7 +731,7 @@ def train(
                 save_model(
                     output_dir=ckpt_dir,
                     step=completed_step,
-                    model=model,
+                    model=_unwrap_model(train_model),
                     optimizer=optimizer,
                     loss_scaler=loss_scaler,
                     extra_modules=latent_loss_fn,
@@ -746,14 +760,14 @@ def train(
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logger.info("No optimizer steps were run.")
         logger.info("Training time {}".format(total_time_str))
-        model.eval()
+        train_model.eval()
         return {}
 
     logger.info("Averaged stats: %s", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info("Training time {}".format(total_time_str))
-    model.eval()
+    train_model.eval()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
