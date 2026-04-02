@@ -23,7 +23,11 @@ from spatialdino.models.layers.block import NestedTensorBlock as Block
 from spatialdino.models.layers.mlp import Mlp
 from spatialdino.models.layers.patch_embed import PatchEmbed
 from spatialdino.models.layers.pos_embed import get_3d_sincos_pos_embed
-from spatialdino.models.layers.swiglu_ffn import SwiGLUFFNFused
+from spatialdino.models.layers.rope import RoPE3D, RoPECache, build_3d_rope_cache
+from spatialdino.models.layers.swiglu_ffn import XFORMERS_AVAILABLE as _SWIGLU_XFORMERS
+
+if _SWIGLU_XFORMERS:
+    from spatialdino.models.layers.swiglu_ffn import SwiGLUFFNFused
 from spatialdino.utils.misc import make_3tuple
 
 logger = logging.getLogger("pretrain")
@@ -61,11 +65,17 @@ class Encoder(nn.Module):
         block_fn: nn.Module = partial(Block, attn_class=MemEffAttention),
         norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-6),
         ffn_layer: str = "mlp",
+        num_register_tokens: int = 0,
         num_tt_register_tokens: int = 0,
         interpolate_offset: float = 0.1,
         interpolate_antialias: bool = True,
         interpolate_align_corners: bool = True,
-        pos_embed_type: Literal["sincos", "learned", "none"] = "none",
+        pos_embed_type: Literal["sincos", "learned", "rope", "none"] = "none",
+        rope_theta: float = 10000.0,
+        rope_normalize_coords: bool = False,
+        rope_coord_shift: Optional[float] = None,
+        rope_coord_jitter: Optional[float] = None,
+        rope_coord_rescale: Optional[float] = None,
     ) -> None:
         super().__init__()
 
@@ -85,6 +95,7 @@ class Encoder(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_tokens = 1  # CLS token
+        self.num_register_tokens = num_register_tokens
         self.num_tt_register_tokens = num_tt_register_tokens
         # calculate patch grid dimensions
         self.grid_size = (
@@ -107,6 +118,17 @@ class Encoder(nn.Module):
 
         # CLS token for global representation
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
+
+        # Learnable register tokens (DINOv2-reg) — participate in training & inference
+        assert self.num_register_tokens >= 0
+        if self.num_register_tokens > 0:
+            self.register_tokens = nn.Parameter(
+                torch.zeros(1, self.num_register_tokens, self.embed_dim)
+            )
+        else:
+            self.register_tokens = None
+
+        # Test-time register tokens (non-learnable) — inference only
         assert self.num_tt_register_tokens >= 0
         if self.num_tt_register_tokens:
             self.register_buffer(
@@ -144,25 +166,28 @@ class Encoder(nn.Module):
         self.num_heads = num_heads
 
         # transformer blocks - attention + FFN with residual connections
-        self.blocks = nn.ModuleList([
-            block_fn(
-                dim=embed_dim,
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                ffn_bias=ffn_bias,
-                drop_path=dpr[i],
-                norm_layer=norm_layer,
-                act_layer=act_layer,
-                ffn_layer=ffn_layer,
-                init_values=init_values,
-            )
-            for i in range(self.n_blocks)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                block_fn(
+                    dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=qkv_bias,
+                    proj_bias=proj_bias,
+                    ffn_bias=ffn_bias,
+                    drop_path=dpr[i],
+                    norm_layer=norm_layer,
+                    act_layer=act_layer,
+                    ffn_layer=ffn_layer,
+                    init_values=init_values,
+                )
+                for i in range(self.n_blocks)
+            ]
+        )
 
         self.pos_embed_type = pos_embed_type
-        self.use_pos_embed = pos_embed_type != "none"
+        self.use_pos_embed = pos_embed_type not in ("none", "rope")
+        self.use_rope = pos_embed_type == "rope"
 
         if self.pos_embed_type == "sincos":
             # use sincos positional encoding
@@ -186,6 +211,18 @@ class Encoder(nn.Module):
                 torch.zeros(1, self.num_patches + self.num_tokens, self.embed_dim)
             )
             nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        elif self.pos_embed_type == "rope":
+            logger.info("using 3D rotary position embedding (RoPE)")
+            self.pos_embed = None
+            head_dim = embed_dim // num_heads
+            self.rope = RoPE3D(
+                head_dim=head_dim,
+                theta=rope_theta,
+                normalize_coords=rope_normalize_coords,
+                coord_shift=rope_coord_shift,
+                coord_jitter=rope_coord_jitter,
+                coord_rescale=rope_coord_rescale,
+            )
         else:
             # no positional encoding
             logger.info("no positional encoding")
@@ -203,6 +240,8 @@ class Encoder(nn.Module):
         - Apply weight init to all modules recursively
         """
         nn.init.normal_(self.cls_token, std=1e-6)
+        if self.register_tokens is not None:
+            nn.init.normal_(self.register_tokens, std=1e-6)
         self.apply(self._init_weights)
 
     def _ensure_tt_registers_supported(self) -> None:
@@ -273,6 +312,38 @@ class Encoder(nn.Module):
             previous_dtype
         )
 
+    def _build_rope_cache(
+        self,
+        Z: int,
+        H: int,
+        W: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        num_prefix_tokens: int = 1,
+    ) -> Optional[RoPECache]:
+        """Build a 3D RoPE frequency table via the :class:`RoPE3D` module.
+
+        Caching, train/eval mode, and coordinate augmentation are handled
+        automatically by the module's ``forward()`` method.
+        """
+        if not self.use_rope:
+            return None
+        z0 = 1 + (Z - self.patch_size[0]) // self.stride[0]
+        h0 = 1 + (H - self.patch_size[1]) // self.stride[1]
+        w0 = 1 + (W - self.patch_size[2]) // self.stride[2]
+
+        return self.rope(
+            grid_size=(z0, h0, w0),
+            num_prefix_tokens=num_prefix_tokens,
+            device=device,
+            dtype=dtype,
+        )
+
+    def clear_rope_cache(self) -> None:
+        """Drop all cached RoPE tables (e.g. after ``.to(device)`` or dtype change)."""
+        if self.use_rope:
+            self.rope.clear_cache()
+
     def prepare_tokens_with_masks(
         self, x: torch.Tensor, masks: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
@@ -295,6 +366,17 @@ class Encoder(nn.Module):
         if self.use_pos_embed:
             x = x + self.interpolate_pos_encoding(self.pos_embed, x, Z, H, W)
 
+        # Insert learnable register tokens after CLS, before patches
+        if self.register_tokens is not None:
+            x = torch.cat(
+                (
+                    x[:, :1],
+                    self.register_tokens.expand(x.shape[0], -1, -1),
+                    x[:, 1:],
+                ),
+                dim=1,
+            )
+
         return x
 
     def forward_features_list(
@@ -310,24 +392,48 @@ class Encoder(nn.Module):
         """
         self._ensure_tt_registers_supported()
         x = [
-            self.prepare_tokens_with_masks(x, masks)
-            for x, masks in zip(x_list, masks_list)
+            self.prepare_tokens_with_masks(xi, masks)
+            for xi, masks in zip(x_list, masks_list)
         ]
+
+        # Build per-crop RoPE caches (None list if RoPE is disabled)
+        # Register tokens are prefix tokens that get identity rotation
+        num_prefix = 1 + self.num_register_tokens
+        rope_list: Optional[List[RoPECache]] = None
+        if self.use_rope:
+            rope_list = [
+                self._build_rope_cache(
+                    xi.shape[2],
+                    xi.shape[3],
+                    xi.shape[4],
+                    device=x[0].device,
+                    dtype=x[0].dtype,
+                    num_prefix_tokens=num_prefix,
+                )
+                for xi in x_list
+            ]
+
         for blk in self.blocks:
-            x = blk(x)
+            x = blk(x, rope=rope_list)
 
         all_x = x
         output = []
+        # Skip CLS + register tokens to get patch tokens
+        patch_start = 1 + self.num_register_tokens
         for x, masks in zip(all_x, masks_list):
             x_norm = self.norm(x)
-            output.append({
-                "x_norm_clstoken": x_norm[:, 0],
-                "x_norm_patchtokens": x_norm[:, 1:],
-                "x_prenorm_clstoken": x[:, 0],
-                "x_prenorm_patchtokens": x[:, 1:],
-                "x_prenorm": x,
-                "masks": masks,
-            })
+            output.append(
+                {
+                    "x_norm_clstoken": x_norm[:, 0],
+                    "x_norm_regtokens": x_norm[:, 1:patch_start],
+                    "x_norm_patchtokens": x_norm[:, patch_start:],
+                    "x_prenorm_clstoken": x[:, 0],
+                    "x_prenorm_regtokens": x[:, 1:patch_start],
+                    "x_prenorm_patchtokens": x[:, patch_start:],
+                    "x_prenorm": x,
+                    "masks": masks,
+                }
+            )
         return output
 
     def forward_features(
@@ -350,17 +456,25 @@ class Encoder(nn.Module):
         if isinstance(x, list):
             return self.forward_features_list(x, masks)
 
+        Z, H, W = x.shape[2], x.shape[3], x.shape[4]
         x = self.prepare_tokens_with_masks(x, masks)
+        num_prefix = 1 + self.num_register_tokens
+        rope = self._build_rope_cache(
+            Z, H, W, device=x.device, dtype=x.dtype, num_prefix_tokens=num_prefix
+        )
 
         for blk in self.blocks:
-            x = blk(x)
+            x = blk(x, rope=rope)
 
+        patch_start = 1 + self.num_register_tokens
         x_norm = self.norm(x)
         return {
             "x_norm_clstoken": x_norm[:, 0],
-            "x_norm_patchtokens": x_norm[:, 1:],
+            "x_norm_regtokens": x_norm[:, 1:patch_start],
+            "x_norm_patchtokens": x_norm[:, patch_start:],
             "x_prenorm_clstoken": x[:, 0],
-            "x_prenorm_patchtokens": x[:, 1:],
+            "x_prenorm_regtokens": x[:, 1:patch_start],
+            "x_prenorm_patchtokens": x[:, patch_start:],
             "x_prenorm": x,
             "masks": masks,
         }
@@ -399,21 +513,40 @@ class Encoder(nn.Module):
         if self.use_pos_embed:
             x = x + self.interpolate_pos_encoding(self.pos_embed, x, Z, Y, X)
 
-        if self.tt_register_tokens is not None:
+        # Insert learnable register tokens (always present if configured)
+        if self.register_tokens is not None:
             x = torch.cat(
                 (
                     x[:, :1],
-                    self.tt_register_tokens.expand(x.shape[0], -1, -1),
+                    self.register_tokens.expand(x.shape[0], -1, -1),
                     x[:, 1:],
                 ),
                 dim=1,
             )
 
+        # Insert test-time register tokens (inference-only, non-learnable)
+        if self.tt_register_tokens is not None:
+            insert_pos = 1 + self.num_register_tokens
+            x = torch.cat(
+                (
+                    x[:, :insert_pos],
+                    self.tt_register_tokens.expand(x.shape[0], -1, -1),
+                    x[:, insert_pos:],
+                ),
+                dim=1,
+            )
+
+        # Build RoPE cache (CLS + all register tokens get identity rotation)
+        num_prefix = 1 + self.num_register_tokens + self.num_tt_register_tokens
+        rope = self._build_rope_cache(
+            Z, Y, X, device=x.device, dtype=x.dtype, num_prefix_tokens=num_prefix
+        )
+
         # Run through model, at the last block just return the attention.
         for i in range(len(self.blocks) - 1):
-            x = self.blocks[i](x)
+            x = self.blocks[i](x, rope=rope)
 
-        res = self.blocks[-1](x, vit_feat=vit_feat)
+        res = self.blocks[-1](x, vit_feat=vit_feat, rope=rope)
 
         if norm_feat == "norm":
             if vit_feat == "patch":
@@ -421,7 +554,8 @@ class Encoder(nn.Module):
             elif vit_feat == "patch_attn":
                 res[..., : -self.num_heads] = self.norm(res[..., : -self.num_heads])
 
-        res = res[:, 1 + self.num_tt_register_tokens :].transpose(1, 2)  # [B, C, L]
+        # Strip CLS + all register tokens to get only patch tokens
+        res = res[:, num_prefix:].transpose(1, 2)  # [B, C, L]
 
         res = res.reshape(
             1,

@@ -14,6 +14,7 @@ from spatialdino.inference.streaming.triton_kernels import (
     TRITON_AVAILABLE,
     online_attn_update,
 )
+from spatialdino.models.layers.rope import RoPECache, apply_rotary_emb
 
 logger = logging.getLogger("streaming_inference")
 
@@ -51,7 +52,9 @@ class StreamingEncoder:
         self.precompute_kv = True
         self.use_triton = bool(getattr(config, "streaming_use_triton", False))
         if self.use_triton and not TRITON_AVAILABLE:
-            raise RuntimeError("streaming_use_triton requested but Triton is not available.")
+            raise RuntimeError(
+                "streaming_use_triton requested but Triton is not available."
+            )
         self.triton_block_m = int(getattr(config, "streaming_triton_block_m", 128))
         self.triton_block_n = int(getattr(config, "streaming_triton_block_n", 128))
         self.triton_block_d = int(getattr(config, "streaming_triton_block_d", 64))
@@ -77,7 +80,10 @@ class StreamingEncoder:
                     self.storage_dtype = torch.float16
                     if self.output_dtype == torch.bfloat16:
                         self.output_dtype = torch.float16
-            if self.kv_storage_kind == "disk" and self.kv_storage_dtype == torch.bfloat16:
+            if (
+                self.kv_storage_kind == "disk"
+                and self.kv_storage_dtype == torch.bfloat16
+            ):
                 logger.warning(
                     "Disk storage does not support bf16; using fp16 for KV storage."
                 )
@@ -94,7 +100,7 @@ class StreamingEncoder:
             raise ValueError("Streaming route only supports vit_feat='patch_attn'.")
         if self.encoder.use_pos_embed:
             raise ValueError(
-                "Streaming route currently requires pos_embed_type='none'."
+                "Streaming route requires pos_embed_type='none' or 'rope'."
             )
         if volume.ndim == 5:
             if volume.shape[0] != 1:
@@ -114,7 +120,11 @@ class StreamingEncoder:
         x0 = 1 + (x - patch_size[2]) // stride[2]
         grid_size = (z0, y0, x0)
 
-        num_special = 1 + int(self.encoder.num_tt_register_tokens)
+        num_special = (
+            1
+            + int(self.encoder.num_register_tokens)
+            + int(self.encoder.num_tt_register_tokens)
+        )
         num_patches = z0 * y0 * x0
         total_tokens = num_special + num_patches
         embed_dim = int(self.encoder.embed_dim)
@@ -138,6 +148,16 @@ class StreamingEncoder:
         self._init_special_tokens(x_store_a, embed_dim)
         self._stream_patch_embed(volume, x_store_a, vol_metadata)
 
+        # Build RoPE cache (CLS + register tokens get identity rotation)
+        rope = self.encoder._build_rope_cache(
+            z,
+            y,
+            x,
+            device=self.device,
+            dtype=self.compute_dtype,
+            num_prefix_tokens=num_special,
+        )
+
         x_in = x_store_a
         x_out = x_store_b
         blocks = list(self.encoder.blocks)
@@ -145,7 +165,7 @@ class StreamingEncoder:
 
         for idx, block in enumerate(blocks):
             if idx < last_index:
-                self._run_block(block, x_in, x_out, total_tokens)
+                self._run_block(block, x_in, x_out, total_tokens, rope=rope)
                 x_in, x_out = x_out, x_in
             else:
                 out_store = self._run_last_block(
@@ -156,6 +176,7 @@ class StreamingEncoder:
                     embed_dim,
                     num_heads,
                     norm_feat=norm_feat,
+                    rope=rope,
                 )
 
         patch_tokens = out_store.tensor[num_special:].view(
@@ -196,11 +217,20 @@ class StreamingEncoder:
     def _init_special_tokens(self, store: TokenStore, embed_dim: int) -> None:
         cls = self.encoder.cls_token[0, 0].detach()
         store.write(0, 1, cls.view(1, embed_dim))
+        offset = 1
+        # Write learnable register tokens
+        if self.encoder.register_tokens is not None:
+            regs = self.encoder.register_tokens[0].detach()
+            store.write(offset, offset + regs.shape[0], regs)
+            offset += regs.shape[0]
+        # Write test-time register tokens
         if self.encoder.tt_register_tokens is not None:
-            regs = self.encoder.tt_register_tokens[0].detach()
-            store.write(1, 1 + regs.shape[0], regs)
+            tt_regs = self.encoder.tt_register_tokens[0].detach()
+            store.write(offset, offset + tt_regs.shape[0], tt_regs)
 
-    def _stream_patch_embed(self, volume: torch.Tensor, store: TokenStore, vol_metadata: dict) -> None:
+    def _stream_patch_embed(
+        self, volume: torch.Tensor, store: TokenStore, vol_metadata: dict
+    ) -> None:
         patch_size = self.encoder.patch_size
         chunk_size = getattr(self.config, "streaming_patch_chunk_size", None)
         if chunk_size is None:
@@ -209,7 +239,9 @@ class StreamingEncoder:
             chunk_size = tuple(int(v) for v in chunk_size)
 
         if any(c % p != 0 for c, p in zip(chunk_size, patch_size)):
-            raise ValueError("streaming_patch_chunk_size must be divisible by patch_size.")
+            raise ValueError(
+                "streaming_patch_chunk_size must be divisible by patch_size."
+            )
 
         _, z, y, x = volume.shape
         pz, py, px = patch_size
@@ -223,8 +255,7 @@ class StreamingEncoder:
                         x1 = min(x0 + chunk_size[2], x)
                         chunk = volume[:, z0:z1, y0:y1, x0:x1]
                         if any(
-                            dim % p != 0
-                            for dim, p in zip(chunk.shape[1:], patch_size)
+                            dim % p != 0 for dim, p in zip(chunk.shape[1:], patch_size)
                         ):
                             raise ValueError(
                                 "Chunk dims must be divisible by patch_size."
@@ -257,6 +288,7 @@ class StreamingEncoder:
         x_in: TokenStore,
         x_out: TokenStore,
         total_tokens: int,
+        rope: Optional[RoPECache] = None,
     ) -> None:
         attn = block.attn
         num_heads = attn.num_heads
@@ -273,6 +305,7 @@ class StreamingEncoder:
                 total_tokens=total_tokens,
                 embed_dim=embed_dim,
                 num_heads=num_heads,
+                rope=rope,
             )
 
         with torch.inference_mode():
@@ -287,6 +320,12 @@ class StreamingEncoder:
                     qkv_q = attn.qkv(x_q_norm)
                 qkv_q = qkv_q.view(1, -1, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
                 q = qkv_q[0]
+
+                if rope is not None:
+                    cos, sin = rope
+                    cos_q = cos[q_start:q_end].unsqueeze(0).unsqueeze(0)
+                    sin_q = sin[q_start:q_end].unsqueeze(0).unsqueeze(0)
+                    q = apply_rotary_emb(q, cos_q, sin_q)
 
                 q_len = q.shape[2]
                 if self.use_triton:
@@ -326,7 +365,9 @@ class StreamingEncoder:
 
                 q_triton = q.squeeze(0).contiguous() if self.use_triton else None
 
-                for kv_start, kv_end in _iter_blocks(total_tokens, self.kv_block_tokens):
+                for kv_start, kv_end in _iter_blocks(
+                    total_tokens, self.kv_block_tokens
+                ):
                     if self.precompute_kv:
                         assert k_store is not None and v_store is not None
                         k_block = k_store.read(
@@ -363,6 +404,12 @@ class StreamingEncoder:
                         k = qkv_kv[1]
                         v = qkv_kv[2]
 
+                        if rope is not None:
+                            cos, sin = rope
+                            cos_k = cos[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                            sin_k = sin[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                            k = apply_rotary_emb(k, cos_k, sin_k)
+
                     if self.use_triton:
                         assert q_triton is not None
                         k_triton = k.squeeze(0).contiguous()
@@ -382,9 +429,9 @@ class StreamingEncoder:
                             num_stages=self.triton_num_stages,
                         )
                     else:
-                        scores = torch.matmul(
-                            q.float(), k.float().transpose(-2, -1)
-                        ) * scale
+                        scores = (
+                            torch.matmul(q.float(), k.float().transpose(-2, -1)) * scale
+                        )
                         block_max = scores.max(dim=-1).values
                         m_new = torch.maximum(m, block_max)
                         exp_m = torch.exp(m - m_new)
@@ -426,6 +473,7 @@ class StreamingEncoder:
         embed_dim: int,
         num_heads: int,
         norm_feat: str,
+        rope: Optional[RoPECache] = None,
     ) -> TokenStore:
         attn = block.attn
         head_dim = attn.qkv.in_features // num_heads
@@ -442,6 +490,7 @@ class StreamingEncoder:
                 total_tokens=total_tokens,
                 embed_dim=embed_dim,
                 num_heads=num_heads,
+                rope=rope,
             )
 
         with torch.inference_mode():
@@ -456,6 +505,12 @@ class StreamingEncoder:
                     qkv_q = attn.qkv(x_q_norm)
                 qkv_q = qkv_q.view(1, -1, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
                 q = qkv_q[0]
+
+                if rope is not None:
+                    cos, sin = rope
+                    cos_q = cos[q_start:q_end].unsqueeze(0).unsqueeze(0)
+                    sin_q = sin[q_start:q_end].unsqueeze(0).unsqueeze(0)
+                    q = apply_rotary_emb(q, cos_q, sin_q)
 
                 q_len = q.shape[2]
                 if self.use_triton:
@@ -495,7 +550,9 @@ class StreamingEncoder:
 
                 q_triton = q.squeeze(0).contiguous() if self.use_triton else None
 
-                for kv_start, kv_end in _iter_blocks(total_tokens, self.kv_block_tokens):
+                for kv_start, kv_end in _iter_blocks(
+                    total_tokens, self.kv_block_tokens
+                ):
                     if self.precompute_kv:
                         assert k_store is not None and v_store is not None
                         k_block = k_store.read(
@@ -532,6 +589,12 @@ class StreamingEncoder:
                         k = qkv_kv[1]
                         v = qkv_kv[2]
 
+                        if rope is not None:
+                            cos, sin = rope
+                            cos_k = cos[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                            sin_k = sin[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                            k = apply_rotary_emb(k, cos_k, sin_k)
+
                     if self.use_triton:
                         assert q_triton is not None
                         k_triton = k.squeeze(0).contiguous()
@@ -551,9 +614,9 @@ class StreamingEncoder:
                             num_stages=self.triton_num_stages,
                         )
                     else:
-                        scores = torch.matmul(
-                            q.float(), k.float().transpose(-2, -1)
-                        ) * scale
+                        scores = (
+                            torch.matmul(q.float(), k.float().transpose(-2, -1)) * scale
+                        )
                         block_max = scores.max(dim=-1).values
                         m_new = torch.maximum(m, block_max)
                         exp_m = torch.exp(m - m_new)
@@ -568,7 +631,9 @@ class StreamingEncoder:
                     out = out / l.unsqueeze(-1)
                     if q_start <= 0 < q_end:
                         cls_index = 0 - q_start
-                        cls_context = out[:, cls_index : cls_index + 1, :].clone().unsqueeze(0)
+                        cls_context = (
+                            out[:, cls_index : cls_index + 1, :].clone().unsqueeze(0)
+                        )
 
                     out = out.to(dtype=self.compute_dtype)
                     out = out.transpose(0, 1).reshape(1, q_len, num_heads * head_dim)
@@ -622,9 +687,7 @@ class StreamingEncoder:
                         .contiguous()
                     )
                 else:
-                    x_kv = x_in.read(
-                        kv_start, kv_end, self.device, self.compute_dtype
-                    )
+                    x_kv = x_in.read(kv_start, kv_end, self.device, self.compute_dtype)
                     with torch.amp.autocast(
                         enabled=self.use_amp,
                         dtype=self.compute_dtype,
@@ -671,6 +734,7 @@ class StreamingEncoder:
         total_tokens: int,
         embed_dim: int,
         num_heads: int,
+        rope: Optional[RoPECache] = None,
     ) -> Tuple[TokenStore, TokenStore]:
         head_dim = embed_dim // num_heads
         attn = block.attn
@@ -706,7 +770,13 @@ class StreamingEncoder:
                 qkv_kv = qkv_kv.view(1, -1, 3, num_heads, head_dim).permute(
                     2, 0, 3, 1, 4
                 )
-                k = qkv_kv[1].transpose(1, 2).reshape(1, -1, embed_dim).squeeze(0)
+                k_head = qkv_kv[1]  # [1, num_heads, kv_len, head_dim]
+                if rope is not None:
+                    cos, sin = rope
+                    cos_k = cos[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                    sin_k = sin[kv_start:kv_end].unsqueeze(0).unsqueeze(0)
+                    k_head = apply_rotary_emb(k_head, cos_k, sin_k)
+                k = k_head.transpose(1, 2).reshape(1, -1, embed_dim).squeeze(0)
                 v = qkv_kv[2].transpose(1, 2).reshape(1, -1, embed_dim).squeeze(0)
                 k_store.write(kv_start, kv_end, k)
                 v_store.write(kv_start, kv_end, v)

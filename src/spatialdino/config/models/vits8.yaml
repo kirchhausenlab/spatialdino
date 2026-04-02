@@ -14,10 +14,19 @@ ffn_layer: mlp
 depth: 12
 num_heads: 6
 mlp_ratio: 4
+num_register_tokens: 0
 interpolate_offset: 0.1
 interpolate_antialias: true
 interpolate_align_corners: true
-pos_embed_type: "none" # "sincos", "learned", "none"
+pos_embed_type: "none" # "sincos", "learned", "rope", "none"
+
+# RoPE configuration (only used when pos_embed_type: "rope")
+rope_theta: 100.0          # period base; ~100 for normalized coords, 10000 for raw positions
+rope_normalize_coords: true  # map positions to [-1,+1]; critical for variable crop sizes
+rope_coord_shift: null     # training augmentation: uniform shift per axis, e.g. 0.1
+rope_coord_jitter: null    # training augmentation: log-uniform scale per axis, e.g. 1.5
+rope_coord_rescale: null   # training augmentation: log-uniform global scale, e.g. 1.5
+
 
 mean: [0.0] # [0.163] # [0.485, 0.456, 0.406]
 std: [1.0] # [0.0988] # [0.229, 0.224, 0.225]

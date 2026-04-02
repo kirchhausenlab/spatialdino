@@ -9,11 +9,12 @@
 
 import logging
 import os
-from typing import Literal
+from typing import Literal, Optional, Tuple
 import warnings
 import torch
 import torch.nn as nn
 
+from .rope import RoPECache, apply_rotary_emb
 
 XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
 if XFORMERS_ENABLED:
@@ -23,9 +24,13 @@ if XFORMERS_ENABLED:
         XFORMERS_AVAILABLE = True
 
     except ImportError:
-        raise ImportError("xFormers is not available (Attention)")
+        logging.warning(
+            "xFormers is not installed. falling back to non-xformer pathways"
+        )
+        XFORMERS_AVAILABLE = False
 else:
     XFORMERS_AVAILABLE = False
+
 
 class Attention(nn.Module):
     def __init__(
@@ -51,6 +56,7 @@ class Attention(nn.Module):
         self,
         x: torch.Tensor,
         vit_feat: str = "patch",
+        rope: Optional[RoPECache] = None,
     ) -> torch.Tensor:
         B, N, C = x.shape
         qkv = (
@@ -60,6 +66,14 @@ class Attention(nn.Module):
         )  # [3, B, H, N, C // H]
 
         q, k, v = qkv[0], qkv[1], qkv[2]
+
+        if rope is not None:
+            cos, sin = rope
+            # Broadcast: [N, D//2] → [1, 1, N, D//2] for [B, H, N, D]
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
+            q = apply_rotary_emb(q, cos, sin)
+            k = apply_rotary_emb(k, cos, sin)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
 
@@ -85,16 +99,25 @@ class MemEffAttention(Attention):
         x: torch.Tensor,
         attn_bias=None,
         vit_feat: str = "patch",
+        rope: Optional[RoPECache] = None,
     ) -> torch.Tensor:
         if not XFORMERS_AVAILABLE:
             if attn_bias is not None:
                 raise AssertionError("xFormers is required for using nested tensors")
-            return super().forward(x, vit_feat=vit_feat)
+            return super().forward(x, vit_feat=vit_feat, rope=rope)
 
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
         q, k, v = unbind(qkv, 2)  # [B, N, H, C // H]
+
+        if rope is not None:
+            cos, sin = rope
+            # Broadcast: [N, D//2] → [1, N, 1, D//2] for [B, N, H, D]
+            cos = cos.unsqueeze(0).unsqueeze(2)
+            sin = sin.unsqueeze(0).unsqueeze(2)
+            q = apply_rotary_emb(q, cos, sin)
+            k = apply_rotary_emb(k, cos, sin)
 
         x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
 

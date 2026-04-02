@@ -59,11 +59,17 @@ def init_backbone(config: DictConfig) -> Encoder:
         drop_path_rate=config.drop_path_rate,
         drop_path_uniform=config.drop_path_uniform,
         init_values=config.layerscale,
+        num_register_tokens=getattr(config, "num_register_tokens", 0),
         num_tt_register_tokens=getattr(config, "num_tt_register_tokens", 0),
         interpolate_offset=config.interpolate_offset,
         interpolate_antialias=config.interpolate_antialias,
         interpolate_align_corners=config.interpolate_align_corners,
         pos_embed_type=config.pos_embed_type,
+        rope_theta=getattr(config, "rope_theta", 10000.0),
+        rope_normalize_coords=getattr(config, "rope_normalize_coords", False),
+        rope_coord_shift=getattr(config, "rope_coord_shift", None),
+        rope_coord_jitter=getattr(config, "rope_coord_jitter", None),
+        rope_coord_rescale=getattr(config, "rope_coord_rescale", None),
     )
 
     if config.backbone_path:
