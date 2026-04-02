@@ -385,7 +385,6 @@ def main():
     train(
         config=config,
         step=step,
-        model=model,
         train_model=train_model,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
