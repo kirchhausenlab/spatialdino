@@ -25,6 +25,7 @@ from spatialdino.models.layers.patch_embed import PatchEmbed
 from spatialdino.models.layers.pos_embed import get_3d_sincos_pos_embed
 from spatialdino.models.layers.rope import RoPE3D, RoPECache, build_3d_rope_cache
 from spatialdino.models.layers.swiglu_ffn import XFORMERS_AVAILABLE as _SWIGLU_XFORMERS
+from spatialdino.models.layers.swiglu_ffn import SwiGLUFFN
 
 if _SWIGLU_XFORMERS:
     from spatialdino.models.layers.swiglu_ffn import SwiGLUFFNFused
@@ -150,9 +151,18 @@ class Encoder(nn.Module):
         if ffn_layer == "mlp":
             logger.info("using MLP layer as FFN")
             ffn_layer = Mlp
-        elif ffn_layer == "swiglufused" or ffn_layer == "swiglu":
+        elif ffn_layer == "swiglufused":
+            if _SWIGLU_XFORMERS:
+                logger.info("using SwiGLU (xFormers fused) layer as FFN")
+                ffn_layer = SwiGLUFFNFused
+            else:
+                logger.warning(
+                    "xFormers not available, falling back to pure-PyTorch SwiGLU"
+                )
+                ffn_layer = SwiGLUFFN
+        elif ffn_layer == "swiglu":
             logger.info("using SwiGLU layer as FFN")
-            ffn_layer = SwiGLUFFNFused
+            ffn_layer = SwiGLUFFN
         elif ffn_layer == "identity":
             logger.info("using Identity layer as FFN")
 
@@ -323,6 +333,8 @@ class Encoder(nn.Module):
     ) -> Optional[RoPECache]:
         """Build a 3D RoPE frequency table via the :class:`RoPE3D` module.
 
+        Built in the compute dtype (e.g. bfloat16 under autocast) so the cache
+        already holds the correct dtype and no cast is needed at apply time.
         Caching, train/eval mode, and coordinate augmentation are handled
         automatically by the module's ``forward()`` method.
         """

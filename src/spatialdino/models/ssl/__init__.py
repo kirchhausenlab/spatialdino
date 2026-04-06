@@ -36,7 +36,7 @@ class SSL(nn.Module):
             num_tt_register_tokens=0,
             interpolate_offset=config.interpolate_offset,
             pos_embed_type=getattr(config, "pos_embed_type", "none"),
-            rope_theta=getattr(config, "rope_theta", 10000.0),
+            rope_theta=getattr(config, "rope_theta", 100.0),
             rope_normalize_coords=getattr(config, "rope_normalize_coords", False),
             rope_coord_shift=getattr(config, "rope_coord_shift", None),
             rope_coord_jitter=getattr(config, "rope_coord_jitter", None),

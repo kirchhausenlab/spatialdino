@@ -178,7 +178,12 @@ def apply_rotary_emb(
     half = x.shape[-1] // 2
     x1 = x[..., :half]
     x2 = x[..., half:]
-    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+    cos = cos.to(dtype=x.dtype)
+    sin = sin.to(dtype=x.dtype)
+    x_out = torch.empty_like(x)
+    x_out[..., :half] = x1 * cos - x2 * sin
+    x_out[..., half:] = x1 * sin + x2 * cos
+    return x_out
 
 
 def concat_rope_for_nested(
@@ -247,7 +252,7 @@ class RoPE3D(nn.Module):
         grid_size: Tuple[int, int, int],
         num_prefix_tokens: int = 1,
         device: torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype | None = None,
     ) -> RoPECache:
         """Return ``(cos, sin)`` for the given grid.
 
@@ -263,9 +268,11 @@ class RoPE3D(nn.Module):
             ]
         )
 
-        # Resolve None → default device so cache lookups are consistent
+        # Resolve None → default device/dtype so cache lookups are consistent
         if device is None:
             device = torch.device("cpu")
+        if dtype is None:
+            dtype = torch.float32
 
         key = (*grid_size, num_prefix_tokens, dtype)
         if not augmenting:
