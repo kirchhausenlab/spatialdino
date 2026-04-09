@@ -25,9 +25,9 @@ def load_and_transform_webdataset(
     metadata = sample["metadata.pth"]
     metadata["experiment_name"] = experiment_name
 
-    assert image.dtype == np.float32, (
-        f"{key}, {experiment_name}: Expected image dtype to be np.float32, but got {image.dtype}"
-    )
+    assert (
+        image.dtype == np.float32
+    ), f"{key}, {experiment_name}: Expected image dtype to be np.float32, but got {image.dtype}"
 
     if "non_zero_stacks" in metadata:
         mask = np.asarray(metadata["non_zero_stacks"], dtype=bool)
@@ -129,6 +129,7 @@ def make_webdataset(
     shuffle_buffer_size: int = 1000,
     infinite: bool = True,
     num_samples: Optional[int] = None,
+    shard_shuffle: bool = True,
 ) -> wds.DataPipeline:
     nodesplitter = wds.single_node_only if nodesplitter is None else nodesplitter
     workersplitter = wds.split_by_worker if workersplitter is None else workersplitter
@@ -136,7 +137,7 @@ def make_webdataset(
     dataset = wds.WebDataset(
         urls=base_data_dir,
         resampled=True,
-        shardshuffle=False,
+        shardshuffle=shard_shuffle,
         nodesplitter=nodesplitter,
         workersplitter=workersplitter,
     )

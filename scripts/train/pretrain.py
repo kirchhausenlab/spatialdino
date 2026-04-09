@@ -18,8 +18,10 @@ from spatialdino.models.ssl.utils import save_model
 from spatialdino.config import CONFIG_PATH, parse_config
 from spatialdino.data import DTYPE_MAPPING
 from spatialdino.data.collate import collate_fn_train
-from spatialdino.data.dataloader import make_dataloader
-from spatialdino.data.dataset import custom_train_unbatched, make_webdataset
+
+# from spatialdino.data.dataloader import make_dataloader
+import webdataset as wds
+from spatialdino.data.dataset import make_webdataset
 from spatialdino.data.transforms import PreTrainTransform
 from spatialdino.logging import MetricLogger, SmoothedValue, setup_logging
 from spatialdino.logging.wandb import init_wandb
@@ -285,31 +287,18 @@ def main():
         nodesplitter=wds.split_by_node,
         collation_fn=train_collate,
         transform=train_transform,
+        shard_shuffle=True,
     )
 
-    train_dataloader = make_dataloader(
+    train_dataloader = wds.WebLoader(
         train_dataset,
-        batch_size=None,  # handled in web dataset
+        batch_size=None,
         num_workers=config.num_workers,
         pin_memory=config.pin_mem,
         persistent_workers=config.persistent_workers,
         drop_last=False,
-        shuffle=False,  # web dataset already shuffled
-        collate_fn=None,  # handled in web dataset
-    )
-
-    train_dataloader = (
-        train_dataloader.compose(
-            custom_train_unbatched(
-                n_global_crops=config.n_global_crops,
-                n_local_crops=config.n_local_crops,
-            )
-        )
-        .shuffle(config.shuffle_buffer_size)
-        .batched(
-            config.batch_size,
-            collation_fn=train_collate,
-        )
+        shuffle=False,
+        collate_fn=None,
     )
 
     # define the model
