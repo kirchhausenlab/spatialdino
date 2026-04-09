@@ -10,23 +10,22 @@ drop_path_uniform: true
 qkv_bias: true
 proj_bias: true
 ffn_bias: true
-ffn_layer: mlp
+ffn_layer: swiglufused
 depth: 12
 num_heads: 6
 mlp_ratio: 4
-num_register_tokens: 0
+num_register_tokens: 4
 interpolate_offset: 0.1
 interpolate_antialias: true
 interpolate_align_corners: true
-pos_embed_type: "none" # "sincos", "learned", "rope", "none"
+pos_embed_type: "rope" # "sincos", "learned", "rope", "none"
 
 # RoPE configuration (only used when pos_embed_type: "rope")
-rope_theta: 100.0          # period base; ~100 for normalized coords, 10000 for raw positions
-rope_normalize_coords: true  # map positions to [-1,+1]; critical for variable crop sizes
-rope_coord_shift: null     # training augmentation: uniform shift per axis, e.g. 0.1
-rope_coord_jitter: null    # training augmentation: log-uniform scale per axis, e.g. 1.5
-rope_coord_rescale: null   # training augmentation: log-uniform global scale, e.g. 1.5
-
+rope_theta: 50.0           # coords are normalized to [-1,+1], so small theta is better
+rope_normalize_coords: true
+rope_coord_shift: 0.05     # small shift; your crops are already quite small relative to volume
+rope_coord_jitter: 1.3     # log-uniform scale jitter — mimics DINOv3's box jitter
+rope_coord_rescale: 1.5    # global rescale; helps generalize across magnifications
 
 mean: [0.0] # [0.163] # [0.485, 0.456, 0.406]
 std: [1.0] # [0.0988] # [0.229, 0.224, 0.225]

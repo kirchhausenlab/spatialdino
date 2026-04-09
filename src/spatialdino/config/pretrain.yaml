@@ -1,4 +1,4 @@
-experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb-bs_336
+experiment_name: vits8-swiglu-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot-rope-4_register-bs_336
 logging:
   project: cell-interactome
   entity: artificial-intelligence-research
@@ -68,8 +68,8 @@ base_data_dir: "${shards.train[0]}::${shards.train[1]}::${shards.train[2]}::${sh
 output_dir: "${base_path}/output/${experiment_name}"
 device: "cuda"
 seed: 0
-ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=23000/ckpt.pth" # Resume from checkpoint
-resume: true
+ckpt_path: "${base_path}/output/${experiment_name}/checkpoints/step=7000/ckpt.pth" # Resume from checkpoint
+resume: false
 num_workers: 20
 pin_mem: false # Pin CPU memory in DataLoader
 persistent_workers: true
