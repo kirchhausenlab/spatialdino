@@ -12,6 +12,9 @@ class SSL(nn.Module):
         super().__init__()
         self.img_size = make_3tuple(config.global_crop_size)
         self.patch_size = make_3tuple(config.patch_size)
+        self.grid_size = tuple(
+            self.img_size[i] // self.patch_size[i] for i in range(3)
+        )
         self.config = config
         self.config.patch_size = self.patch_size
         self.config.img_size = self.img_size
@@ -41,6 +44,7 @@ class SSL(nn.Module):
             rope_coord_shift=getattr(config, "rope_coord_shift", None),
             rope_coord_jitter=getattr(config, "rope_coord_jitter", None),
             rope_coord_rescale=getattr(config, "rope_coord_rescale", None),
+            rope_drop_prob=getattr(config, "rope_drop_prob", 0.0),
             **kwargs,
         )
         self.student["encoder"] = Encoder(**encoder_kwargs)
@@ -49,6 +53,9 @@ class SSL(nn.Module):
         self.teacher["encoder"] = Encoder(**encoder_kwargs)
         self.do_dino = config.dino_loss_weight > 0
         self.do_ibot = config.ibot_loss_weight > 0
+        # rot_ibot feeds the equivariance crop through the ibot_head and
+        # contributes to the standard ibot_patch_loss — no separate weight.
+        self.do_rot_ibot = getattr(config, "rot_ibot", False) and self.do_ibot
         if self.do_dino:
             self.student["dino_head"] = DINOHead(
                 in_dim=config.embed_dim,
@@ -92,19 +99,34 @@ class SSL(nn.Module):
         device_type: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         enabled: bool = True,
+        equiv_crop: Optional[torch.Tensor] = None,
+        equiv_feat_dims: Optional[Tuple[int, int]] = None,
+        equiv_k: Optional[int] = None,
+        first_global_n_masked_patches: int = 0,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        x_list = [x["collated_global_crops"], x["collated_local_crops"]]
+        masks_list = [masks["collated_global_crops"], masks["collated_local_crops"]]
+
+        if equiv_crop is not None:
+            x_list.append(equiv_crop)
+            masks_list.append(None)
+
         with torch.amp.autocast(
             device_type=device_type,
             dtype=dtype,
             enabled=enabled,
         ):
-            global_output, local_output = self.student["encoder"](
-                [x["collated_global_crops"], x["collated_local_crops"]],
-                masks=[
-                    masks["collated_global_crops"],
-                    masks["collated_local_crops"],
-                ],
+            outputs = self.student["encoder"](
+                x_list,
+                masks=masks_list,
+                equiv_share_rope=equiv_crop is not None,
             )
+
+        global_output = outputs[0]
+        local_output = outputs[1]
+
+        if equiv_crop is not None:
+            global_output["equiv_patchtokens"] = outputs[2]["x_norm_patchtokens"]
 
         if self.do_dino:
             global_output["cls_token_after_head"] = self.student["dino_head"](
@@ -127,6 +149,34 @@ class SSL(nn.Module):
             global_output["patch_tokens_after_head"] = self.student["ibot_head"](
                 buffer_tensor
             )[:n_masked_patches]
+
+        if (
+            self.do_rot_ibot
+            and equiv_crop is not None
+            and equiv_feat_dims is not None
+            and equiv_k is not None
+            and first_global_n_masked_patches > 0
+        ):
+            equiv_patchtokens = global_output["equiv_patchtokens"]  # [B, N, D]
+            B, _, D = equiv_patchtokens.shape
+            gZ, gY, gX = self.grid_size
+            # Inverse-rotate rotated features back to canonical grid alignment
+            equiv_grid = equiv_patchtokens.reshape(B, gZ, gY, gX, D)
+            equiv_grid = torch.rot90(equiv_grid, 4 - equiv_k, equiv_feat_dims)
+            equiv_aligned = equiv_grid.reshape(B, -1, D)  # [B, N, D]
+
+            # Mask indices for the first global crop are the first
+            # `first_global_n_masked_patches` entries of `mask_indices_list`
+            # (sorted ascending by flat index, first B samples occupy [0, B*N)).
+            first_indices = mask_indices_list[:first_global_n_masked_patches]
+            equiv_masked = torch.index_select(
+                equiv_aligned.flatten(0, 1),
+                dim=0,
+                index=first_indices,
+            )  # [first_global_n_masked_patches, D]
+            global_output["equiv_patch_tokens_after_head"] = self.student["ibot_head"](
+                equiv_masked
+            )
 
         return global_output, local_output
 

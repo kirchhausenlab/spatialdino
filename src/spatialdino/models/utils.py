@@ -70,6 +70,7 @@ def init_backbone(config: DictConfig) -> Encoder:
         rope_coord_shift=getattr(config, "rope_coord_shift", None),
         rope_coord_jitter=getattr(config, "rope_coord_jitter", None),
         rope_coord_rescale=getattr(config, "rope_coord_rescale", None),
+        rope_drop_prob=getattr(config, "rope_drop_prob", 0.0),
     )
 
     if config.backbone_path:

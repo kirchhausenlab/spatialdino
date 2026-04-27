@@ -107,6 +107,8 @@ def main() -> None:
     else:
         prog = dataloader
 
+    save_special_tokens = bool(getattr(config, "save_special_tokens", False))
+
     def predict() -> None:
         """Run inference on the model."""
         for batch in prog:
@@ -124,29 +126,41 @@ def main() -> None:
                 feats_path.parent.mkdir(parents=True, exist_ok=True)
                 logger.info(f"Saving to {feats_path}")
 
+                cls_token = None
+                register_tokens = None
+
                 if use_streaming:
-                    lr_feats = streaming_encoder.predict(
+                    result = streaming_encoder.predict(
                         volume,
                         vol_metadata=vol_metadata,
                         vit_feat="patch_attn",
                         norm_feat=config.norm_feat,
-                    ).squeeze(0)
-                    lr_feats = lr_feats.float()
-                else:
-                    lr_feats = (
-                        model(
-                            img=volume.unsqueeze_(0),
-                            vit_feat="patch_attn",
-                            norm_feat=config.norm_feat,
-                            dtype=dtype,
-                            use_amp=config.use_amp,
-                            device_type=config.device_type,
-                            device=device,
-                        )
-                        .cpu()
-                        .squeeze_(0)
-                        .float()
+                        return_special_tokens=save_special_tokens,
                     )
+                    if save_special_tokens:
+                        lr_feats, cls_token, register_tokens = result
+                    else:
+                        lr_feats = result
+                    lr_feats = lr_feats.squeeze(0).float()
+                else:
+                    result = model(
+                        img=volume.unsqueeze_(0),
+                        vit_feat="patch_attn",
+                        norm_feat=config.norm_feat,
+                        dtype=dtype,
+                        use_amp=config.use_amp,
+                        device_type=config.device_type,
+                        device=device,
+                        return_special_tokens=save_special_tokens,
+                    )
+                    if save_special_tokens:
+                        lr_feats, cls_token, register_tokens = result
+                        cls_token = cls_token.cpu().float()
+                        if register_tokens is not None:
+                            register_tokens = register_tokens.cpu().float()
+                    else:
+                        lr_feats = result
+                    lr_feats = lr_feats.cpu().squeeze_(0).float()
 
                 padding = vol_metadata["padding"]
                 scale_factor = (
@@ -168,6 +182,15 @@ def main() -> None:
                 lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
                 np.save(feats_path, lr_feats.cpu().numpy())
                 logger.info(f"Saved features to {feats_path}")
+
+                if save_special_tokens and cls_token is not None:
+                    cls_path = feats_path.parent / f"{feats_path.stem}_cls.npy"
+                    np.save(cls_path, cls_token.numpy())
+                    logger.info(f"Saved CLS token to {cls_path}")
+                if save_special_tokens and register_tokens is not None:
+                    reg_path = feats_path.parent / f"{feats_path.stem}_registers.npy"
+                    np.save(reg_path, register_tokens.numpy())
+                    logger.info(f"Saved register tokens to {reg_path}")
 
     predict()
 

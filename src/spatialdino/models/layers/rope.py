@@ -34,6 +34,7 @@ def build_3d_rope_cache(
     coord_shift: float | None = None,
     coord_jitter: float | None = None,
     coord_rescale: float | None = None,
+    drop_prob: float = 0.0,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> RoPECache:
@@ -62,6 +63,9 @@ def build_3d_rope_cache(
             factor in ``[1/coord_jitter, coord_jitter]`` per axis.
         coord_rescale: if not None, multiply all coords by a single
             log-uniform random factor in ``[1/coord_rescale, coord_rescale]``.
+        drop_prob: probability of zeroing all RoPE angles for a patch token
+            (identity rotation → no position info).  Applied before prefix
+            tokens are prepended, so CLS/registers are never dropped.
 
     Returns:
         (cos, sin) each of shape ``[num_prefix_tokens + num_patches, head_dim // 2]``.
@@ -70,10 +74,20 @@ def build_3d_rope_cache(
     half_dim = head_dim // 2
     grid_z, grid_y, grid_x = grid_size
 
-    # Split frequency pairs across the three spatial axes
-    pairs_z = half_dim // 3
-    pairs_y = half_dim // 3
-    pairs_x = half_dim - pairs_z - pairs_y  # remainder to X
+    # Split frequency pairs evenly across the three spatial axes.
+    # Remainder pairs go to Z, then Y (round-robin) to avoid over-representing
+    # any single axis — the previous X-heavy split caused PCA artifacts.
+
+    pairs_per_axis = half_dim // 3
+    remainder = half_dim - 3 * pairs_per_axis
+
+    # pairs_z = half_dim //3 # Using old method for consistency with previous runs; 
+    # pairs_y = half_dim //3
+    # pairs_x = half_dim - pairs_z - pairs_y
+
+    pairs_z = pairs_per_axis + (1 if remainder > 0 else 0)
+    pairs_y = pairs_per_axis + (1 if remainder > 1 else 0)
+    pairs_x = pairs_per_axis
 
     def _freqs(n_pairs: int) -> torch.Tensor:
         t = torch.arange(n_pairs, device=device, dtype=dtype)
@@ -147,6 +161,14 @@ def build_3d_rope_cache(
         ],
         dim=1,
     )  # [num_patches, half_dim]
+
+    # RoPE angle dropout: zero all angles for a random subset of patch tokens,
+    # giving them identity rotation (cos=1, sin=0 → no position info).
+    if drop_prob > 0.0:
+        keep = torch.bernoulli(
+            torch.full((angles.shape[0], 1), 1.0 - drop_prob, device=device, dtype=dtype)
+        )
+        angles = angles * keep
 
     # Prefix tokens (CLS / registers) get identity rotation (angle = 0)
     if num_prefix_tokens > 0:
@@ -236,6 +258,7 @@ class RoPE3D(nn.Module):
         coord_shift: float | None = None,
         coord_jitter: float | None = None,
         coord_rescale: float | None = None,
+        drop_prob: float = 0.0,
     ) -> None:
         super().__init__()
         self.head_dim = head_dim
@@ -244,6 +267,7 @@ class RoPE3D(nn.Module):
         self.coord_shift = coord_shift
         self.coord_jitter = coord_jitter
         self.coord_rescale = coord_rescale
+        self.drop_prob = drop_prob
         # Eval-mode cache: maps (grid, num_prefix, dtype) → RoPECache
         self._cache: dict[tuple, RoPECache] = {}
 
@@ -265,6 +289,7 @@ class RoPE3D(nn.Module):
                 self.coord_shift,
                 self.coord_jitter,
                 self.coord_rescale,
+                self.drop_prob,
             ]
         )
 
@@ -293,6 +318,7 @@ class RoPE3D(nn.Module):
             coord_shift=self.coord_shift if self.training else None,
             coord_jitter=self.coord_jitter if self.training else None,
             coord_rescale=self.coord_rescale if self.training else None,
+            drop_prob=self.drop_prob if self.training else 0.0,
             device=device,
             dtype=dtype,
         )
@@ -315,4 +341,6 @@ class RoPE3D(nn.Module):
             parts.append(f"coord_jitter={self.coord_jitter}")
         if self.coord_rescale is not None:
             parts.append(f"coord_rescale={self.coord_rescale}")
+        if self.drop_prob > 0:
+            parts.append(f"drop_prob={self.drop_prob}")
         return ", ".join(parts)

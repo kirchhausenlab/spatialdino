@@ -77,6 +77,7 @@ class Encoder(nn.Module):
         rope_coord_shift: Optional[float] = None,
         rope_coord_jitter: Optional[float] = None,
         rope_coord_rescale: Optional[float] = None,
+        rope_drop_prob: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -232,6 +233,7 @@ class Encoder(nn.Module):
                 coord_shift=rope_coord_shift,
                 coord_jitter=rope_coord_jitter,
                 coord_rescale=rope_coord_rescale,
+                drop_prob=rope_drop_prob,
             )
         else:
             # no positional encoding
@@ -293,6 +295,10 @@ class Encoder(nn.Module):
         z0 = 1 + (z - self.patch_size[0]) // self.stride[0]
         h0 = 1 + (h - self.patch_size[1]) // self.stride[1]
         w0 = 1 + (w - self.patch_size[2]) // self.stride[2]
+
+        # Skip interpolation entirely at training resolution — return raw weights
+        if (z0, h0, w0) == self.grid_size:
+            return pos_embed.to(previous_dtype)
 
         kwargs = {}
         if self.interpolate_offset:
@@ -392,7 +398,10 @@ class Encoder(nn.Module):
         return x
 
     def forward_features_list(
-        self, x_list: List[torch.Tensor], masks_list: List[torch.Tensor]
+        self,
+        x_list: List[torch.Tensor],
+        masks_list: List[torch.Tensor],
+        equiv_share_rope: bool = False,
     ) -> List[Dict[str, Any]]:
         """_summary_
         - Process list of tensors through transformer pipeline
@@ -401,6 +410,12 @@ class Encoder(nn.Module):
         - Pass through 12 transformer blocks with self-attention and FFN
         - Return both normalized and pre-normalized outputs for different use cases
         - Supports batch processing of multiple volumes simultaneously
+
+        When ``equiv_share_rope`` is True, the last crop in ``x_list`` reuses the
+        exact RoPE cache built for the first crop. This is required by the
+        rotation-equivariance loss: the first global crop and the rotated
+        equivariance crop must see identical positional encodings so the cosine
+        comparison only measures rotation error, not augmentation drift.
         """
         self._ensure_tt_registers_supported()
         x = [
@@ -413,17 +428,26 @@ class Encoder(nn.Module):
         num_prefix = 1 + self.num_register_tokens
         rope_list: Optional[List[RoPECache]] = None
         if self.use_rope:
-            rope_list = [
-                self._build_rope_cache(
-                    xi.shape[2],
-                    xi.shape[3],
-                    xi.shape[4],
-                    device=x[0].device,
-                    dtype=x[0].dtype,
-                    num_prefix_tokens=num_prefix,
+            rope_list = []
+            for i, xi in enumerate(x_list):
+                if (
+                    equiv_share_rope
+                    and i == len(x_list) - 1
+                    and len(x_list) >= 2
+                    and xi.shape[2:] == x_list[0].shape[2:]
+                ):
+                    rope_list.append(rope_list[0])
+                    continue
+                rope_list.append(
+                    self._build_rope_cache(
+                        xi.shape[2],
+                        xi.shape[3],
+                        xi.shape[4],
+                        device=x[0].device,
+                        dtype=x[0].dtype,
+                        num_prefix_tokens=num_prefix,
+                    )
                 )
-                for xi in x_list
-            ]
 
         for blk in self.blocks:
             x = blk(x, rope=rope_list)
@@ -452,6 +476,7 @@ class Encoder(nn.Module):
         self,
         x: Union[torch.Tensor, List[torch.Tensor]],
         masks: Union[torch.Tensor, List[torch.Tensor], None] = None,
+        equiv_share_rope: bool = False,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """_summary_
         - Main feature extraction method - handles both single tensors and lists
@@ -466,7 +491,7 @@ class Encoder(nn.Module):
         """
         self._ensure_tt_registers_supported()
         if isinstance(x, list):
-            return self.forward_features_list(x, masks)
+            return self.forward_features_list(x, masks, equiv_share_rope=equiv_share_rope)
 
         Z, H, W = x.shape[2], x.shape[3], x.shape[4]
         x = self.prepare_tokens_with_masks(x, masks)
@@ -495,20 +520,22 @@ class Encoder(nn.Module):
         self,
         x: Union[torch.Tensor, List[torch.Tensor]],
         masks: Union[torch.Tensor, List[torch.Tensor], None] = None,
+        equiv_share_rope: bool = False,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """_summary_
         - If a list, call the forward_features_list method.
         - If a single tensor, call the forward_features method.
         - return the tensor.
         """
-        return self.forward_features(x, masks)
+        return self.forward_features(x, masks, equiv_share_rope=equiv_share_rope)
 
     def _predict(
         self,
         x: torch.Tensor,
         vit_feat: Literal["patch", "patch_attn", "attn"] = "patch_attn",
         norm_feat: Literal["prenorm", "norm"] = "prenorm",
-    ) -> torch.Tensor:
+        return_special_tokens: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
         # assert isinstance(x, torch.Tensor)
 
         Z, Y, X = x.shape[-3:]
@@ -566,6 +593,17 @@ class Encoder(nn.Module):
             elif vit_feat == "patch_attn":
                 res[..., : -self.num_heads] = self.norm(res[..., : -self.num_heads])
 
+        # Optionally capture CLS and register features before stripping.
+        # Always slice only the embed_dim feature dims (safe for both "patch" and
+        # "patch_attn" layouts where res may have extra attention columns appended).
+        if return_special_tokens:
+            special = res[0, :num_prefix, : self.embed_dim]  # [num_prefix, D]
+            cls_token = special[0]  # [D]
+            num_regs = self.num_register_tokens + self.num_tt_register_tokens
+            register_tokens: Optional[torch.Tensor] = (
+                special[1 : 1 + num_regs] if num_regs > 0 else None
+            )
+
         # Strip CLS + all register tokens to get only patch tokens
         res = res[:, num_prefix:].transpose(1, 2)  # [B, C, L]
 
@@ -577,6 +615,8 @@ class Encoder(nn.Module):
             x0,
         )  # [B, C, Z, Y, X]
 
+        if return_special_tokens:
+            return res, cls_token, register_tokens
         return res
 
     def predict(
@@ -588,18 +628,20 @@ class Encoder(nn.Module):
         use_amp: bool = True,
         device_type: str = "cuda",
         device: torch.device | str | None = None,
+        return_special_tokens: bool = False,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
         with torch.no_grad():
             with torch.amp.autocast(  # type: ignore
                 enabled=use_amp,
                 dtype=dtype,
                 device_type=device_type,
             ):
-                lr_feats = self._predict(
+                result = self._predict(
                     img.to(device),
                     vit_feat=vit_feat,
                     norm_feat=norm_feat,
+                    return_special_tokens=return_special_tokens,
                 )
 
-        return lr_feats
+        return result

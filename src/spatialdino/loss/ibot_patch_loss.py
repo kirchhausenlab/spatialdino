@@ -32,7 +32,9 @@ class iBOTPatchLoss(nn.Module):
         teacher_patch_tokens = teacher_patch_tokens.float()
         return F.softmax(
             (
-                teacher_patch_tokens.sub_(self.center.to(teacher_patch_tokens.dtype))
+                teacher_patch_tokens.sub_(
+                    self.center.to(device=teacher_patch_tokens.device, dtype=teacher_patch_tokens.dtype)
+                )
             ).mul_(1 / teacher_temp),
             dim=-1,
         )
@@ -140,8 +142,8 @@ class iBOTPatchLoss(nn.Module):
                 self.reduce_handle.wait()
             _t = self.async_batch_center / (self.len_teacher_patch_tokens * world_size)
 
-            self.center = self.center * self.center_momentum + _t * (
-                1 - self.center_momentum
-            )
+            _t_local = _t.to(device=self.center.device, dtype=self.center.dtype)
+            self.center.mul_(self.center_momentum)
+            self.center.add_(_t_local * (1 - self.center_momentum))
 
             self.updated = True

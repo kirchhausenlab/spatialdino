@@ -4,7 +4,7 @@ local_crop_size: [48, 48, 48] # Local crop size for training
 patch_size: [8, 8, 8]
 stride: [8, 8, 8]
 embed_dim: 384
-drop_path_rate: 0.4
+drop_path_rate: 0.3
 layerscale: 1.0e-05
 drop_path_uniform: true
 qkv_bias: true
@@ -14,18 +14,19 @@ ffn_layer: swiglufused
 depth: 12
 num_heads: 6
 mlp_ratio: 4
-num_register_tokens: 4
+num_register_tokens: 0
 interpolate_offset: 0.1
 interpolate_antialias: true
 interpolate_align_corners: true
-pos_embed_type: "rope" # "sincos", "learned", "rope", "none"
+pos_embed_type: "learned" # "sincos", "learned", "rope", "none"
 
 # RoPE configuration (only used when pos_embed_type: "rope")
-rope_theta: 50.0           # coords are normalized to [-1,+1], so small theta is better
+rope_theta: 200            # period base for normalized coords (DiNOv3 style); ~100-200 is typical
 rope_normalize_coords: true
-rope_coord_shift: 0.05     # small shift; your crops are already quite small relative to volume
+rope_coord_shift: 0.15     # shift in [-1,+1] normalized coord space
 rope_coord_jitter: 1.3     # log-uniform scale jitter — mimics DINOv3's box jitter
 rope_coord_rescale: 1.5    # global rescale; helps generalize across magnifications
+rope_drop_prob: 0.1        # fraction of patch tokens that get identity rotation (no position)
 
 mean: [0.0] # [0.163] # [0.485, 0.456, 0.406]
 std: [1.0] # [0.0988] # [0.229, 0.224, 0.225]
