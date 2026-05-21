@@ -13,6 +13,7 @@ TMP_DIRNAME = "tmp"
 HR_FEATS_DIRNAME = "hr_feats"
 SEG_VORONOI_DIRNAME = "seg_voronoi"
 SEG_PROBMAP_DIRNAME = "seg_probmap"
+PROBMAP_DIRNAME = "probmap"
 PROBMAP_DENSITIES_FILENAME = "probmap_densities.npz"
 TRACKS_FILENAME = "tracks.csv"
 NORM_PER_VOL_FILENAME = "norm_per_vol.txt"
@@ -75,6 +76,10 @@ def segmentation_voronoi_dir(root: str | Path) -> Path:
 
 def segmentation_probmap_dir(root: str | Path) -> Path:
     return Path(root) / SEG_PROBMAP_DIRNAME
+
+
+def probability_map_dir(root: str | Path) -> Path:
+    return Path(root) / PROBMAP_DIRNAME
 
 
 def probability_map_densities_path(root: str | Path) -> Path:

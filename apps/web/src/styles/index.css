@@ -989,6 +989,10 @@ button {
   padding: 0 8px;
 }
 
+.inferenceTextInputWide {
+  width: min(264px, 100%);
+}
+
 .inferenceCheckboxOption {
   display: inline-flex;
   align-items: center;

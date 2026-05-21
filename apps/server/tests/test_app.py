@@ -606,6 +606,83 @@ class AppTests(unittest.TestCase):
         self.assertIn("--output-path", command)
         self.assertIn(str(output_dir), command)
 
+    def test_build_process_features_launch_config_accepts_file_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "processed-output"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b", "sample_c"):
+                write_inference_output_timepoint(input_dir, name)
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                file_range=app_module.InferenceFileRangeRequest(start=1, end=2),
+                save_high_resolution_features=True,
+                high_resolution_save_format=".tif",
+                save_pca=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderCount"], 2)
+        self.assertEqual(validation["selectedFileCount"], 2)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["subfolder_count"], 2)
+        self.assertEqual(launch_config["input_subfolder_count"], 3)
+        self.assertEqual(launch_config["file_start"], 1)
+        self.assertEqual(launch_config["file_end"], 3)
+        self.assertEqual(launch_config["selected_timepoint_names"], ["sample_b", "sample_c"])
+
+        command = app_module._build_process_features_command(launch_config)
+        self.assertIn("--file-start", command)
+        self.assertEqual(command[command.index("--file-start") + 1], "1")
+        self.assertIn("--file-end", command)
+        self.assertEqual(command[command.index("--file-end") + 1], "3")
+
+    def test_build_process_features_launch_config_rejects_empty_file_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "processed-output"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                write_inference_output_timepoint(input_dir, name)
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                file_range=app_module.InferenceFileRangeRequest(start=1, end=0),
+                save_high_resolution_features=True,
+                high_resolution_save_format=".tif",
+                save_pca=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "empty_file_selection")
+        self.assertIsNone(launch_config)
+
     def test_build_process_features_launch_config_rejects_missing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -908,6 +985,7 @@ class AppTests(unittest.TestCase):
                 input_path=str(input_dir),
                 segmentation_path=str(segmentation_dir),
                 output_path=str(output_dir),
+                output_filename="debug_tracks",
                 max_distance_xy=24.0,
                 max_distance_z=12.0,
                 z_distance_weight=2.0,
@@ -915,6 +993,8 @@ class AppTests(unittest.TestCase):
                 vote_thresholds="300,280,260",
                 dice_threshold=0.6,
                 corr_threshold=0.4,
+                save_extended_results=True,
+                ignore_features=True,
             )
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -935,6 +1015,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.6)
         self.assertEqual(launch_config["corr_threshold"], 0.4)
         self.assertFalse(launch_config["invert_z"])
+        self.assertEqual(launch_config["output_filename"], "debug_tracks.csv")
+        self.assertTrue(launch_config["save_extended_results"])
+        self.assertTrue(launch_config["ignore_features"])
         self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
         self.assertEqual(launch_config["output_path"], output_dir)
 
@@ -943,6 +1026,8 @@ class AppTests(unittest.TestCase):
         self.assertIn(str(segmentation_dir), command)
         self.assertIn("--output-path", command)
         self.assertIn(str(output_dir), command)
+        self.assertIn("--output-filename", command)
+        self.assertIn("debug_tracks.csv", command)
         self.assertIn("--max-distance-xy", command)
         self.assertIn("--max-distance-z", command)
         self.assertIn("--z-distance-weight", command)
@@ -951,6 +1036,8 @@ class AppTests(unittest.TestCase):
         self.assertIn("--dice-threshold", command)
         self.assertIn("--corr-threshold", command)
         self.assertNotIn("--invert-z", command)
+        self.assertIn("--save-extended-results", command)
+        self.assertIn("--ignore-features", command)
 
     def test_run_tracking_submits_job_when_valid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1107,6 +1194,32 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(validation["valid"], False)
         self.assertEqual(validation["reasonCode"], "invalid_vote_thresholds")
+        self.assertIsNone(launch_config)
+
+    def test_build_tracking_launch_config_rejects_invalid_output_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            segmentation_dir = root / "segmentations"
+            output_dir = root / "tracking-output"
+            input_dir.mkdir()
+            segmentation_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                write_inference_output_timepoint(input_dir, name, raw_dtype=np.uint16)
+                tifffile.imwrite(segmentation_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint32))
+
+            payload = app_module.RunTrackingRequest(
+                input_path=str(input_dir),
+                segmentation_path=str(segmentation_dir),
+                output_path=str(output_dir),
+                output_filename="../tracks.csv",
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_tracking_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "invalid_output_filename")
         self.assertIsNone(launch_config)
 
     def test_run_segmentation_submits_job_when_valid(self) -> None:

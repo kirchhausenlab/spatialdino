@@ -41,6 +41,10 @@ type ProcessFeaturesRunRequest = {
   input_path: string;
   output_path: string;
   gpu_index: number | null;
+  file_range: {
+    start: number | null;
+    end: number | null;
+  };
   save_high_resolution_features: boolean;
   high_resolution_save_format: SaveFormat;
   save_pca: boolean;
@@ -76,6 +80,7 @@ type TrackingRunRequest = {
   input_path: string;
   segmentation_path: string;
   output_path: string;
+  output_filename: string;
   max_distance_xy: number;
   max_distance_z: number;
   z_distance_weight: number;
@@ -83,6 +88,8 @@ type TrackingRunRequest = {
   vote_thresholds: string;
   dice_threshold: number;
   corr_threshold: number;
+  save_extended_results: boolean;
+  ignore_features: boolean;
 };
 
 type RunSubmittedResponse = {
@@ -144,9 +151,11 @@ const POST_PROCESSING_PARAMETER_HELP = {
   inferenceOutputFolder: INFERENCE_OUTPUT_FOLDER_DESCRIPTION,
   processFeaturesOutputFolder:
     "Root folder where Process features saves pca_<n>/ and hr_feats/ outputs.",
+  chosenFiles: "Limit processing to a contiguous range of validated timepoints. End file is inclusive.",
   segmentationOutputFolder:
-    "Root folder where segmentation saves seg_voronoi/, seg_probmap/, and probmap_densities.npz.",
-  trackingOutputFolder: "Folder where tracking saves tracks.csv.",
+    "Root folder where segmentation saves seg_voronoi/, seg_probmap/, probmap/, and probmap_densities.npz.",
+  trackingOutputFolder: "Folder where tracking saves the output CSV.",
+  trackingOutputFilename: "CSV file name to write inside the selected output folder.",
   segmentationFolder: "Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
   selectGpu: "Choose the GPU that will run this post-processing step.",
   saveHighResolutionFeatures: "Write one full-resolution feature volume per channel under hr_feats/<timepoint>/.",
@@ -184,6 +193,8 @@ const POST_PROCESSING_PARAMETER_HELP = {
   voteThresholds: "Comma-separated vote cutoffs checked in order.",
   minDice: "Minimum Dice overlap required for a match.",
   minCorr: "Minimum intensity correlation required for a match.",
+  saveExtendedResults: "Append assignment-stage diagnostics and object labels to the tracking CSV.",
+  ignoreFeatures: "Skip SpatialDINO feature voting and resolve remaining links by distance only.",
 } as const;
 
 function getWorkflowLabel(workflow: WorkflowOption | null): string {
@@ -226,6 +237,7 @@ export default function PostProcessingPage() {
   const [trackingSegmentationPath, setTrackingSegmentationPath] = useState<string | null>(null);
   const [saveTrackingInDifferentOutputFolder, setSaveTrackingInDifferentOutputFolder] = useState(false);
   const [trackingOutputPath, setTrackingOutputPath] = useState<string | null>(null);
+  const [trackingOutputFilename, setTrackingOutputFilename] = useState("tracks.csv");
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationResult, setValidationResult] = useState<PostProcessingValidationResult | null>(null);
   const [trackingSegmentationValidationLoading, setTrackingSegmentationValidationLoading] = useState(false);
@@ -241,6 +253,7 @@ export default function PostProcessingPage() {
   const [savePca, setSavePca] = useState(false);
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
+  const [processFeaturesFileRange, setProcessFeaturesFileRange] = useState({ start: "0", end: "" });
   const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
   const [rollingBallRadius, setRollingBallRadius] = useState("10");
   const [runDensityEstimation, setRunDensityEstimation] = useState(true);
@@ -265,6 +278,8 @@ export default function PostProcessingPage() {
   const [trackingVoteThresholds, setTrackingVoteThresholds] = useState("320,300,280,260");
   const [trackingDiceThreshold, setTrackingDiceThreshold] = useState("0.5");
   const [trackingCorrThreshold, setTrackingCorrThreshold] = useState("0.5");
+  const [trackingSaveExtendedResults, setTrackingSaveExtendedResults] = useState(false);
+  const [trackingIgnoreFeatures, setTrackingIgnoreFeatures] = useState(false);
   const [voronoiOptionalOpen, setVoronoiOptionalOpen] = useState(false);
   const [probabilityMapOptionalOpen, setProbabilityMapOptionalOpen] = useState(false);
   const [trackingOptionalOpen, setTrackingOptionalOpen] = useState(false);
@@ -335,12 +350,14 @@ export default function PostProcessingPage() {
     trackingSegmentationPath,
     saveTrackingInDifferentOutputFolder,
     trackingOutputPath,
+    trackingOutputFilename,
     selectedGpuIndex,
     saveHighResolutionFeatures,
     highResolutionSaveFormat,
     savePca,
     pcaComponents,
     pcaSaveFormat,
+    processFeaturesFileRange,
     gaussianBlurSigma,
     rollingBallRadius,
     runDensityEstimation,
@@ -364,6 +381,8 @@ export default function PostProcessingPage() {
     trackingVoteThresholds,
     trackingDiceThreshold,
     trackingCorrThreshold,
+    trackingSaveExtendedResults,
+    trackingIgnoreFeatures,
   ]);
 
   const workflowLabel = getWorkflowLabel(selectedWorkflow);
@@ -377,6 +396,7 @@ export default function PostProcessingPage() {
   const trackingSegmentationValidated = trackingSegmentationValidationResult?.valid === true;
   const parametersVisible = trackingSelected ? inputValidated && trackingSegmentationValidated : inputValidated;
   const validatedSubfolderNames = inputValidated ? validationResult.subfolderNames ?? [] : [];
+  const maxProcessFeaturesFileIndex = processFeaturesSelected && inputValidated ? validationResult.subfolderCount - 1 : undefined;
   const showDensityEstimationTimepoint = validatedSubfolderNames.length > 1;
   const probmapDensitiesPath = inputValidated ? validationResult.probmapDensitiesPath ?? null : null;
   const probmapDensitiesExists = inputValidated ? Boolean(validationResult.probmapDensitiesExists) : false;
@@ -545,6 +565,10 @@ export default function PostProcessingPage() {
       input_path: inputPath,
       output_path: effectiveProcessFeaturesOutputPath,
       gpu_index: selectedGpuIndex,
+      file_range: {
+        start: parseNullableInteger(processFeaturesFileRange.start),
+        end: parseNullableInteger(processFeaturesFileRange.end),
+      },
       save_high_resolution_features: saveHighResolutionFeatures,
       high_resolution_save_format: highResolutionSaveFormat,
       save_pca: savePca,
@@ -798,6 +822,29 @@ export default function PostProcessingPage() {
       return;
     }
 
+    const trimmedOutputFilename = trackingOutputFilename.trim();
+    if (!trimmedOutputFilename) {
+      setRunFeedback({ tone: "error", message: "Enter an output file name." });
+      return;
+    }
+    if (
+      trimmedOutputFilename === "." ||
+      trimmedOutputFilename === ".." ||
+      trimmedOutputFilename.includes("/") ||
+      trimmedOutputFilename.includes("\\")
+    ) {
+      setRunFeedback({ tone: "error", message: "Output file name must be a file name, not a path." });
+      return;
+    }
+    let normalizedOutputFilename = trimmedOutputFilename;
+    if (!trimmedOutputFilename.includes(".")) {
+      normalizedOutputFilename = `${trimmedOutputFilename}.csv`;
+      setTrackingOutputFilename(normalizedOutputFilename);
+    } else if (!trimmedOutputFilename.toLowerCase().endsWith(".csv")) {
+      setRunFeedback({ tone: "error", message: "Output file name must end in .csv." });
+      return;
+    }
+
     const parsedMaxDistanceXy = Number.parseFloat(trackingMaxDistanceXy.trim());
     if (!Number.isFinite(parsedMaxDistanceXy) || parsedMaxDistanceXy <= 0) {
       setRunFeedback({ tone: "error", message: "Enter a valid positive number for Max XY distance." });
@@ -847,6 +894,7 @@ export default function PostProcessingPage() {
       input_path: inputPath,
       segmentation_path: trackingSegmentationPath,
       output_path: effectiveTrackingOutputPath ?? inputPath,
+      output_filename: normalizedOutputFilename,
       max_distance_xy: parsedMaxDistanceXy,
       max_distance_z: parsedMaxDistanceZ,
       z_distance_weight: parsedZDistanceWeight,
@@ -854,6 +902,8 @@ export default function PostProcessingPage() {
       vote_thresholds: normalizedVoteThresholds.join(","),
       dice_threshold: parsedDiceThreshold,
       corr_threshold: parsedCorrThreshold,
+      save_extended_results: trackingSaveExtendedResults,
+      ignore_features: trackingIgnoreFeatures,
     });
   }
 
@@ -1066,6 +1116,20 @@ export default function PostProcessingPage() {
                 </label>
               </div>
 
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel
+                    label="File name:"
+                    description={POST_PROCESSING_PARAMETER_HELP.trackingOutputFilename}
+                  />
+                </div>
+                <PostProcessingTextInput
+                  value={trackingOutputFilename}
+                  onChange={setTrackingOutputFilename}
+                  className="inferenceTextInputWide"
+                />
+              </div>
+
               {saveTrackingInDifferentOutputFolder ? (
                 <DirectoryFieldRow
                   label={
@@ -1119,6 +1183,30 @@ export default function PostProcessingPage() {
               onSelectGpu={setSelectedGpuIndex}
               helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
             />
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel isStrong">
+                <ParameterHelpLabel label="Chosen files" description={POST_PROCESSING_PARAMETER_HELP.chosenFiles} />
+              </div>
+              <div className="inferenceInlineLabel">Start file:</div>
+              <PostProcessingNumberInput
+                value={processFeaturesFileRange.start}
+                onChange={(value) => setProcessFeaturesFileRange((current) => ({ ...current, start: value }))}
+                min={0}
+                step={1}
+                max={maxProcessFeaturesFileIndex}
+                ariaLabel="Start file"
+              />
+              <div className="inferenceInlineLabel">End file:</div>
+              <PostProcessingNumberInput
+                value={processFeaturesFileRange.end}
+                onChange={(value) => setProcessFeaturesFileRange((current) => ({ ...current, end: value }))}
+                min={0}
+                step={1}
+                max={maxProcessFeaturesFileIndex}
+                ariaLabel="End file"
+              />
+            </div>
 
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">
@@ -1396,8 +1484,8 @@ export default function PostProcessingPage() {
 
                 <div className="postProcessingParameterGroup">
                   <div className="postProcessingStageDescription">
-                    Apply the probability maps from Stage 1 on a full movie to produce FG/BG masks, which are then
-                    turned into instance segmentation masks via Connected Component Labeling.
+                    Apply the probability maps from Stage 1 on a full movie to produce probability-map volumes and
+                    FG/BG masks, which are then turned into instance segmentation masks via Connected Component Labeling.
                   </div>
 
                   <div className="inferenceFormRow">
@@ -1588,13 +1676,44 @@ export default function PostProcessingPage() {
             Tracking reads <code>&lt;inference output folder&gt;/lr_feats/&lt;timepoint&gt;.npy</code> and{" "}
             <code>&lt;inference output folder&gt;/raw/&lt;timepoint&gt;.tif</code>, matches them against{" "}
             <code>&lt;segmentation output folder&gt;/&lt;timepoint&gt;.tif</code>, follows the original
-            overlap-and-voting tracker, and writes a single final-format <code>tracks.csv</code> into the selected
+            overlap-and-voting tracker, and writes a single final-format CSV into the selected
             output folder while keeping exported <code>z</code> coordinates as-is.
           </div>
 
           {trackingOptionalOpen ? (
             <div id="tracking-optional-parameters" className="inferenceOptionalSection">
               <div className="inferenceFormRows">
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Save extended results"
+                      description={POST_PROCESSING_PARAMETER_HELP.saveExtendedResults}
+                    />
+                  </div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={trackingSaveExtendedResults}
+                      onChange={(event) => setTrackingSaveExtendedResults(event.target.checked)}
+                    />
+                    <span>Enabled</span>
+                  </label>
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel label="Ignore features" description={POST_PROCESSING_PARAMETER_HELP.ignoreFeatures} />
+                  </div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={trackingIgnoreFeatures}
+                      onChange={(event) => setTrackingIgnoreFeatures(event.target.checked)}
+                    />
+                    <span>Enabled</span>
+                  </label>
+                </div>
+
                 <div className="inferenceFormRow">
                   <div className="inferenceFieldLabel">
                     <ParameterHelpLabel label="Match window" description={POST_PROCESSING_PARAMETER_HELP.matchWindow} />
@@ -1813,11 +1932,15 @@ function PostProcessingNumberInput({
   onChange,
   min,
   step,
+  max,
+  ariaLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
   min: number;
   step: number;
+  max?: number;
+  ariaLabel?: string;
 }) {
   return (
     <input
@@ -1827,6 +1950,8 @@ function PostProcessingNumberInput({
       onChange={(event) => onChange(event.target.value)}
       min={min}
       step={step}
+      max={max}
+      aria-label={ariaLabel}
     />
   );
 }
@@ -1835,15 +1960,17 @@ function PostProcessingTextInput({
   value,
   onChange,
   placeholder,
+  className,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  className?: string;
 }) {
   return (
     <input
       type="text"
-      className="inferenceNumberInput"
+      className={["inferenceNumberInput", className].filter(Boolean).join(" ")}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -1867,4 +1994,11 @@ async function safeJson(resp: Response): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+function parseNullableInteger(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }

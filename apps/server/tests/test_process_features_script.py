@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,19 @@ process_features_script = _load_process_features_module()
 
 
 class ProcessFeaturesScriptTests(unittest.TestCase):
+    def test_select_timepoints_uses_zero_based_exclusive_end(self) -> None:
+        timepoints = [SimpleNamespace(name=name) for name in ("sample_a", "sample_b", "sample_c")]
+
+        selected = process_features_script.select_timepoints(timepoints, file_start=1, file_end=3)
+
+        self.assertEqual([timepoint.name for timepoint in selected], ["sample_b", "sample_c"])
+
+    def test_select_timepoints_rejects_empty_selection(self) -> None:
+        timepoints = [SimpleNamespace(name=name) for name in ("sample_a", "sample_b")]
+
+        with self.assertRaisesRegex(ValueError, "zero timepoints"):
+            process_features_script.select_timepoints(timepoints, file_start=1, file_end=1)
+
     def test_cleanup_output_root_only_removes_requested_pca_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -56,6 +56,18 @@ def parse_args() -> argparse.Namespace:
         default=max(1, min(8, os.cpu_count() or 1)),
         help="Number of worker threads used for writing output files."
     )
+    parser.add_argument(
+        "--file-start",
+        type=int,
+        default=0,
+        help="Zero-based index of the first discovered timepoint to process.",
+    )
+    parser.add_argument(
+        "--file-end",
+        type=int,
+        default=None,
+        help="Exclusive zero-based end index of discovered timepoints to process. Defaults to all remaining timepoints.",
+    )
     return parser.parse_args()
 
 
@@ -293,6 +305,20 @@ def cleanup_output_root(
         remove_output_path(path)
 
 
+def select_timepoints(timepoints: list, *, file_start: int, file_end: int | None) -> list:
+    timepoint_count = len(timepoints)
+    if file_start < 0 or file_start >= timepoint_count:
+        raise ValueError(f"Start file must be between 0 and {timepoint_count - 1}.")
+    if file_end is not None and (file_end < 0 or file_end > timepoint_count):
+        raise ValueError(f"End file must be between 0 and {timepoint_count}.")
+
+    effective_file_end = timepoint_count if file_end is None else file_end
+    if effective_file_end <= file_start:
+        raise ValueError("Chosen files leave zero timepoints to process.")
+
+    return timepoints[file_start:effective_file_end]
+
+
 def process_timepoint(
     timepoint_name: str,
     lr_path: Path,
@@ -352,7 +378,12 @@ def main() -> None:
     device = torch.device("cuda:0")
     torch.cuda.set_device(device)
 
-    timepoints = discover_inference_timepoints(input_path)
+    discovered_timepoints = discover_inference_timepoints(input_path)
+    timepoints = select_timepoints(
+        discovered_timepoints,
+        file_start=int(args.file_start),
+        file_end=args.file_end,
+    )
     cleanup_output_root(
         output_path,
         save_pca=bool(args.save_pca),

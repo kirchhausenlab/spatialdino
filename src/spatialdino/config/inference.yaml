@@ -32,15 +32,15 @@ norm_feat: norm
 chunk_interpolate: true
 interpolate_volume_chunk_size: [1, 448, 448, 448]
 
-inference_route: "streaming" # "default" or "streaming"
+inference_route: "default" # "default" or "streaming"
 
 streaming_storage: "gpu" # "gpu", "cpu", or "disk"
-streaming_q_block_tokens: 16384
+streaming_q_block_tokens: 16384 #16384 #32768
 streaming_patch_chunk_size: [224,448,448] # when null, uses vol_metadata["chunk_size"]
 streaming_pin_memory: true
 streaming_kv_storage: "gpu" # "gpu", "cpu", or "disk"
 
-streaming_use_triton: false
+streaming_use_triton: true
 streaming_triton_block_m: 128
 streaming_triton_block_n: 256
 streaming_triton_block_d: 64

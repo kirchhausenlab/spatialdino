@@ -17,6 +17,7 @@ from spatialdino.inference.output_layout import (
     InferenceTimepointPaths as TimepointPaths,
     PROBMAP_DENSITIES_FILENAME,
     discover_inference_timepoints,
+    probability_map_dir,
     probability_map_densities_path,
     segmentation_probmap_dir,
 )
@@ -655,21 +656,23 @@ def classify_timepoint(
     bg_prob_threshold: float,
     fg_prob_threshold: float,
     device: torch.device,
-) -> Path:
+) -> tuple[Path, Path]:
     lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
     raw_shape = read_tiff_shape(timepoint.raw_path)
     sampler = UpsampledFeatureSampler(lr_feats, raw_shape, device)
     if sampler.channel_count != int(densities.x1.shape[0]):
         raise ValueError(
             f"{timepoint.name} has {sampler.channel_count} feature channels, but densities expect {int(densities.x1.shape[0])}."
-    )
+        )
     z_size, y_size, x_size = raw_shape
     stack_semantic = np.empty((z_size, y_size, x_size), dtype=np.uint8)
+    stack_probmap = np.empty((z_size, y_size, x_size), dtype=np.float32)
 
     for z_indices in iter_z_index_chunks(z_size):
         chunk_depth = len(z_indices)
         cnt_bg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
         cnt_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
+        sum_prob_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.float32)
 
         for start in range(0, sampler.channel_count, feature_batch):
             end = min(sampler.channel_count, start + feature_batch)
@@ -690,19 +693,25 @@ def classify_timepoint(
             zero_mask = denom == 0
             prob_bg = torch.where(zero_mask, 0.5, p_bg / denom).view(end - start, chunk_depth, y_size, x_size)
             prob_fg = torch.where(zero_mask, 0.5, p_fg / denom).view(end - start, chunk_depth, y_size, x_size)
+            sum_prob_fg += prob_fg.sum(dim=0)
             cnt_bg += (prob_bg > bg_prob_threshold).sum(dim=0)
             cnt_fg += (prob_fg > fg_prob_threshold).sum(dim=0)
             sampler.clear_feature_range_cache()
 
         semantic_chunk = (cnt_fg > cnt_bg).to(torch.uint8)
         stack_semantic[z_indices] = semantic_chunk.detach().cpu().numpy()
+        stack_probmap[z_indices] = sum_prob_fg.detach().cpu().numpy()
 
-    output_path = segmentation_probmap_dir(output_root)
-    ensure_dir(output_path)
-    instance_path = output_path / f"{timepoint.name}.tif"
+    segmentation_output_path = segmentation_probmap_dir(output_root)
+    probmap_output_path = probability_map_dir(output_root)
+    ensure_dir(segmentation_output_path)
+    ensure_dir(probmap_output_path)
+    instance_path = segmentation_output_path / f"{timepoint.name}.tif"
+    probmap_path = probmap_output_path / f"{timepoint.name}.tif"
     instance_seg = semantic_to_instance_seg(stack_semantic)
     tifffile.imwrite(instance_path, instance_seg, bigtiff=True, metadata=None, photometric="minisblack")
-    return instance_path
+    tifffile.imwrite(probmap_path, stack_probmap, bigtiff=True, metadata=None, photometric="minisblack")
+    return instance_path, probmap_path
 
 
 def load_or_compute_densities(
@@ -785,6 +794,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
         return params.densities_path
 
     shutil.rmtree(segmentation_probmap_dir(output_root), ignore_errors=True)
+    shutil.rmtree(probability_map_dir(output_root), ignore_errors=True)
     packed_densities = pack_densities(x1_all, f1_all, x2_all, f2_all, device=device)
 
     for index, timepoint in enumerate(timepoints, start=1):

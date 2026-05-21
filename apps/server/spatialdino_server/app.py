@@ -31,7 +31,7 @@ from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 from spatialdino.inference.input_files import list_tiff_paths
 from spatialdino.inference.output_layout import (
-    PROBMAP_DENSITIES_FILENAME,
+    TRACKS_FILENAME,
     discover_inference_timepoints,
     has_duplicate_timepoint_names,
     inference_lr_feats_path,
@@ -325,6 +325,7 @@ class RunProcessFeaturesRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     output_path: str = Field(..., min_length=1)
     gpu_index: int | None = None
+    file_range: InferenceFileRangeRequest = Field(default_factory=InferenceFileRangeRequest)
     save_high_resolution_features: bool = False
     high_resolution_save_format: str = Field(".tif", min_length=1)
     save_pca: bool = False
@@ -361,6 +362,7 @@ class RunTrackingRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     segmentation_path: str = Field(..., min_length=1)
     output_path: str = Field(..., min_length=1)
+    output_filename: str = Field(TRACKS_FILENAME, min_length=1)
     max_distance_xy: float = Field(20.0, gt=0.0)
     max_distance_z: float = Field(10.0, gt=0.0)
     z_distance_weight: float = Field(2.5, gt=0.0)
@@ -369,6 +371,8 @@ class RunTrackingRequest(BaseModel):
     dice_threshold: float = Field(0.5, ge=0.0, le=1.0)
     corr_threshold: float = Field(0.5, ge=-1.0, le=1.0)
     invert_z: bool = False
+    save_extended_results: bool = False
+    ignore_features: bool = False
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -495,6 +499,21 @@ def _parse_tracking_vote_thresholds(raw_value: str) -> tuple[int, ...] | None:
             raise ValueError("Vote thresholds must be positive integers.")
         thresholds.append(parsed)
     return tuple(thresholds) if thresholds else None
+
+
+def _normalize_tracking_output_filename(raw_value: str | None) -> str:
+    text = TRACKS_FILENAME if raw_value is None else raw_value.strip()
+    if not text:
+        raise ValueError("Output file name must not be empty.")
+    path = Path(text)
+    if path.name != text or text in {".", ".."} or "/" in text or "\\" in text:
+        raise ValueError("Output file name must be a file name, not a path.")
+    if path.suffix == "":
+        text = f"{text}.csv"
+        path = Path(text)
+    if path.suffix.lower() != ".csv":
+        raise ValueError("Output file name must end in .csv.")
+    return text
 
 
 def validate_process_features_input_folder(raw_path: str) -> dict[str, Any]:
@@ -797,11 +816,33 @@ def _build_process_features_launch_config(
         return output_error, None
 
     subfolder_count = int(input_validation["subfolderCount"])
+    timepoint_names = list(input_validation.get("subfolderNames", []))
+    file_start = _coerce_start(payload.file_range.start)
+    file_end_inclusive = payload.file_range.end
+    if file_start < 0 or file_start >= subfolder_count:
+        return _invalid_process_features_run(
+            "invalid_file_range",
+            f"Start file must be between 0 and {subfolder_count - 1}.",
+        ), None
+    if file_end_inclusive is not None and (file_end_inclusive < 0 or file_end_inclusive >= subfolder_count):
+        return _invalid_process_features_run(
+            "invalid_file_range",
+            f"End file must be between 0 and {subfolder_count - 1}.",
+        ), None
+
+    file_end = _coerce_script_file_end(file_end_inclusive)
+    effective_file_end = subfolder_count if file_end is None else file_end
+    if effective_file_end <= file_start:
+        return _invalid_process_features_run("empty_file_selection", "Chosen files leave zero timepoints to process."), None
+
+    selected_timepoint_names = timepoint_names[file_start:effective_file_end]
+    selected_subfolder_count = len(selected_timepoint_names)
     return (
         {
             "valid": True,
             "message": "Validation passed.",
-            "subfolderCount": subfolder_count,
+            "subfolderCount": selected_subfolder_count,
+            "selectedFileCount": selected_subfolder_count,
         },
         {
             "input_path": input_path,
@@ -812,7 +853,11 @@ def _build_process_features_launch_config(
             "pca_save_format": payload.pca_save_format,
             "save_high_resolution_features": bool(payload.save_high_resolution_features),
             "high_resolution_save_format": payload.high_resolution_save_format,
-            "subfolder_count": subfolder_count,
+            "subfolder_count": selected_subfolder_count,
+            "input_subfolder_count": subfolder_count,
+            "file_start": file_start,
+            "file_end": file_end,
+            "selected_timepoint_names": selected_timepoint_names,
         },
     )
 
@@ -987,6 +1032,10 @@ def _build_tracking_launch_config(
         vote_thresholds = _parse_tracking_vote_thresholds(payload.vote_thresholds)
     except ValueError as exc:
         return _invalid_process_features_run("invalid_vote_thresholds", str(exc)), None
+    try:
+        output_filename = _normalize_tracking_output_filename(payload.output_filename)
+    except ValueError as exc:
+        return _invalid_process_features_run("invalid_output_filename", str(exc)), None
     return (
         {
             "valid": True,
@@ -997,6 +1046,7 @@ def _build_tracking_launch_config(
             "input_path": input_path,
             "segmentation_path": segmentation_path,
             "output_path": output_path,
+            "output_filename": output_filename,
             "max_distance_xy": float(payload.max_distance_xy),
             "max_distance_z": float(payload.max_distance_z),
             "z_distance_weight": float(payload.z_distance_weight),
@@ -1008,6 +1058,8 @@ def _build_tracking_launch_config(
             "dice_threshold": float(payload.dice_threshold),
             "corr_threshold": float(payload.corr_threshold),
             "invert_z": bool(payload.invert_z),
+            "save_extended_results": bool(payload.save_extended_results),
+            "ignore_features": bool(payload.ignore_features),
         },
     )
 
@@ -1490,7 +1542,11 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         launch_config["pca_save_format"],
         "--high-resolution-format",
         launch_config["high_resolution_save_format"],
+        "--file-start",
+        str(launch_config["file_start"]),
     ]
+    if launch_config["file_end"] is not None:
+        command.extend(["--file-end", str(launch_config["file_end"])])
     if launch_config["save_pca"]:
         command.append("--save-pca")
     if launch_config["save_high_resolution_features"]:
@@ -1569,6 +1625,8 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         str(launch_config["segmentation_path"]),
         "--output-path",
         str(launch_config["output_path"]),
+        "--output-filename",
+        str(launch_config["output_filename"]),
         "--max-distance-xy",
         str(launch_config["max_distance_xy"]),
         "--max-distance-z",
@@ -1589,6 +1647,10 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         command.extend(["--vote-thresholds", ""])
     if launch_config.get("invert_z", False):
         command.append("--invert-z")
+    if launch_config.get("save_extended_results", False):
+        command.append("--save-extended-results")
+    if launch_config.get("ignore_features", False):
+        command.append("--ignore-features")
     return command
 
 

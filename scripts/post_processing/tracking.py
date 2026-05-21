@@ -11,12 +11,15 @@ from typing import Any, Iterable
 import numpy as np
 import tifffile
 from spatialdino.inference.output_layout import (
+    TRACKS_FILENAME,
     discover_inference_timepoints,
-    tracks_csv_path,
 )
 
 DEFAULT_FEATURE_BATCH_BYTES = 256 * 1024 * 1024
 DEFAULT_N_PATCH_FEATURES = 384
+CSV_NAN = "NaN"
+
+
 @dataclass
 class TimepointPaths:
     name: str
@@ -70,8 +73,25 @@ class AssignmentRecord:
     ref_label: int
     candidate_label: int
     method: str
+    stage: int
     distance: float | None = None
     wins: int | None = None
+    vote_threshold: int | None = None
+    dice: float | None = None
+    corr: float | None = None
+    mse: float | None = None
+
+
+@dataclass
+class SegmentDiagnostics:
+    stage: int
+    assignment_method: str
+    dice: float | None
+    corr: float | None
+    mse: float | None
+    feat_votes: int | None
+    vote_threshold: int | None
+    anisotropic_distance: float | None
 
 
 @dataclass
@@ -93,6 +113,7 @@ class TrackPoint:
     centroid: tuple[float, float, float]
     volume: int
     amplitude: float
+    incoming: SegmentDiagnostics | None = None
 
 
 @dataclass
@@ -106,7 +127,9 @@ class Track:
 @dataclass
 class RefCandidateMetrics:
     ref_label: int
+    ref_centroid: np.ndarray
     candidate_ids: np.ndarray
+    candidate_centroids: np.ndarray
     distances: np.ndarray
     dice: np.ndarray
     overlap_counts: np.ndarray
@@ -132,6 +155,8 @@ class TrackingParams:
     dice_threshold: float
     corr_threshold: float
     invert_z: bool
+    save_extended_results: bool = False
+    ignore_features: bool = False
 
 
 class PipelineError(RuntimeError):
@@ -149,7 +174,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-path",
         default=None,
-        help="Folder where tracks.csv will be written. Defaults to the input folder.",
+        help="Folder where the tracking CSV will be written. Defaults to the input folder.",
+    )
+    parser.add_argument(
+        "--output-filename",
+        default=TRACKS_FILENAME,
+        help=f"CSV filename to write inside the output folder. Defaults to {TRACKS_FILENAME}.",
     )
     parser.add_argument(
         "--max-distance-xy",
@@ -193,6 +223,16 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Minimum feature correlation required for a feature vote.",
     )
+    parser.add_argument(
+        "--save-extended-results",
+        action="store_true",
+        help="Append per-row tracking diagnostics to the output CSV.",
+    )
+    parser.add_argument(
+        "--ignore-features",
+        action="store_true",
+        help="Skip feature voting and resolve links using distance stages only.",
+    )
     invert_group = parser.add_mutually_exclusive_group()
     invert_group.add_argument(
         "--invert-z",
@@ -220,6 +260,22 @@ def parse_thresholds(text: str | None) -> tuple[int, ...] | None:
             continue
         thresholds.append(int(value))
     return tuple(thresholds)
+
+
+def normalize_output_filename(filename: str | None) -> str:
+    value = TRACKS_FILENAME if filename is None else filename.strip()
+    if not value:
+        raise PipelineError("Output filename must not be empty.")
+    path = Path(value)
+    if path.name != value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise PipelineError("Output filename must be a file name, not a path.")
+    if path.suffix == "":
+        value = f"{value}.csv"
+        path = Path(value)
+    if path.suffix.lower() != ".csv":
+        raise PipelineError("Output filename must end in .csv.")
+    return value
+
 
 def read_tiff_volume(path: str | Path) -> np.ndarray:
     array = np.asarray(tifffile.imread(path))
@@ -349,8 +405,8 @@ def prepare_timepoint(index: int, paths: TimepointPaths) -> PreparedTimepoint:
 
 def anisotropic_distance(a: np.ndarray, b: np.ndarray, zratio: float) -> float:
     dyx = a[:2] - b[:2]
-    dz = a[2] - b[2]
-    return float(np.sqrt(np.sum(dyx**2) + zratio * (dz**2)))
+    dz = zratio * (a[2] - b[2])
+    return float(np.sqrt(np.sum(dyx**2) + dz**2))
 
 
 def find_spatial_candidates(
@@ -573,6 +629,7 @@ def compute_pair_metrics(
     n_features: int,
     spatial_radius: tuple[float, float, float],
     zratio: float,
+    ignore_features: bool = False,
 ) -> dict[int, RefCandidateMetrics]:
     spatial = find_spatial_candidates(
         ref_tp,
@@ -600,7 +657,13 @@ def compute_pair_metrics(
 
         metrics_by_ref[int(ref_id)] = RefCandidateMetrics(
             ref_label=int(ref_id),
+            ref_centroid=ref_geom.centroid.astype(np.float64, copy=True),
             candidate_ids=candidate_ids,
+            candidate_centroids=np.vstack(
+                [cand_tp.geometries[int(cand_id)].centroid for cand_id in candidate_ids.tolist()]
+            ).astype(np.float64, copy=False)
+            if candidate_count
+            else np.empty((0, 3), dtype=np.float64),
             distances=distances.astype(np.float32, copy=False),
             dice=dice,
             overlap_counts=overlap_counts,
@@ -608,6 +671,9 @@ def compute_pair_metrics(
             mse=np.full((n_features, candidate_count), np.nan, dtype=np.float32),
         )
         overlap_cache[int(ref_id)] = overlaps
+
+    if ignore_features:
+        return metrics_by_ref
 
     ref_lr_feats = np.load(ref_tp.paths.lr_feats_path, mmap_mode="r")
     cand_lr_feats = np.load(cand_tp.paths.lr_feats_path, mmap_mode="r")
@@ -750,6 +816,92 @@ def _remove_assigned_from_candidate_pool(
     return out
 
 
+def _finite_mean(values: np.ndarray) -> float | None:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(np.mean(finite, dtype=np.float64))
+
+
+def _candidate_metric_index(metrics: RefCandidateMetrics, candidate_id: int) -> int | None:
+    matches = np.flatnonzero(metrics.candidate_ids == int(candidate_id))
+    if matches.size == 0:
+        return None
+    return int(matches[0])
+
+
+def _centroid_sort_tuple(values: np.ndarray) -> tuple[float, float, float]:
+    if values.shape[0] < 3:
+        return (0.0, 0.0, 0.0)
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _assignment_sort_key(
+    metrics_by_ref: dict[int, RefCandidateMetrics],
+    item: tuple[float, int, int],
+) -> tuple[float, tuple[float, float, float], tuple[float, float, float], int, int]:
+    distance, ref_id, cand_id = item
+    ref_centroid = (0.0, 0.0, 0.0)
+    cand_centroid = (0.0, 0.0, 0.0)
+    metrics = metrics_by_ref.get(int(ref_id))
+    if metrics is not None:
+        ref_centroid = _centroid_sort_tuple(metrics.ref_centroid)
+        candidate_index = _candidate_metric_index(metrics, int(cand_id))
+        if candidate_index is not None:
+            cand_centroid = _centroid_sort_tuple(metrics.candidate_centroids[candidate_index])
+    return (float(distance), ref_centroid, cand_centroid, int(ref_id), int(cand_id))
+
+
+def _candidate_votes_from_summary(summary: list[RefSummary], ref_id: int, candidate_id: int) -> int | None:
+    for item in summary:
+        if int(item.ref_label) != int(ref_id):
+            continue
+        for candidate in item.candidates:
+            if int(candidate.candidate_label) == int(candidate_id):
+                return int(candidate.wins)
+        return None
+    return None
+
+
+def _build_assignment_record(
+    metrics_by_ref: dict[int, RefCandidateMetrics],
+    *,
+    ref_id: int,
+    cand_id: int,
+    method: str,
+    stage: int,
+    feat_votes: int | None,
+    vote_threshold: int | None = None,
+) -> AssignmentRecord:
+    distance: float | None = None
+    dice: float | None = None
+    corr: float | None = None
+    mse: float | None = None
+
+    metrics = metrics_by_ref.get(int(ref_id))
+    if metrics is not None:
+        candidate_index = _candidate_metric_index(metrics, int(cand_id))
+        if candidate_index is not None:
+            distance = float(metrics.distances[candidate_index])
+            dice_value = float(metrics.dice[candidate_index])
+            dice = dice_value if np.isfinite(dice_value) else None
+            corr = _finite_mean(metrics.corr[:, candidate_index])
+            mse = _finite_mean(metrics.mse[:, candidate_index])
+
+    return AssignmentRecord(
+        ref_label=int(ref_id),
+        candidate_label=int(cand_id),
+        method=method,
+        stage=int(stage),
+        distance=distance,
+        wins=feat_votes,
+        vote_threshold=vote_threshold,
+        dice=dice,
+        corr=corr,
+        mse=mse,
+    )
+
+
 def run_assignment_logic(
     metrics_by_ref: dict[int, RefCandidateMetrics],
     *,
@@ -757,6 +909,7 @@ def run_assignment_logic(
     vote_thresholds: tuple[int, ...],
     dice_threshold: float,
     corr_threshold: float,
+    ignore_features: bool = False,
 ) -> tuple[list[AssignmentRecord], list[RefSummary], list[list[RefSummary]], list[dict[str, float]]]:
     all_ref_ids = sorted(metrics_by_ref)
     candidate_pool: dict[int, set[int]] = {
@@ -787,18 +940,20 @@ def run_assignment_logic(
 
     assigned_refs: set[int] = set()
     assigned_cands: set[int] = set()
-    for distance, ref_id, cand_id in sorted(nearest_pairs, key=lambda item: (item[0], item[1], item[2])):
+    for distance, ref_id, cand_id in sorted(nearest_pairs, key=lambda item: _assignment_sort_key(metrics_by_ref, item)):
         if ref_id in assigned_refs or cand_id in assigned_cands:
             continue
-        assignments.append(
-            AssignmentRecord(
-                ref_label=ref_id,
-                candidate_label=cand_id,
-                method="distance_prefilter",
-                distance=distance,
-                wins=None,
-            )
+        feat_votes = None if ignore_features else _candidate_votes_from_summary(initial_summary, ref_id, cand_id)
+        assignment = _build_assignment_record(
+            metrics_by_ref,
+            ref_id=ref_id,
+            cand_id=cand_id,
+            method="distance_prefilter",
+            stage=1,
+            feat_votes=feat_votes,
         )
+        assignment.distance = distance
+        assignments.append(assignment)
         assigned_refs.add(ref_id)
         assigned_cands.add(cand_id)
 
@@ -815,67 +970,70 @@ def run_assignment_logic(
     )
     summary_history.append(summary_current)
 
-    used_vote_thresholds = tuple(sorted({int(value) for value in vote_thresholds if int(value) > 0}, reverse=True))
-    for threshold in used_vote_thresholds:
-        while True:
-            if not summary_current:
-                break
+    if not ignore_features:
+        used_vote_thresholds = tuple(sorted({int(value) for value in vote_thresholds if int(value) > 0}, reverse=True))
+        for threshold in used_vote_thresholds:
+            while True:
+                if not summary_current:
+                    break
 
-            top_candidates: list[tuple[int, int, int]] = []
-            for item in summary_current:
-                if not item.candidates:
-                    continue
-                top = item.candidates[0]
-                if top.wins > threshold:
-                    top_candidates.append((item.ref_label, top.candidate_label, top.wins))
+                top_candidates: list[tuple[int, int, int]] = []
+                for item in summary_current:
+                    if not item.candidates:
+                        continue
+                    top = item.candidates[0]
+                    if top.wins > threshold:
+                        top_candidates.append((item.ref_label, top.candidate_label, top.wins))
 
-            if not top_candidates:
-                break
+                if not top_candidates:
+                    break
 
-            counts = defaultdict(int)
-            for _ref_id, cand_id, _wins in top_candidates:
-                counts[cand_id] += 1
+                counts = defaultdict(int)
+                for _ref_id, cand_id, _wins in top_candidates:
+                    counts[cand_id] += 1
 
-            accepted = [
-                (ref_id, cand_id, wins)
-                for ref_id, cand_id, wins in top_candidates
-                if counts[cand_id] == 1
-            ]
-            if not accepted:
-                break
+                accepted = [
+                    (ref_id, cand_id, wins)
+                    for ref_id, cand_id, wins in top_candidates
+                    if counts[cand_id] == 1
+                ]
+                if not accepted:
+                    break
 
-            new_refs: set[int] = set()
-            new_cands: set[int] = set()
-            for ref_id, cand_id, wins in accepted:
-                if ref_id in new_refs or cand_id in new_cands:
-                    continue
-                assignments.append(
-                    AssignmentRecord(
-                        ref_label=ref_id,
-                        candidate_label=cand_id,
-                        method=f"vote_threshold_{threshold}",
-                        distance=None,
-                        wins=wins,
+                new_refs: set[int] = set()
+                new_cands: set[int] = set()
+                for ref_id, cand_id, wins in accepted:
+                    if ref_id in new_refs or cand_id in new_cands:
+                        continue
+                    assignments.append(
+                        _build_assignment_record(
+                            metrics_by_ref,
+                            ref_id=ref_id,
+                            cand_id=cand_id,
+                            method=f"vote_threshold_{threshold}",
+                            stage=2,
+                            feat_votes=wins,
+                            vote_threshold=threshold,
+                        )
                     )
+                    new_refs.add(ref_id)
+                    new_cands.add(cand_id)
+
+                if not new_refs:
+                    break
+
+                candidate_pool = _remove_assigned_from_candidate_pool(
+                    candidate_pool,
+                    assigned_refs=new_refs,
+                    assigned_cands=new_cands,
                 )
-                new_refs.add(ref_id)
-                new_cands.add(cand_id)
-
-            if not new_refs:
-                break
-
-            candidate_pool = _remove_assigned_from_candidate_pool(
-                candidate_pool,
-                assigned_refs=new_refs,
-                assigned_cands=new_cands,
-            )
-            summary_current = build_summary_from_metrics(
-                metrics_by_ref,
-                available_candidates=candidate_pool,
-                dice_threshold=dice_threshold,
-                corr_threshold=corr_threshold,
-            )
-            summary_history.append(summary_current)
+                summary_current = build_summary_from_metrics(
+                    metrics_by_ref,
+                    available_candidates=candidate_pool,
+                    dice_threshold=dice_threshold,
+                    corr_threshold=corr_threshold,
+                )
+                summary_history.append(summary_current)
 
     remaining_pairs: list[tuple[float, int, int]] = []
     for ref_id, remaining_candidates in candidate_pool.items():
@@ -888,18 +1046,20 @@ def run_assignment_logic(
 
     used_refs = {assignment.ref_label for assignment in assignments}
     used_cands = {assignment.candidate_label for assignment in assignments}
-    for distance, ref_id, cand_id in sorted(remaining_pairs, key=lambda item: (item[0], item[1], item[2])):
+    for distance, ref_id, cand_id in sorted(remaining_pairs, key=lambda item: _assignment_sort_key(metrics_by_ref, item)):
         if ref_id in used_refs or cand_id in used_cands:
             continue
-        assignments.append(
-            AssignmentRecord(
-                ref_label=ref_id,
-                candidate_label=cand_id,
-                method="global_closest",
-                distance=distance,
-                wins=None,
-            )
+        feat_votes = None if ignore_features else _candidate_votes_from_summary(summary_current, ref_id, cand_id)
+        assignment = _build_assignment_record(
+            metrics_by_ref,
+            ref_id=ref_id,
+            cand_id=cand_id,
+            method="global_closest",
+            stage=3,
+            feat_votes=feat_votes,
         )
+        assignment.distance = distance
+        assignments.append(assignment)
         used_refs.add(ref_id)
         used_cands.add(cand_id)
 
@@ -934,7 +1094,12 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
     tracks: list[Track] = []
     active: dict[int, int] = {}
 
-    def build_track_point(timepoint_idx: int, label_id: int) -> TrackPoint:
+    def build_track_point(
+        timepoint_idx: int,
+        label_id: int,
+        *,
+        incoming: SegmentDiagnostics | None = None,
+    ) -> TrackPoint:
         prepared = prepared_timepoints[timepoint_idx - 1]
         row_index = label_row_index(prepared, label_id)
         geometry = prepared.geometries[int(label_id)]
@@ -944,6 +1109,7 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
             centroid=tuple(float(value) for value in geometry.centroid.tolist()),
             volume=int(geometry.volume),
             amplitude=float(prepared.amplitudes[row_index]),
+            incoming=incoming,
         )
 
     def start_track(timepoint_idx: int, label_id: int) -> int:
@@ -958,11 +1124,20 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
         )
         return track_id
 
-    def ensure_track_point(track_id: int, timepoint_idx: int, label_id: int) -> None:
+    def ensure_track_point(
+        track_id: int,
+        timepoint_idx: int,
+        label_id: int,
+        *,
+        incoming: SegmentDiagnostics | None = None,
+    ) -> None:
         track = tracks[track_id - 1]
-        if any(point.timepoint == timepoint_idx and point.label_id == label_id for point in track.points):
-            return
-        track.points.append(build_track_point(timepoint_idx, label_id))
+        for point in track.points:
+            if point.timepoint == timepoint_idx and point.label_id == label_id:
+                if point.incoming is None and incoming is not None:
+                    point.incoming = incoming
+                return
+        track.points.append(build_track_point(timepoint_idx, label_id, incoming=incoming))
 
     if prepared_timepoints[0].label_ids.size > 0:
         for label_id in prepared_timepoints[0].label_ids.tolist():
@@ -977,12 +1152,26 @@ def build_tracks(prepared_timepoints: list[PreparedTimepoint], pair_results: lis
                 active[int(label_id)] = start_track(pair_index, int(label_id))
 
         next_active: dict[int, int] = {}
+        assignments_by_ref = {assignment.ref_label: assignment for assignment in pair_result.assignments}
         for ref_label, cand_label in sorted(pair_result.final_assignment.items()):
             if int(ref_label) not in active:
                 active[int(ref_label)] = start_track(pair_index, int(ref_label))
             track_id = active[int(ref_label)]
             ensure_track_point(track_id, pair_index, int(ref_label))
-            ensure_track_point(track_id, pair_index + 1, int(cand_label))
+            assignment = assignments_by_ref.get(int(ref_label))
+            incoming = None
+            if assignment is not None:
+                incoming = SegmentDiagnostics(
+                    stage=int(assignment.stage),
+                    assignment_method=assignment.method,
+                    dice=assignment.dice,
+                    corr=assignment.corr,
+                    mse=assignment.mse,
+                    feat_votes=assignment.wins,
+                    vote_threshold=assignment.vote_threshold,
+                    anisotropic_distance=assignment.distance,
+                )
+            ensure_track_point(track_id, pair_index + 1, int(cand_label), incoming=incoming)
             next_active[int(cand_label)] = track_id
 
         active = next_active
@@ -1017,47 +1206,118 @@ def build_matlab_style_tracks(tracks: list[Track]) -> list[dict[str, Any]]:
                 "y": np.asarray([point.centroid[0] for point in ordered_points], dtype=np.float64),
                 "z": np.asarray([point.centroid[2] for point in ordered_points], dtype=np.float64),
                 "A": np.asarray([point.amplitude for point in ordered_points], dtype=np.float64),
+                "label_id": np.asarray([point.label_id for point in ordered_points], dtype=np.int64),
+                "volume": np.asarray([point.volume for point in ordered_points], dtype=np.int64),
+                "incoming": [point.incoming for point in ordered_points],
             }
         )
     return matlab_tracks
 
 
-def build_export_rows(matlab_tracks: Iterable[dict[str, Any]], *, z0: int, invert_z: bool) -> list[dict[str, Any]]:
+def _diagnostic_value(value: Any) -> Any:
+    if value is None:
+        return CSV_NAN
+    if isinstance(value, float) and not np.isfinite(value):
+        return CSV_NAN
+    return value
+
+
+def build_export_rows(
+    matlab_tracks: Iterable[dict[str, Any]],
+    *,
+    z0: int,
+    invert_z: bool,
+    save_extended_results: bool = False,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for track in matlab_tracks:
         x = np.asarray(track["x"], dtype=float)
         y = np.asarray(track["y"], dtype=float)
         z = np.asarray(track["z"], dtype=float)
         amplitudes = np.asarray(track["A"], dtype=float)
+        label_ids = np.asarray(track.get("label_id", []), dtype=np.int64)
+        volumes = np.asarray(track.get("volume", []), dtype=np.int64)
+        incoming = list(track.get("incoming", []))
         start = int(track["start"])
         track_id = int(track["track_id"])
 
         if np.isnan(amplitudes).any():
             continue
 
-        length = min(int(amplitudes.size), int(x.size), int(y.size), int(z.size))
+        length = min(
+            int(amplitudes.size),
+            int(x.size),
+            int(y.size),
+            int(z.size),
+            int(label_ids.size),
+            int(volumes.size),
+            len(incoming),
+        )
         if length == 0:
             continue
 
         for frame_index in range(length):
-            rows.append(
-                {
-                    "track_id": track_id,
-                    "start": start,
-                    "t": frame_index + 1,
-                    "x": float(x[frame_index]),
-                    "y": float(y[frame_index]),
-                    "z": float(z0 - z[frame_index]) if invert_z else float(z[frame_index]),
-                    "A": float(amplitudes[frame_index]),
-                    "track_length": length,
-                }
-            )
+            row: dict[str, Any] = {
+                "track_id": track_id,
+                "start": start,
+                "t": frame_index + 1,
+                "x": float(x[frame_index]),
+                "y": float(y[frame_index]),
+                "z": float(z0 - z[frame_index]) if invert_z else float(z[frame_index]),
+                "A": float(amplitudes[frame_index]),
+                "track_length": length,
+            }
+            if save_extended_results:
+                diagnostics = incoming[frame_index]
+                row.update(
+                    {
+                        "stage": CSV_NAN,
+                        "assignment_method": CSV_NAN,
+                        "dice": CSV_NAN,
+                        "corr": CSV_NAN,
+                        "mse": CSV_NAN,
+                        "feat_votes": CSV_NAN,
+                        "vote_threshold": CSV_NAN,
+                        "anisotropic_distance": CSV_NAN,
+                        "label_id": int(label_ids[frame_index]),
+                        "volume": int(volumes[frame_index]),
+                    }
+                )
+                if diagnostics is not None:
+                    row.update(
+                        {
+                            "stage": int(diagnostics.stage),
+                            "assignment_method": diagnostics.assignment_method,
+                            "dice": _diagnostic_value(diagnostics.dice),
+                            "corr": _diagnostic_value(diagnostics.corr),
+                            "mse": _diagnostic_value(diagnostics.mse),
+                            "feat_votes": _diagnostic_value(diagnostics.feat_votes),
+                            "vote_threshold": _diagnostic_value(diagnostics.vote_threshold),
+                            "anisotropic_distance": _diagnostic_value(diagnostics.anisotropic_distance),
+                        }
+                    )
+            rows.append(row)
     return rows
 
 
-def save_tracks_csv(rows: Iterable[dict[str, Any]], *, output_path: Path) -> None:
+def save_tracks_csv(rows: Iterable[dict[str, Any]], *, output_path: Path, save_extended_results: bool = False) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["track_id", "start", "t", "x", "y", "z", "A", "track_length"]
+    if save_extended_results:
+        fieldnames.extend(
+            [
+                "stage",
+                "assignment_method",
+                "dice",
+                "corr",
+                "mse",
+                "feat_votes",
+                "vote_threshold",
+                "anisotropic_distance",
+                "label_id",
+                "volume",
+            ]
+        )
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -1096,7 +1356,14 @@ def validate_timepoint_shapes(prepared_timepoints: list[PreparedTimepoint], *, r
     return expected_z0
 
 
-def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path | None = None, params: TrackingParams) -> Path:
+def run_tracking(
+    input_path: Path,
+    *,
+    segmentation_path: Path,
+    output_path: Path | None = None,
+    output_filename: str | None = None,
+    params: TrackingParams,
+) -> Path:
     input_path = input_path.expanduser().resolve()
     segmentation_path = segmentation_path.expanduser().resolve()
     if not input_path.is_dir():
@@ -1106,6 +1373,7 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
     output_dir = input_path if output_path is None else output_path.expanduser().resolve()
     if output_dir.exists() and not output_dir.is_dir():
         raise FileNotFoundError(f"Output folder exists but is not a directory: {output_dir}")
+    output_filename = normalize_output_filename(output_filename)
 
     discovered = discover_experiment(input_path, segmentation_path=segmentation_path)
     if len(discovered) < 2:
@@ -1139,6 +1407,7 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
             n_features=DEFAULT_N_PATCH_FEATURES,
             spatial_radius=spatial_radius,
             zratio=float(params.z_distance_weight),
+            ignore_features=bool(params.ignore_features),
         )
         assignments, initial_summary, summary_history, summary_distance_prefilter = run_assignment_logic(
             metrics_by_ref,
@@ -1146,6 +1415,7 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
             vote_thresholds=vote_thresholds,
             dice_threshold=float(params.dice_threshold),
             corr_threshold=float(params.corr_threshold),
+            ignore_features=bool(params.ignore_features),
         )
         pair_results.append(
             PairResult(
@@ -1166,9 +1436,18 @@ def run_tracking(input_path: Path, *, segmentation_path: Path, output_path: Path
 
     tracks = build_tracks(prepared_timepoints, pair_results)
     matlab_tracks = build_matlab_style_tracks(tracks)
-    output_rows = build_export_rows(matlab_tracks, z0=z0, invert_z=bool(params.invert_z))
-    output_csv_path = tracks_csv_path(output_dir)
-    save_tracks_csv(output_rows, output_path=output_csv_path)
+    output_rows = build_export_rows(
+        matlab_tracks,
+        z0=z0,
+        invert_z=bool(params.invert_z),
+        save_extended_results=bool(params.save_extended_results),
+    )
+    output_csv_path = output_dir / output_filename
+    save_tracks_csv(
+        output_rows,
+        output_path=output_csv_path,
+        save_extended_results=bool(params.save_extended_results),
+    )
     print(f"[tracking] Saved tracks to {output_csv_path}", flush=True)
     print("[tracking] Done", flush=True)
     return output_csv_path
@@ -1195,6 +1474,7 @@ def main() -> None:
         input_path,
         segmentation_path=segmentation_path,
         output_path=Path(args.output_path).expanduser().resolve() if args.output_path else None,
+        output_filename=args.output_filename,
         params=TrackingParams(
             max_distance_xy=float(args.max_distance_xy),
             max_distance_z=float(args.max_distance_z),
@@ -1204,6 +1484,8 @@ def main() -> None:
             dice_threshold=float(args.dice_threshold),
             corr_threshold=float(args.corr_threshold),
             invert_z=bool(args.invert_z),
+            save_extended_results=bool(args.save_extended_results),
+            ignore_features=bool(args.ignore_features),
         ),
     )
 

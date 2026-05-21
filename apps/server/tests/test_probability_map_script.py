@@ -253,10 +253,16 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             self.assertTrue(densities_path.is_file())
             for name in ("sample_a", "sample_b"):
                 instance_seg_path = output_dir / "seg_probmap" / f"{name}.tif"
+                probmap_path = output_dir / "probmap" / f"{name}.tif"
                 self.assertTrue(instance_seg_path.is_file())
+                self.assertTrue(probmap_path.is_file())
                 instance_seg = tifffile.imread(instance_seg_path)
+                probmap = tifffile.imread(probmap_path)
                 self.assertEqual(instance_seg.shape, (4, 4, 4))
                 self.assertEqual(instance_seg.dtype, np.uint32)
+                self.assertEqual(probmap.shape, (4, 4, 4))
+                self.assertEqual(probmap.dtype, np.float32)
+                self.assertGreater(float(probmap.max()), 0.0)
 
 
 if __name__ == "__main__":
