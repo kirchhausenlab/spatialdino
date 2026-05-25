@@ -1465,7 +1465,7 @@ class AppTests(unittest.TestCase):
                 output_path=str(output_dir),
                 backbone_weight="models/backbone.pth",
                 gpu_indices=[1, 0],
-                upsample_factor=3.0,
+                upsample_factor={"x": 1.0, "y": 2.0, "z": 3.0},
                 route="streaming",
                 precision="bfloat16",
                 crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
@@ -1497,9 +1497,117 @@ class AppTests(unittest.TestCase):
         self.assertIn("--nproc_per_node=2", response["command"])
         self.assertIn(f"file_path={input_dir}", response["command"])
         self.assertIn(f"save_path={output_dir}", response["command"])
+        self.assertIn("upsample_factor=[3.0,2.0,1.0]", response["command"])
         self.assertIn("isotropic_scale_factor=[3.0,2.0,1.0]", response["command"])
         self.assertIn("inference_route=streaming", response["command"])
         self.assertIn("dtype=bf16", response["command"])
+
+    def test_inference_command_preview_includes_backbone_model_overrides(self) -> None:
+        cases = {
+            app_module.INFERENCE_BACKBONE_MODEL_LEARNED: [
+                "pos_embed_type=learned",
+                "num_register_tokens=0",
+                "num_tt_register_tokens=1",
+                "ffn_layer=swiglufused",
+            ],
+            app_module.INFERENCE_BACKBONE_MODEL_NOPE: [
+                "pos_embed_type=none",
+                "num_register_tokens=0",
+                "num_tt_register_tokens=1",
+                "ffn_layer=mlp",
+            ],
+            app_module.INFERENCE_BACKBONE_MODEL_ROPE: [
+                "pos_embed_type=rope",
+                "num_register_tokens=4",
+                "num_tt_register_tokens=0",
+                "rope_theta=200",
+                "rope_normalize_coords=true",
+                "rope_coord_shift=0.15",
+                "rope_coord_jitter=1.3",
+                "rope_coord_rescale=1.5",
+                "rope_drop_prob=0.1",
+                "ffn_layer=swiglufused",
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                for backbone_model, expected_overrides in cases.items():
+                    with self.subTest(backbone_model=backbone_model):
+                        payload = app_module.RunInferenceRequest(
+                            input_path=str(input_dir),
+                            output_path=str(output_dir),
+                            backbone_weight="models/backbone.pth",
+                            backbone_model=backbone_model,
+                            gpu_indices=[0],
+                            upsample_factor=3.0,
+                            route="streaming",
+                            precision="bfloat16",
+                            crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                            anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                            file_range={"start": 0, "end": 0},
+                            overwrite=False,
+                        )
+
+                        response = app_module.inference_command_preview(payload)
+
+                        self.assertEqual(response["valid"], True)
+                        for override in expected_overrides:
+                            self.assertIn(override, response["command"])
+
+    def test_run_inference_rejects_invalid_backbone_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                backbone_model="unknown",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 0},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["valid"], False)
+        self.assertEqual(response["reasonCode"], "invalid_backbone_model")
 
     def test_inference_command_preview_includes_manual_global_norm_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

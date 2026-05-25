@@ -984,6 +984,10 @@ button {
   min-width: 200px;
 }
 
+.inferenceBackboneModelSelect {
+  min-width: 140px;
+}
+
 .inferenceNumberInput {
   width: 88px;
   padding: 0 8px;

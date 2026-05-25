@@ -48,6 +48,35 @@ DEFAULT_INFERENCE_BACKBONE_RELATIVE_PATH = f"models/{DEFAULT_INFERENCE_BACKBONE_
 DEFAULT_INFERENCE_BACKBONE_URL = (
     "https://spatialdino.s3.us-east-1.amazonaws.com/models/spatial_dino/step%3D244999/backbone.pth"
 )
+INFERENCE_BACKBONE_MODEL_LEARNED = "learned"
+INFERENCE_BACKBONE_MODEL_NOPE = "nope"
+INFERENCE_BACKBONE_MODEL_ROPE = "rope"
+INFERENCE_BACKBONE_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
+    INFERENCE_BACKBONE_MODEL_LEARNED: {
+        "pos_embed_type": "learned",
+        "num_register_tokens": 0,
+        "num_tt_register_tokens": 1,
+        "ffn_layer": "swiglufused",
+    },
+    INFERENCE_BACKBONE_MODEL_NOPE: {
+        "pos_embed_type": "none",
+        "num_register_tokens": 0,
+        "num_tt_register_tokens": 1,
+        "ffn_layer": "mlp",
+    },
+    INFERENCE_BACKBONE_MODEL_ROPE: {
+        "pos_embed_type": "rope",
+        "num_register_tokens": 4,
+        "num_tt_register_tokens": 0,
+        "rope_theta": 200,
+        "rope_normalize_coords": True,
+        "rope_coord_shift": 0.15,
+        "rope_coord_jitter": 1.3,
+        "rope_coord_rescale": 1.5,
+        "rope_drop_prob": 0.1,
+        "ffn_layer": "swiglufused",
+    },
+}
 DEFAULT_PUBLIC_DATA_MANIFEST_URL = (
     "https://spatialdino.s3.us-east-1.amazonaws.com/inference_data/raw_data/manifest.json"
 )
@@ -308,8 +337,9 @@ class RunInferenceRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     output_path: str = Field(..., min_length=1)
     backbone_weight: str = Field("", min_length=0)
+    backbone_model: str = Field(INFERENCE_BACKBONE_MODEL_NOPE, min_length=1)
     gpu_indices: list[int] = Field(default_factory=list)
-    upsample_factor: float | None = None
+    upsample_factor: float | InferenceAxisRequest | None = None
     route: str = Field("full", min_length=1)
     precision: str = Field("bfloat16", min_length=1)
     crop_bounds: InferenceCropBoundsRequest = Field(default_factory=InferenceCropBoundsRequest)
@@ -1322,6 +1352,47 @@ def _resolve_backbone_weight_path(raw_value: str) -> Path | None:
     return resolved
 
 
+def _resolve_backbone_model_config(raw_value: str) -> tuple[str, dict[str, Any]] | None:
+    selected = (raw_value or "").strip().lower()
+    config = INFERENCE_BACKBONE_MODEL_CONFIGS.get(selected)
+    if config is None:
+        return None
+    return selected, dict(config)
+
+
+def _format_hydra_override_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _coerce_axis_triplet_xyz(value: float | InferenceAxisRequest | None) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, InferenceAxisRequest):
+        if value.x is None or value.y is None or value.z is None:
+            return None
+        return (float(value.x), float(value.y), float(value.z))
+    scalar = float(value)
+    return (scalar, scalar, scalar)
+
+
+def _format_upsample_factor_override(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return str(float(value))
+    if isinstance(value, InferenceAxisRequest):
+        axis_xyz = _coerce_axis_triplet_xyz(value)
+        if axis_xyz is None:
+            raise ValueError("Upsample factor values are required.")
+    else:
+        axis_xyz = tuple(float(item) for item in value)
+        if len(axis_xyz) != 3:
+            raise ValueError("Upsample factor must be a scalar or three axis values.")
+
+    x_factor, y_factor, z_factor = axis_xyz
+    return f"[{z_factor},{y_factor},{x_factor}]"
+
+
 def _build_inference_launch_config(
     payload: RunInferenceRequest,
     *,
@@ -1346,6 +1417,11 @@ def _build_inference_launch_config(
     if backbone_path is None:
         return _invalid_inference_run("missing_backbone_weight", "Select a backbone weights file."), None
 
+    backbone_model_config = _resolve_backbone_model_config(payload.backbone_model)
+    if backbone_model_config is None:
+        return _invalid_inference_run("invalid_backbone_model", "Backbone model type is invalid."), None
+    backbone_model, backbone_config_overrides = backbone_model_config
+
     requested_gpus = sorted(set(int(index) for index in payload.gpu_indices))
     if not requested_gpus:
         return _invalid_inference_run("missing_gpu_selection", "Select at least one GPU."), None
@@ -1356,8 +1432,9 @@ def _build_inference_launch_config(
     if any(index not in available_gpu_indices for index in requested_gpus):
         return _invalid_inference_run("invalid_gpu_selection", "Selected GPUs are not available on the server."), None
 
-    upsample_factor = payload.upsample_factor
-    if upsample_factor is None or upsample_factor < 1.0:
+    raw_upsample_factor = payload.upsample_factor
+    upsample_factor_xyz = _coerce_axis_triplet_xyz(raw_upsample_factor)
+    if upsample_factor_xyz is None or any(factor < 1.0 for factor in upsample_factor_xyz):
         return _invalid_inference_run("invalid_upsample_factor", "Upsample factor must be greater than or equal to 1."), None
 
     anisotropy_x = payload.anisotropy.x
@@ -1455,6 +1532,12 @@ def _build_inference_launch_config(
         if require_overwrite_confirmation:
             return overwrite_warning, None
 
+    launch_upsample_factor: float | tuple[float, float, float]
+    if isinstance(raw_upsample_factor, InferenceAxisRequest):
+        launch_upsample_factor = upsample_factor_xyz
+    else:
+        launch_upsample_factor = float(raw_upsample_factor)
+
     return (
         {
             "valid": True,
@@ -1466,8 +1549,10 @@ def _build_inference_launch_config(
             "input_path": input_path,
             "output_path": output_path,
             "backbone_path": backbone_path,
+            "backbone_model": backbone_model,
+            "backbone_config_overrides": backbone_config_overrides,
             "gpu_indices": requested_gpus,
-            "upsample_factor": float(upsample_factor),
+            "upsample_factor": launch_upsample_factor,
             "anisotropy_xyz": (
                 float(anisotropy_x),
                 float(anisotropy_y),
@@ -1513,11 +1598,17 @@ def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
         f"backbone_path={launch_config['backbone_path']}",
         f"file_start={launch_config['file_start']}",
         f"crop_params=[{crop_params[0]},{crop_params[1]},{crop_params[2]},{crop_params[3]},{crop_params[4]},{crop_params[5]}]",
-        f"upsample_factor={launch_config['upsample_factor']}",
+        f"upsample_factor={_format_upsample_factor_override(launch_config['upsample_factor'])}",
         f"isotropic_scale_factor=[{anisotropy_z},{anisotropy_y},{anisotropy_x}]",
         f"inference_route={launch_config['inference_route']}",
         f"dtype={launch_config['dtype']}",
     ]
+    backbone_config_overrides = launch_config.get(
+        "backbone_config_overrides",
+        INFERENCE_BACKBONE_MODEL_CONFIGS[INFERENCE_BACKBONE_MODEL_NOPE],
+    )
+    for key, value in backbone_config_overrides.items():
+        command.append(f"{key}={_format_hydra_override_value(value)}")
     global_hist_min = launch_config.get("global_hist_min")
     global_hist_max = launch_config.get("global_hist_max")
     if global_hist_min is not None and global_hist_max is not None:

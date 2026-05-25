@@ -9,6 +9,7 @@ import { getClientId } from "../lib/clientId";
 
 type PickerTarget = "input" | "output";
 type NormalizationMode = "per_volume" | "global_auto" | "global_manual";
+type BackboneModelType = "nope" | "rope" | "learned";
 
 type GpuOption = {
   index: number;
@@ -33,6 +34,18 @@ type DatasetShape = {
   z: number;
 };
 
+type AxisNumberRequest = {
+  x: number | null;
+  y: number | null;
+  z: number | null;
+};
+
+type AxisInputValues = {
+  x: string;
+  y: string;
+  z: string;
+};
+
 type InferenceValidationSuccess = {
   valid: true;
   message: string;
@@ -52,8 +65,9 @@ type InferenceRunRequest = {
   input_path: string;
   output_path: string;
   backbone_weight: string;
+  backbone_model: BackboneModelType;
   gpu_indices: number[];
-  upsample_factor: number | null;
+  upsample_factor: AxisNumberRequest;
   route: string;
   precision: string;
   crop_bounds: {
@@ -64,11 +78,7 @@ type InferenceRunRequest = {
     z_start: number | null;
     z_end: number | null;
   };
-  anisotropy: {
-    x: number | null;
-    y: number | null;
-    z: number | null;
-  };
+  anisotropy: AxisNumberRequest;
   file_range: {
     start: number | null;
     end: number | null;
@@ -157,14 +167,21 @@ type OverwritePromptState = {
   outputEntriesPreview: string[];
 };
 
-const DEFAULT_UPSAMPLE_FACTOR = "3";
-const DEFAULT_ANISOTROPY = { x: "1.0", y: "1.0", z: "1.0" };
+const DEFAULT_UPSAMPLE_FACTOR: AxisInputValues = { x: "3", y: "3", z: "3" };
+const DEFAULT_ANISOTROPY: AxisInputValues = { x: "1.0", y: "1.0", z: "1.0" };
+const DEFAULT_BACKBONE_MODEL: BackboneModelType = "nope";
+const BACKBONE_MODEL_OPTIONS: Array<{ label: string; value: BackboneModelType }> = [
+  { label: "NoPE", value: "nope" },
+  { label: "RoPE", value: "rope" },
+  { label: "Learned", value: "learned" },
+];
 const INFERENCE_OUTPUT_FOLDER_DESCRIPTION = "folder containing the outputs of a SpatialDINO run";
 const INFERENCE_PARAMETER_HELP = {
   inputFolder: "Folder containing the raw data volumes to process.",
   outputFolder: INFERENCE_OUTPUT_FOLDER_DESCRIPTION,
   selectGpus: "Choose which detected GPUs will run the inference job.",
   modelWeights: "Select the pretrained checkpoint used to encode the input volumes.",
+  backboneModel: "Choose the positional encoding and feed-forward settings for the selected checkpoint.",
   route: "Pick the attention implementation; streaming uses less memory on large volumes.",
   precision: "Set the numeric precision used while running inference.",
   normalization: "Controls how input intensities are scaled before the model runs.",
@@ -192,6 +209,7 @@ export default function InferencePage() {
   const [appliedDefaultsKey, setAppliedDefaultsKey] = useState<string | null>(null);
   const [selectedGpuIndices, setSelectedGpuIndices] = useState<number[]>([]);
   const [backboneWeight, setBackboneWeight] = useState("");
+  const [backboneModel, setBackboneModel] = useState<BackboneModelType>(DEFAULT_BACKBONE_MODEL);
   const [upsampleFactor, setUpsampleFactor] = useState(DEFAULT_UPSAMPLE_FACTOR);
   const [route, setRoute] = useState("full");
   const [precision, setPrecision] = useState("bfloat16");
@@ -307,6 +325,7 @@ export default function InferencePage() {
     inputPath,
     outputPath,
     backboneWeight,
+    backboneModel,
     upsampleFactor,
     route,
     precision,
@@ -458,8 +477,13 @@ export default function InferencePage() {
       input_path: inputPath,
       output_path: outputPath,
       backbone_weight: backboneWeight,
+      backbone_model: backboneModel,
       gpu_indices: selectedGpuIndices,
-      upsample_factor: parseNullableNumber(upsampleFactor),
+      upsample_factor: {
+        x: parseNullableNumber(upsampleFactor.x),
+        y: parseNullableNumber(upsampleFactor.y),
+        z: parseNullableNumber(upsampleFactor.z),
+      },
       route,
       precision,
       crop_bounds: {
@@ -762,6 +786,20 @@ export default function InferencePage() {
               >
                 {downloadingWeights ? "Downloading..." : "Download weights"}
               </button>
+              <div className="inferenceInlineLabel isStrong">
+                <ParameterHelpLabel label="Backbone type" description={INFERENCE_PARAMETER_HELP.backboneModel} />
+              </div>
+              <select
+                className="inferenceSelect inferenceBackboneModelSelect"
+                value={backboneModel}
+                onChange={(event) => setBackboneModel(event.target.value as BackboneModelType)}
+              >
+                {BACKBONE_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -835,6 +873,36 @@ export default function InferencePage() {
 
                 <div className="inferenceFormRow">
                   <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel label="Upsample factor" description={INFERENCE_PARAMETER_HELP.upsampleFactor} />
+                  </div>
+                  <div className="inferenceInlineLabel">X</div>
+                  <InferenceNumberInput
+                    value={upsampleFactor.x}
+                    onChange={(value) => setUpsampleFactor((current) => ({ ...current, x: value }))}
+                    min={1}
+                    step="any"
+                    ariaLabel="Upsample factor X"
+                  />
+                  <div className="inferenceInlineLabel">Y</div>
+                  <InferenceNumberInput
+                    value={upsampleFactor.y}
+                    onChange={(value) => setUpsampleFactor((current) => ({ ...current, y: value }))}
+                    min={1}
+                    step="any"
+                    ariaLabel="Upsample factor Y"
+                  />
+                  <div className="inferenceInlineLabel">Z</div>
+                  <InferenceNumberInput
+                    value={upsampleFactor.z}
+                    onChange={(value) => setUpsampleFactor((current) => ({ ...current, z: value }))}
+                    min={1}
+                    step="any"
+                    ariaLabel="Upsample factor Z"
+                  />
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
                     <ParameterHelpLabel
                       label="Anisotropy correction"
                       description={INFERENCE_PARAMETER_HELP.anisotropyCorrection}
@@ -861,10 +929,6 @@ export default function InferencePage() {
                     min={0}
                     step="any"
                   />
-                  <div className="inferenceInlineLabel isStrong">
-                    <ParameterHelpLabel label="Upsample factor" description={INFERENCE_PARAMETER_HELP.upsampleFactor} />
-                  </div>
-                  <InferenceNumberInput value={upsampleFactor} onChange={setUpsampleFactor} min={0} step="any" />
                 </div>
 
                 <div className="inferenceFormRow">
