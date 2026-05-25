@@ -10,6 +10,7 @@ import { getClientId } from "../lib/clientId";
 type PickerTarget = "input" | "output";
 type NormalizationMode = "per_volume" | "global_auto" | "global_manual";
 type BackboneModelType = "nope" | "rope" | "learned";
+type PaddingMode = "reflect" | "replicate" | "edge" | "constant";
 
 type GpuOption = {
   index: number;
@@ -70,6 +71,7 @@ type InferenceRunRequest = {
   upsample_factor: AxisNumberRequest;
   route: string;
   precision: string;
+  padding_mode: PaddingMode;
   crop_bounds: {
     x_start: number | null;
     x_end: number | null;
@@ -170,6 +172,7 @@ type OverwritePromptState = {
 const DEFAULT_UPSAMPLE_FACTOR: AxisInputValues = { x: "3", y: "3", z: "3" };
 const DEFAULT_ANISOTROPY: AxisInputValues = { x: "1.0", y: "1.0", z: "1.0" };
 const DEFAULT_BACKBONE_MODEL: BackboneModelType = "nope";
+const DEFAULT_PADDING_MODE: PaddingMode = "reflect";
 const BACKBONE_MODEL_OPTIONS: Array<{ label: string; value: BackboneModelType }> = [
   { label: "NoPE", value: "nope" },
   { label: "RoPE", value: "rope" },
@@ -184,6 +187,7 @@ const INFERENCE_PARAMETER_HELP = {
   backboneModel: "Choose the positional encoding and feed-forward settings for the selected checkpoint.",
   route: "Pick the attention implementation; streaming uses less memory on large volumes.",
   precision: "Set the numeric precision used while running inference.",
+  padding: "Choose the boundary condition used when inference pads volumes to match the patch grid.",
   normalization: "Controls how input intensities are scaled before the model runs.",
   upsampleFactor: "Scales the low-resolution feature grid before outputs are saved.",
   anisotropyCorrection: "Rescales axes to compensate for unequal voxel spacing.",
@@ -213,6 +217,7 @@ export default function InferencePage() {
   const [upsampleFactor, setUpsampleFactor] = useState(DEFAULT_UPSAMPLE_FACTOR);
   const [route, setRoute] = useState("full");
   const [precision, setPrecision] = useState("bfloat16");
+  const [paddingMode, setPaddingMode] = useState<PaddingMode>(DEFAULT_PADDING_MODE);
   const [cropBounds, setCropBounds] = useState({
     xStart: "0",
     xEnd: "",
@@ -486,6 +491,7 @@ export default function InferencePage() {
       },
       route,
       precision,
+      padding_mode: paddingMode,
       crop_bounds: {
         x_start: parseNullableInteger(cropBounds.xStart),
         x_end: parseNullableInteger(cropBounds.xEnd),
@@ -801,6 +807,30 @@ export default function InferencePage() {
                 ))}
               </select>
             </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel isStrong">
+                <ParameterHelpLabel label="Chosen files" description={INFERENCE_PARAMETER_HELP.chosenFiles} />
+              </div>
+              <div className="inferenceInlineLabel">Start file:</div>
+              <InferenceNumberInput
+                value={fileRange.start}
+                onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
+                min={0}
+                step={1}
+                max={maxFileIndex}
+                ariaLabel="Start file"
+              />
+              <div className="inferenceInlineLabel">End file:</div>
+              <InferenceNumberInput
+                value={fileRange.end}
+                onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
+                min={0}
+                step={1}
+                max={maxFileIndex}
+                ariaLabel="End file"
+              />
+            </div>
           </div>
 
           {primaryParameterMessages.length > 0 ? (
@@ -899,6 +929,19 @@ export default function InferencePage() {
                     step="any"
                     ariaLabel="Upsample factor Z"
                   />
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Padding" description={INFERENCE_PARAMETER_HELP.padding} />
+                  </div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={paddingMode}
+                    onChange={(event) => setPaddingMode(event.target.value as PaddingMode)}
+                  >
+                    <option value="reflect">Reflect (default)</option>
+                    <option value="replicate">Replicate</option>
+                    <option value="edge">Edge</option>
+                    <option value="constant">Constant</option>
+                  </select>
                 </div>
 
                 <div className="inferenceFormRow">
@@ -1002,29 +1045,6 @@ export default function InferencePage() {
                   </div>
                 </div>
 
-                <div className="inferenceFormRow">
-                  <div className="inferenceFieldLabel isStrong">
-                    <ParameterHelpLabel label="Chosen files" description={INFERENCE_PARAMETER_HELP.chosenFiles} />
-                  </div>
-                  <div className="inferenceInlineLabel">Start file:</div>
-                  <InferenceNumberInput
-                    value={fileRange.start}
-                    onChange={(value) => setFileRange((current) => ({ ...current, start: value }))}
-                    min={0}
-                    step={1}
-                    max={maxFileIndex}
-                    ariaLabel="Start file"
-                  />
-                  <div className="inferenceInlineLabel">End file:</div>
-                  <InferenceNumberInput
-                    value={fileRange.end}
-                    onChange={(value) => setFileRange((current) => ({ ...current, end: value }))}
-                    min={0}
-                    step={1}
-                    max={maxFileIndex}
-                    ariaLabel="End file"
-                  />
-                </div>
               </div>
 
               {optionalParameterMessages.length > 0 ? (

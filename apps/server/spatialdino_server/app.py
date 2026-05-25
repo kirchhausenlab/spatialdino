@@ -51,6 +51,7 @@ DEFAULT_INFERENCE_BACKBONE_URL = (
 INFERENCE_BACKBONE_MODEL_LEARNED = "learned"
 INFERENCE_BACKBONE_MODEL_NOPE = "nope"
 INFERENCE_BACKBONE_MODEL_ROPE = "rope"
+INFERENCE_PADDING_MODES = {"reflect", "replicate", "edge", "constant"}
 INFERENCE_BACKBONE_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     INFERENCE_BACKBONE_MODEL_LEARNED: {
         "pos_embed_type": "learned",
@@ -342,6 +343,7 @@ class RunInferenceRequest(BaseModel):
     upsample_factor: float | InferenceAxisRequest | None = None
     route: str = Field("full", min_length=1)
     precision: str = Field("bfloat16", min_length=1)
+    padding_mode: str = Field("reflect", min_length=1)
     crop_bounds: InferenceCropBoundsRequest = Field(default_factory=InferenceCropBoundsRequest)
     anisotropy: InferenceAxisRequest = Field(default_factory=InferenceAxisRequest)
     file_range: InferenceFileRangeRequest = Field(default_factory=InferenceFileRangeRequest)
@@ -1455,6 +1457,10 @@ def _build_inference_launch_config(
     if dtype is None:
         return _invalid_inference_run("invalid_precision", "Precision is invalid."), None
 
+    padding_mode = payload.padding_mode.lower()
+    if padding_mode not in INFERENCE_PADDING_MODES:
+        return _invalid_inference_run("invalid_padding_mode", "Padding mode is invalid."), None
+
     normalization_error, normalization_config = _validate_normalization_payload(payload)
     if normalization_error is not None or normalization_config is None:
         return normalization_error, None
@@ -1571,6 +1577,7 @@ def _build_inference_launch_config(
             "effective_crop_params": effective_crop_params,
             "inference_route": inference_route,
             "dtype": dtype,
+            "padding_mode": padding_mode,
             "normalization_mode": normalization_config["normalization_mode"],
             "global_hist_min": normalization_config["global_hist_min"],
             "global_hist_max": normalization_config["global_hist_max"],
@@ -1602,6 +1609,7 @@ def _build_inference_command(launch_config: dict[str, Any]) -> list[str]:
         f"isotropic_scale_factor=[{anisotropy_z},{anisotropy_y},{anisotropy_x}]",
         f"inference_route={launch_config['inference_route']}",
         f"dtype={launch_config['dtype']}",
+        f"padding_mode={launch_config.get('padding_mode', 'reflect')}",
     ]
     backbone_config_overrides = launch_config.get(
         "backbone_config_overrides",

@@ -1330,6 +1330,7 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
+                padding_mode="replicate",
                 crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
@@ -1374,6 +1375,7 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
+                padding_mode="replicate",
                 crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
@@ -1396,6 +1398,7 @@ class AppTests(unittest.TestCase):
         launch_thread.assert_called_once()
         launch_config = launch_thread.call_args.args[1]
         self.assertEqual(launch_config["selected_stems"], ["stack0001"])
+        self.assertEqual(launch_config["padding_mode"], "replicate")
         with jobs_api._jobs_lock:
             self.assertEqual(len(jobs_api._jobs), 1)
             job = next(iter(jobs_api._jobs.values()))
@@ -1423,6 +1426,7 @@ class AppTests(unittest.TestCase):
                 upsample_factor=3.0,
                 route="streaming",
                 precision="bfloat16",
+                padding_mode="edge",
                 crop_bounds={"x_start": 1, "x_end": 2, "y_start": 0, "y_end": 1, "z_start": 0, "z_end": 0},
                 anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
                 file_range={"start": 0, "end": 0},
@@ -1447,6 +1451,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["file_end"], 1)
         self.assertEqual(launch_config["crop_params"], [0, 1, 0, 2, 1, 3])
         self.assertEqual(launch_config["effective_crop_params"], (0, 1, 0, 2, 1, 3))
+        self.assertEqual(launch_config["padding_mode"], "edge")
 
     def test_inference_command_preview_returns_shell_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1468,6 +1473,7 @@ class AppTests(unittest.TestCase):
                 upsample_factor={"x": 1.0, "y": 2.0, "z": 3.0},
                 route="streaming",
                 precision="bfloat16",
+                padding_mode="replicate",
                 crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
                 anisotropy={"x": 1.0, "y": 2.0, "z": 3.0},
                 file_range={"start": 0, "end": 0},
@@ -1501,6 +1507,47 @@ class AppTests(unittest.TestCase):
         self.assertIn("isotropic_scale_factor=[3.0,2.0,1.0]", response["command"])
         self.assertIn("inference_route=streaming", response["command"])
         self.assertIn("dtype=bf16", response["command"])
+        self.assertIn("padding_mode=replicate", response["command"])
+
+    def test_run_inference_rejects_invalid_padding_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            models_dir = root / "models"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            models_dir.mkdir()
+            tifffile.imwrite(input_dir / "stack0001.tif", np.zeros((2, 3, 4), dtype=np.uint8))
+            (models_dir / "backbone.pth").write_text("", encoding="utf-8")
+
+            payload = app_module.RunInferenceRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                backbone_weight="models/backbone.pth",
+                gpu_indices=[0],
+                upsample_factor=3.0,
+                route="streaming",
+                precision="bfloat16",
+                padding_mode="invalid",
+                crop_bounds={"x_start": 0, "x_end": 3, "y_start": 0, "y_end": 2, "z_start": 0, "z_end": 1},
+                anisotropy={"x": 1.0, "y": 1.0, "z": 1.0},
+                file_range={"start": 0, "end": 0},
+                overwrite=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch("spatialdino_server.app.get_repo_root", return_value=root),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                response = app_module.run_inference(payload, "client-1234")
+
+        self.assertEqual(response["submitted"], False)
+        self.assertEqual(response["reasonCode"], "invalid_padding_mode")
 
     def test_inference_command_preview_includes_backbone_model_overrides(self) -> None:
         cases = {
