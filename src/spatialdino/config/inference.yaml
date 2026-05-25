@@ -26,6 +26,7 @@ persistent_workers: true
 
 upsample_factor: 3.0
 chunk_size: [8,8,8]
+padding_mode: "reflect" # "reflect", "replicate", "edge", or "constant"; reflect falls back to replicate when invalid
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
 crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume
 norm_feat: norm

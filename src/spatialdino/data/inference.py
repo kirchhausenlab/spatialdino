@@ -30,6 +30,16 @@ import torch.nn.functional as F
 logger = logging.getLogger("inference_data")
 
 
+SUPPORTED_INFERENCE_PADDING_MODES: Final[set[str]] = {
+    "constant",
+    "edge",
+    "reflect",
+    "replicate",
+}
+DEFAULT_INFERENCE_PADDING_MODE: Final[str] = "reflect"
+REFLECT_FALLBACK_PADDING_MODE: Final[str] = "replicate"
+
+
 def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
     global_hist_min = getattr(config, "global_hist_min", None)
     global_hist_max = getattr(config, "global_hist_max", None)
@@ -49,6 +59,76 @@ def get_global_hist_bounds(config: DictConfig) -> Optional[Tuple[float, float]]:
         )
 
     return global_hist_min, global_hist_max
+
+
+def normalize_inference_padding_mode(mode: Any) -> str:
+    if mode is None:
+        mode = DEFAULT_INFERENCE_PADDING_MODE
+    normalized = str(mode).lower()
+    if normalized not in SUPPORTED_INFERENCE_PADDING_MODES:
+        raise ValueError(
+            "padding_mode must be one of "
+            f"{sorted(SUPPORTED_INFERENCE_PADDING_MODES)}, got {mode!r}."
+        )
+    return normalized
+
+
+def smallest_valid_patch_embed_size(size: int, patch: int, stride: int) -> int:
+    if size <= 0:
+        raise ValueError(f"Volume dimensions must be positive, got {size}.")
+    if patch <= 0 or stride <= 0:
+        raise ValueError(
+            f"Patch size and stride must be positive, got patch={patch}, stride={stride}."
+        )
+
+    target = max(size, patch)
+    while target % patch != 0 or (target - patch) % stride != 0:
+        target += 1
+    return target
+
+
+def split_padding(total_padding: int) -> Tuple[int, int]:
+    before = total_padding // 2
+    return before, total_padding - before
+
+
+def reflect_padding_is_valid(
+    pre_pad_shape: Tuple[int, int, int],
+    pad_before: Tuple[int, int, int],
+    pad_after: Tuple[int, int, int],
+) -> bool:
+    for size, before, after in zip(pre_pad_shape, pad_before, pad_after):
+        if before == 0 and after == 0:
+            continue
+        if size <= 1:
+            return False
+        if before >= size or after >= size:
+            return False
+    return True
+
+
+def resolve_inference_padding_mode(
+    requested_mode: str,
+    *,
+    pre_pad_shape: Tuple[int, int, int],
+    pad_before: Tuple[int, int, int],
+    pad_after: Tuple[int, int, int],
+) -> str:
+    requested_mode = normalize_inference_padding_mode(requested_mode)
+    if requested_mode != "reflect":
+        return requested_mode
+    if reflect_padding_is_valid(pre_pad_shape, pad_before, pad_after):
+        return requested_mode
+
+    logger.warning(
+        "Reflect padding is invalid for pre_pad_shape=%s, pad_before=%s, pad_after=%s; "
+        "falling back to %s padding.",
+        pre_pad_shape,
+        pad_before,
+        pad_after,
+        REFLECT_FALLBACK_PADDING_MODE,
+    )
+    return REFLECT_FALLBACK_PADDING_MODE
 
 
 def sanitize_nonfinite_volume(
@@ -138,6 +218,9 @@ class InferenceDataset(Dataset):
         self.patch_size = make_3tuple(self.config.patch_size)
         self.stride = make_3tuple(self.config.stride)
         self.config.patch_size = self.patch_size
+        self.padding_mode = normalize_inference_padding_mode(
+            getattr(self.config, "padding_mode", DEFAULT_INFERENCE_PADDING_MODE)
+        )
         self.global_hist_bounds = get_global_hist_bounds(self.config)
         assert len(self.config.crop_params) == 6, (
             "crop_params must be a tuple of 6 elements in the form (z_start, z_end, y_start, y_end, x_start, x_end)"
@@ -266,17 +349,38 @@ class InferenceDataset(Dataset):
             * self.patch_size[2],
         )
 
-        # Ensure total volume size is divisible by chunk size
+        pre_pad_shape = (Z, Y, X)
+
+        # Pad only to the smallest shape accepted by patch embedding. The
+        # configured chunk size can still be used by streaming, but it should
+        # not force extra synthetic context around the volume.
         target_shape = (
-            ((Z + chunk_size[0] - 1) // chunk_size[0]) * chunk_size[0],
-            ((Y + chunk_size[1] - 1) // chunk_size[1]) * chunk_size[1],
-            ((X + chunk_size[2] - 1) // chunk_size[2]) * chunk_size[2],
+            smallest_valid_patch_embed_size(Z, self.patch_size[0], self.stride[0]),
+            smallest_valid_patch_embed_size(Y, self.patch_size[1], self.stride[1]),
+            smallest_valid_patch_embed_size(X, self.patch_size[2], self.stride[2]),
         )
 
         padding = (
             max(0, target_shape[0] - Z),
             max(0, target_shape[1] - Y),
             max(0, target_shape[2] - X),
+        )
+        padding_sides = tuple(split_padding(pad) for pad in padding)
+        pad_before = (
+            padding_sides[0][0],
+            padding_sides[1][0],
+            padding_sides[2][0],
+        )
+        pad_after = (
+            padding_sides[0][1],
+            padding_sides[1][1],
+            padding_sides[2][1],
+        )
+        effective_padding_mode = resolve_inference_padding_mode(
+            self.padding_mode,
+            pre_pad_shape=pre_pad_shape,
+            pad_before=pad_before,
+            pad_after=pad_after,
         )
 
         target_vol_size = (
@@ -293,8 +397,13 @@ class InferenceDataset(Dataset):
             "vol_metadata": {
                 "target_vol_size": target_vol_size,
                 "padding": padding,
+                "pad_before": pad_before,
+                "pad_after": pad_after,
+                "pre_pad_shape": pre_pad_shape,
                 "target_shape": target_shape,
                 "chunk_size": chunk_size,
+                "padding_mode": self.padding_mode,
+                "effective_padding_mode": effective_padding_mode,
                 "save_path": str(self.save_path),
                 "timepoint_name": timepoint_name,
                 "raw_path": str(raw_path),
@@ -319,6 +428,9 @@ class InferenceTransform:
         self.patch_size = make_3tuple(self.config.patch_size)
         self.stride = make_3tuple(self.config.stride)
         self.config.patch_size = self.patch_size
+        self.padding_mode = normalize_inference_padding_mode(
+            getattr(self.config, "padding_mode", DEFAULT_INFERENCE_PADDING_MODE)
+        )
         self.global_hist_bounds = get_global_hist_bounds(self.config)
         # Convert to float tuples for type compatibility
         upsample_factor_float = (
@@ -335,7 +447,7 @@ class InferenceTransform:
             chunk_interpolate=True,
             antialias=False,
             image_key="image",
-            mask_key="mask",
+            mask_key=None,
             in_chans=self.config.in_chans,
             mean=self.config.mean,
             std=self.config.std,
@@ -353,11 +465,19 @@ class InferenceTransform:
     ) -> Dict[str, torch.Tensor]:
         """Apply the transform to the data."""
         target_vol_size = vol_metadata["target_vol_size"]
-        median = get_inference_pad_value(
-            data["image"],
-            data["mask"],
-            volume_path=vol_metadata.get("save_path", "<unknown volume>"),
+        padding_mode = normalize_inference_padding_mode(
+            vol_metadata.get("effective_padding_mode", self.padding_mode)
         )
+        median = 0.0
+        if padding_mode == "constant":
+            median = get_inference_pad_value(
+                data["image"],
+                data.get(
+                    "mask",
+                    np.ones(data["image"].shape[0], dtype=bool),
+                ),
+                volume_path=vol_metadata.get("save_path", "<unknown volume>"),
+            )
 
         transform_fn = self.transform_fn(
             target_img_size=target_vol_size,
@@ -365,6 +485,7 @@ class InferenceTransform:
             device=device,
             interpolate_chunk_size=interpolate_chunk_size,
             pad_value=median,
+            padding_mode=padding_mode,
         )
         res = transform_fn(data)
         volume = res["image"].to(  # type: ignore

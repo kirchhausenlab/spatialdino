@@ -1,5 +1,5 @@
+import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, Dict, Iterator, Tuple
 import numpy as np
@@ -29,6 +29,40 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 logger = logging.getLogger("inference_3d")
+
+
+def _jsonable_metadata(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_jsonable_metadata(item) for item in value]
+    if isinstance(value, list):
+        return [_jsonable_metadata(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable_metadata(item) for key, item in value.items()}
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
+
+
+def save_feature_metadata(
+    feats_path: Path,
+    vol_metadata: Dict[str, Any],
+    *,
+    model_input_shape: Tuple[int, int, int],
+    lr_feats_shape: Tuple[int, int, int, int],
+) -> None:
+    metadata = {
+        **vol_metadata,
+        "model_input_shape": model_input_shape,
+        "lr_feats_shape": lr_feats_shape,
+    }
+    metadata_path = feats_path.with_name(f"{feats_path.stem}_metadata.json")
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        json.dump(_jsonable_metadata(metadata), handle, indent=2, sort_keys=True)
+        handle.write("\n")
 
 
 def iter_batch_samples(
@@ -162,25 +196,14 @@ def main() -> None:
                         lr_feats = result
                     lr_feats = lr_feats.cpu().squeeze_(0).float()
 
-                padding = vol_metadata["padding"]
-                scale_factor = (
-                    volume.shape[-3] / lr_feats.shape[-3],
-                    volume.shape[-2] / lr_feats.shape[-2],
-                    volume.shape[-1] / lr_feats.shape[-1],
-                )
-                padding_lr = (
-                    math.floor(padding[0] / scale_factor[0]),
-                    math.floor(padding[1] / scale_factor[1]),
-                    math.floor(padding[2] / scale_factor[2]),
-                )
-                lr_feats = lr_feats[
-                    :,
-                    padding_lr[0] // 2 : lr_feats.shape[-3] - padding_lr[0] // 2,
-                    padding_lr[1] // 2 : lr_feats.shape[-2] - padding_lr[1] // 2,
-                    padding_lr[2] // 2 : lr_feats.shape[-1] - padding_lr[2] // 2,
-                ]
                 lr_feats = lr_feats.permute(1, 2, 3, 0)  # [Z, Y, X, C]
                 np.save(feats_path, lr_feats.cpu().numpy())
+                save_feature_metadata(
+                    feats_path,
+                    vol_metadata,
+                    model_input_shape=tuple(int(dim) for dim in volume.shape[-3:]),
+                    lr_feats_shape=tuple(int(dim) for dim in lr_feats.shape),
+                )
                 logger.info(f"Saved features to {feats_path}")
 
                 if save_special_tokens and cls_token is not None:

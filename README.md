@@ -146,6 +146,8 @@ uv run torchrun --nnodes 1 --node_rank 0 --nproc_per_node $NUM_PROC_PER_NODE \
 - **`file_start` / `file_end`**: File slice passed to `fnames[file_start:file_end]` (`file_end` is exclusive)
 - **`save_path`**: Path to save results
 - **`global_hist_min` / `global_hist_max`**: Optional global histogram bounds. If both are provided, inference uses those shared values for all volumes instead of the default per-volume normalization. These correspond to the values written by `scripts/inference/norm_per_vol.py`.
+- **`padding_mode`**: Boundary padding mode used before patch embedding. Defaults to `reflect` and falls back to `replicate` when reflection is invalid for tiny axes.
+- **Feature metadata**: Each saved LR feature file also gets a `{timepoint}_metadata.json` sidecar with the padded model-input shape, LR feature shape, and padding details.
 - **`OMP_NUM_THREADS`**: Number of threads to use
 - **`CUDA_VISIBLE_DEVICES`**: List of GPUs to use
 - **`NUM_PROC_PER_NODE`**: Number of processes/GPUs per node
