@@ -10,6 +10,10 @@ import torch
 StorageKind = Literal["gpu", "cpu", "disk"]
 
 
+def _safe_pin_memory(pin_memory: bool) -> bool:
+    return bool(pin_memory and torch.cuda.is_available())
+
+
 def _numpy_dtype_for_torch(dtype: torch.dtype) -> np.dtype:
     if dtype == torch.float16:
         return np.float16
@@ -55,6 +59,7 @@ class TokenStore:
             )
 
         if storage_kind == "cpu":
+            pin_memory = _safe_pin_memory(pin_memory)
             tensor = torch.empty(
                 shape,
                 device="cpu",
@@ -119,6 +124,92 @@ class TokenStore:
 
     def write(self, start: int, end: int, data: torch.Tensor) -> None:
         target = self.tensor[start:end]
+        if target.device != data.device or target.dtype != data.dtype:
+            data = data.to(device=target.device, dtype=target.dtype)
+        target.copy_(data)
+
+    def flush(self) -> None:
+        if self.memmap is not None:
+            self.memmap.flush()
+
+
+@dataclass
+class HeadMajorStore:
+    """Storage for tensors laid out as [num_heads, num_tokens, head_dim]."""
+
+    tensor: torch.Tensor
+    storage_kind: StorageKind
+    pin_memory: bool = False
+    path: Optional[Path] = None
+    memmap: Optional[np.memmap] = None
+
+    @classmethod
+    def create(
+        cls,
+        shape: Tuple[int, int, int],
+        dtype: torch.dtype,
+        storage_kind: StorageKind,
+        device: torch.device,
+        pin_memory: bool = False,
+        path: Optional[Path] = None,
+    ) -> "HeadMajorStore":
+        if storage_kind == "gpu":
+            tensor = torch.empty(shape, device=device, dtype=dtype)
+            return cls(tensor=tensor, storage_kind=storage_kind, pin_memory=False)
+
+        if storage_kind == "cpu":
+            pin_memory = _safe_pin_memory(pin_memory)
+            tensor = torch.empty(
+                shape,
+                device="cpu",
+                dtype=dtype,
+                pin_memory=pin_memory,
+            )
+            return cls(tensor=tensor, storage_kind=storage_kind, pin_memory=pin_memory)
+
+        if storage_kind == "disk":
+            if path is None:
+                raise ValueError("Disk storage requires a path.")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np_dtype = _numpy_dtype_for_torch(dtype)
+            memmap = np.memmap(
+                path,
+                mode="w+",
+                dtype=np_dtype,
+                shape=shape,
+            )
+            tensor = torch.from_numpy(memmap)
+            return cls(
+                tensor=tensor,
+                storage_kind=storage_kind,
+                pin_memory=False,
+                path=path,
+                memmap=memmap,
+            )
+
+        raise ValueError(f"Unknown storage_kind={storage_kind}")
+
+    def read_tokens(
+        self,
+        start: int,
+        end: int,
+        device: torch.device,
+        dtype: Optional[torch.dtype] = None,
+    ) -> torch.Tensor:
+        block = self.tensor[:, start:end, :]
+        target_dtype = dtype or block.dtype
+        if self.storage_kind == "gpu":
+            if block.dtype != target_dtype:
+                block = block.to(dtype=target_dtype)
+            return block
+        if device.type == "cpu":
+            if block.dtype != target_dtype:
+                block = block.to(dtype=target_dtype)
+            return block
+        return block.to(device=device, dtype=target_dtype, non_blocking=self.pin_memory)
+
+    def write_tokens(self, start: int, end: int, data: torch.Tensor) -> None:
+        target = self.tensor[:, start:end, :]
         if target.device != data.device or target.dtype != data.dtype:
             data = data.to(device=target.device, dtype=target.dtype)
         target.copy_(data)

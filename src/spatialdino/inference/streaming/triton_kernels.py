@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 
 try:
@@ -11,6 +9,11 @@ try:
     TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     TRITON_AVAILABLE = False
+
+
+def _require_cuda_tensor(name: str, tensor: torch.Tensor) -> None:
+    if not tensor.is_cuda:
+        raise ValueError(f"{name} must be a CUDA tensor.")
 
 
 if TRITON_AVAILABLE:
@@ -117,12 +120,56 @@ if TRITON_AVAILABLE:
         tl.store(out_ptrs, acc, mask=mask_m[:, None] & mask_d[None, :])
 
 
+    @triton.jit
+    def _finalize_attn_output_kernel(
+        acc_ptr,
+        l_ptr,
+        out_ptr,
+        stride_ah,
+        stride_am,
+        stride_ad,
+        stride_oh,
+        stride_om,
+        stride_od,
+        q_len,
+        d_head,
+        BLOCK_M: tl.constexpr,
+        BLOCK_D: tl.constexpr,
+    ) -> None:
+        pid_h = tl.program_id(0)
+        pid_m = tl.program_id(1)
+
+        offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        offs_d = tl.arange(0, BLOCK_D)
+        mask_m = offs_m < q_len
+        mask_d = offs_d < d_head
+
+        acc_ptrs = (
+            acc_ptr
+            + pid_h * stride_ah
+            + offs_m[:, None] * stride_am
+            + offs_d[None, :] * stride_ad
+        )
+        out_ptrs = (
+            out_ptr
+            + pid_h * stride_oh
+            + offs_m[:, None] * stride_om
+            + offs_d[None, :] * stride_od
+        )
+        l_ptrs = l_ptr + pid_h * q_len + offs_m
+
+        acc = tl.load(acc_ptrs, mask=mask_m[:, None] & mask_d[None, :], other=0.0)
+        l_i = tl.load(l_ptrs, mask=mask_m, other=1.0)
+        out = acc / l_i[:, None]
+        tl.store(out_ptrs, out, mask=mask_m[:, None] & mask_d[None, :])
+
+
 def online_attn_update(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     m: torch.Tensor,
-    l: torch.Tensor,
+    row_sum: torch.Tensor,
     out: torch.Tensor,
     scale: float,
     *,
@@ -139,17 +186,35 @@ def online_attn_update(
         k: ``[H, N, D]`` key block (CUDA).
         v: ``[H, N, D]`` value block (CUDA, same N as ``k``).
         m: ``[H, M]`` running row-max (modified **in-place**).
-        l: ``[H, M]`` running row-sum (modified **in-place**).
+        row_sum: ``[H, M]`` running row-sum (modified **in-place**).
         out: ``[H, M, D]`` running unnormalised output (modified **in-place**).
         scale: softmax scale, typically ``1 / sqrt(D)``.
 
-    The caller must normalise with ``out /= l.unsqueeze(-1)`` once all K/V
+    The caller must normalise with ``out /= row_sum.unsqueeze(-1)`` once all K/V
     blocks have been processed.
     """
     if not TRITON_AVAILABLE:
         raise RuntimeError("Triton is not available.")
     H, M, D = q.shape
     N = k.shape[1]
+    _require_cuda_tensor("q", q)
+    _require_cuda_tensor("k", k)
+    _require_cuda_tensor("v", v)
+    _require_cuda_tensor("m", m)
+    _require_cuda_tensor("row_sum", row_sum)
+    _require_cuda_tensor("out", out)
+    if k.shape[0] != H or v.shape[0] != H:
+        raise ValueError("q, k, and v must have the same number of heads.")
+    if k.shape[2] != D or v.shape[2] != D:
+        raise ValueError("q, k, and v must have the same head_dim.")
+    if v.shape[1] != N:
+        raise ValueError("k and v must have the same token length.")
+    if m.shape != (H, M) or row_sum.shape != (H, M):
+        raise ValueError("m and row_sum must have shape [num_heads, q_len].")
+    if out.shape != (H, M, D):
+        raise ValueError("out must have shape [num_heads, q_len, head_dim].")
+    if block_d < 16:
+        raise ValueError("BLOCK_D must be at least 16 for tl.dot.")
     if D > block_d:
         raise ValueError(f"head_dim={D} exceeds BLOCK_D={block_d}. Increase block_d.")
 
@@ -159,7 +224,7 @@ def online_attn_update(
         k,
         v,
         m,
-        l,
+        row_sum,
         out,
         q.stride(0),
         q.stride(1),
@@ -183,3 +248,52 @@ def online_attn_update(
         num_warps=num_warps,
         num_stages=num_stages,
     )
+
+
+def finalize_attn_output(
+    acc: torch.Tensor,
+    row_sum: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+    block_m: int = 64,
+    block_d: int = 64,
+    num_warps: int = 4,
+) -> torch.Tensor:
+    """Normalize online-softmax accumulators into a head-major output tensor.
+
+    Args:
+        acc: ``[H, M, D]`` unnormalised attention output, float32.
+        row_sum: ``[H, M]`` row sums, float32.
+        dtype: output dtype.
+    """
+    if not TRITON_AVAILABLE:
+        raise RuntimeError("Triton is not available.")
+    H, M, D = acc.shape
+    _require_cuda_tensor("acc", acc)
+    _require_cuda_tensor("row_sum", row_sum)
+    if row_sum.shape != (H, M):
+        raise ValueError("row_sum must have shape [num_heads, q_len].")
+    if block_d < 16:
+        raise ValueError("BLOCK_D must be at least 16 for tl.dot-compatible tiling.")
+    if D > block_d:
+        raise ValueError(f"head_dim={D} exceeds BLOCK_D={block_d}. Increase block_d.")
+
+    out = torch.empty_like(acc, dtype=dtype)
+    grid = (H, (M + block_m - 1) // block_m)
+    _finalize_attn_output_kernel[grid](
+        acc,
+        row_sum,
+        out,
+        acc.stride(0),
+        acc.stride(1),
+        acc.stride(2),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        M,
+        D,
+        BLOCK_M=block_m,
+        BLOCK_D=block_d,
+        num_warps=num_warps,
+    )
+    return out

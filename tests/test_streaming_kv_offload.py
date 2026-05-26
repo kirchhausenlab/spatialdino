@@ -16,6 +16,7 @@ from omegaconf import OmegaConf
 
 from spatialdino.inference.streaming.storage import TokenStore
 from spatialdino.inference.streaming.streaming_encoder import StreamingEncoder
+from spatialdino.inference.streaming.triton_kernels import TRITON_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,9 @@ def _make_config(
     storage_kind: str = "cpu",
     kv_storage_kind: str = "cpu",
     q_block_tokens: int = 8,
+    kv_block_tokens: int | None = None,
+    use_triton: bool = False,
+    triton_optimized: bool = True,
     save_path: str | None = None,
 ) -> OmegaConf:
     cfg: dict = {
@@ -105,8 +109,13 @@ def _make_config(
         "streaming_storage": storage_kind,
         "streaming_kv_storage": kv_storage_kind,
         "streaming_q_block_tokens": q_block_tokens,
-        "streaming_use_triton": False,
+        "streaming_kv_block_tokens": kv_block_tokens or q_block_tokens,
+        "streaming_use_triton": use_triton,
+        "streaming_triton_optimized": triton_optimized,
+        "streaming_triton_async_kv_copy": True,
+        "streaming_triton_fused_finalize": True,
         "streaming_pin_memory": False,
+        "streaming_log_q_blocks": False,
     }
     if save_path is not None:
         cfg["save_path"] = save_path
@@ -120,8 +129,11 @@ def _run_block_with_storage(
     num_heads: int,
     *,
     q_block_tokens: int,
+    kv_block_tokens: int | None = None,
     kv_storage_kind: str,
     device: torch.device,
+    use_triton: bool = False,
+    triton_optimized: bool = True,
     save_path: str | None = None,
 ) -> torch.Tensor:
     """Run a single streaming block and return the output token tensor on CPU."""
@@ -134,6 +146,9 @@ def _run_block_with_storage(
         storage_kind=tok_storage,
         kv_storage_kind=kv_storage_kind,
         q_block_tokens=q_block_tokens,
+        kv_block_tokens=kv_block_tokens,
+        use_triton=use_triton,
+        triton_optimized=triton_optimized,
         save_path=save_path,
     )
     encoder = _FakeEncoder(embed_dim, num_heads, block)
@@ -154,6 +169,63 @@ def _run_block_with_storage(
 
     block.to("cpu")
     return x_out.tensor.clone().cpu()
+
+
+def _run_last_block_with_storage(
+    block: _FakeBlock,
+    tokens: torch.Tensor,
+    embed_dim: int,
+    num_heads: int,
+    *,
+    q_block_tokens: int,
+    kv_block_tokens: int | None = None,
+    kv_storage_kind: str,
+    device: torch.device,
+    use_triton: bool = False,
+    triton_optimized: bool = True,
+    save_path: str | None = None,
+) -> torch.Tensor:
+    total_tokens = tokens.shape[0]
+    grid_size = (2, 2, 2)
+    tok_storage = "gpu" if device.type == "cuda" else "cpu"
+
+    cfg = _make_config(
+        device_type=device.type,
+        storage_kind=tok_storage,
+        kv_storage_kind=kv_storage_kind,
+        q_block_tokens=q_block_tokens,
+        kv_block_tokens=kv_block_tokens,
+        use_triton=use_triton,
+        triton_optimized=triton_optimized,
+        save_path=save_path,
+    )
+    encoder = _FakeEncoder(embed_dim, num_heads, block)
+    se = StreamingEncoder(encoder, device, cfg)
+
+    block.to(device)
+
+    x_in = TokenStore.create(
+        (total_tokens, embed_dim), torch.float32, tok_storage, 1, grid_size, device
+    )
+    x_out = TokenStore.create(
+        (total_tokens, embed_dim), torch.float32, tok_storage, 1, grid_size, device
+    )
+    x_in.tensor.copy_(tokens.to(x_in.tensor.device))
+
+    with torch.no_grad():
+        out_store = se._run_last_block(
+            block,
+            x_in,
+            x_out,
+            total_tokens,
+            embed_dim,
+            num_heads,
+            norm_feat="prenorm",
+            rope=None,
+        )
+
+    block.to("cpu")
+    return out_store.tensor.clone().cpu()
 
 
 # ---------------------------------------------------------------------------
@@ -321,3 +393,135 @@ class TestStreamingCpuKV(unittest.TestCase):
         )
 
         torch.testing.assert_close(disk_out, gpu_out, rtol=1e-3, atol=1e-4)
+
+    @unittest.skipUnless(
+        torch.cuda.is_available() and TRITON_AVAILABLE,
+        "CUDA and Triton are required",
+    )
+    def test_optimized_triton_gpu_kv_matches_reference_triton(self):
+        torch.manual_seed(8)
+        embed_dim, num_heads, total = 32, 4, 41
+        block = _FakeBlock(embed_dim, num_heads).eval()
+        tokens = torch.randn(total, embed_dim)
+        device = torch.device("cuda")
+
+        ref = _run_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=16,
+            kv_storage_kind="gpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=False,
+        )
+        got = _run_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=16,
+            kv_storage_kind="gpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=True,
+        )
+
+        torch.testing.assert_close(got, ref, rtol=1e-3, atol=1e-3)
+
+    @unittest.skipUnless(
+        torch.cuda.is_available() and TRITON_AVAILABLE,
+        "CUDA and Triton are required",
+    )
+    def test_optimized_triton_cpu_kv_matches_reference_triton(self):
+        torch.manual_seed(9)
+        embed_dim, num_heads, total = 32, 4, 37
+        block = _FakeBlock(embed_dim, num_heads).eval()
+        tokens = torch.randn(total, embed_dim)
+        device = torch.device("cuda")
+
+        ref = _run_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=13,
+            kv_storage_kind="cpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=False,
+        )
+        got = _run_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=13,
+            kv_storage_kind="cpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=True,
+        )
+
+        torch.testing.assert_close(got, ref, rtol=1e-3, atol=1e-3)
+
+    @unittest.skipUnless(
+        torch.cuda.is_available() and TRITON_AVAILABLE,
+        "CUDA and Triton are required",
+    )
+    def test_optimized_triton_last_block_patch_attn_matches_reference_triton(self):
+        torch.manual_seed(10)
+        embed_dim, num_heads, total = 32, 4, 35
+        block = _FakeBlock(embed_dim, num_heads).eval()
+        tokens = torch.randn(total, embed_dim)
+        device = torch.device("cuda")
+
+        ref = _run_last_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=11,
+            kv_storage_kind="gpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=False,
+        )
+        got = _run_last_block_with_storage(
+            block,
+            tokens,
+            embed_dim,
+            num_heads,
+            q_block_tokens=8,
+            kv_block_tokens=11,
+            kv_storage_kind="gpu",
+            device=device,
+            use_triton=True,
+            triton_optimized=True,
+        )
+
+        self.assertEqual(got.shape, (total, embed_dim + num_heads))
+        torch.testing.assert_close(got, ref, rtol=1e-3, atol=1e-3)
+
+    def test_streaming_predict_rejects_overlapping_patch_stride(self):
+        embed_dim, num_heads = 32, 4
+        block = _FakeBlock(embed_dim, num_heads).eval()
+        encoder = _FakeEncoder(embed_dim, num_heads, block)
+        encoder.stride = (1, 2, 2)
+        cfg = _make_config(
+            device_type="cpu",
+            storage_kind="cpu",
+            kv_storage_kind="cpu",
+            q_block_tokens=8,
+        )
+        se = StreamingEncoder(encoder, torch.device("cpu"), cfg)
+
+        volume = torch.zeros(1, 4, 4, 4)
+        with self.assertRaisesRegex(ValueError, "stride == patch_size"):
+            se.predict(volume, vol_metadata={"chunk_size": (2, 2, 2)})

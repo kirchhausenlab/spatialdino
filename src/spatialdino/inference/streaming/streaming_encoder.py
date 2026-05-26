@@ -10,9 +10,10 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from spatialdino.data import DTYPE_MAPPING
-from spatialdino.inference.streaming.storage import StorageKind, TokenStore
+from spatialdino.inference.streaming.storage import HeadMajorStore, StorageKind, TokenStore
 from spatialdino.inference.streaming.triton_kernels import (
     TRITON_AVAILABLE,
+    finalize_attn_output,
     online_attn_update,
 )
 from spatialdino.models.layers.rope import RoPECache, apply_rotary_emb
@@ -48,18 +49,35 @@ class StreamingEncoder:
         self.storage_dtype = self.compute_dtype
         self.output_dtype = self.compute_dtype
         self.q_block_tokens = int(getattr(config, "streaming_q_block_tokens", 1024))
-        self.kv_block_tokens = self.q_block_tokens
+        self.kv_block_tokens = int(
+            getattr(config, "streaming_kv_block_tokens", self.q_block_tokens)
+        )
         self.pin_memory = bool(getattr(config, "streaming_pin_memory", True))
         self.use_triton = bool(getattr(config, "streaming_use_triton", False))
         if self.use_triton and not TRITON_AVAILABLE:
             raise RuntimeError(
                 "streaming_use_triton requested but Triton is not available."
             )
+        if self.use_triton and self.device.type != "cuda":
+            raise RuntimeError("streaming_use_triton requires a CUDA device.")
+        self.triton_optimized = bool(
+            getattr(config, "streaming_triton_optimized", True)
+        )
+        self.triton_async_kv_copy = bool(
+            getattr(config, "streaming_triton_async_kv_copy", True)
+        )
+        self.triton_fused_finalize = bool(
+            getattr(config, "streaming_triton_fused_finalize", True)
+        )
+        self.log_q_blocks = bool(getattr(config, "streaming_log_q_blocks", False))
         self.triton_block_m = int(getattr(config, "streaming_triton_block_m", 128))
         self.triton_block_n = int(getattr(config, "streaming_triton_block_n", 128))
         self.triton_block_d = int(getattr(config, "streaming_triton_block_d", 64))
         self.triton_num_warps = int(getattr(config, "streaming_triton_num_warps", 4))
         self.triton_num_stages = int(getattr(config, "streaming_triton_num_stages", 3))
+        self._triton_copy_stream: Optional[torch.cuda.Stream] = None
+        if self.use_triton and self.triton_async_kv_copy and self.device.type == "cuda":
+            self._triton_copy_stream = torch.cuda.Stream(device=self.device)
         self.kv_storage_kind: StorageKind = str(
             getattr(config, "streaming_kv_storage", self.storage_kind)
         )  # type: ignore
@@ -67,11 +85,14 @@ class StreamingEncoder:
 
         logger.info(
             "StreamingEncoder: storage=%s, kv_storage=%s, use_triton=%s, "
-            "q_block_tokens=%d, triton_blocks=(M=%d, N=%d, D=%d)",
+            "triton_optimized=%s, q_block_tokens=%d, kv_block_tokens=%d, "
+            "triton_blocks=(M=%d, N=%d, D=%d)",
             self.storage_kind,
             self.kv_storage_kind,
             self.use_triton,
+            self.triton_optimized,
             self.q_block_tokens,
+            self.kv_block_tokens,
             self.triton_block_m,
             self.triton_block_n,
             self.triton_block_d,
@@ -121,6 +142,10 @@ class StreamingEncoder:
         _, z, y, x = volume.shape
         patch_size = self.encoder.patch_size
         stride = self.encoder.stride
+        if tuple(stride) != tuple(patch_size):
+            raise ValueError(
+                "Streaming inference currently requires stride == patch_size."
+            )
         if z % patch_size[0] != 0 or y % patch_size[1] != 0 or x % patch_size[2] != 0:
             raise ValueError("Volume shape must be divisible by patch_size.")
 
@@ -293,6 +318,28 @@ class StreamingEncoder:
             path=path,
         )
 
+    def _create_head_major_store(
+        self,
+        name: str,
+        shape: Tuple[int, int, int],
+        dtype: torch.dtype,
+        storage_kind: Optional[StorageKind] = None,
+    ) -> HeadMajorStore:
+        storage_kind = storage_kind or self.kv_storage_kind
+        if storage_kind == "disk":
+            assert self.tmp_dir is not None
+            path = self.tmp_dir.joinpath(f"{name}_{os.getpid()}.mmap")
+        else:
+            path = None
+        return HeadMajorStore.create(
+            shape=shape,
+            dtype=dtype,
+            storage_kind=storage_kind,
+            device=self.device,
+            pin_memory=self.pin_memory,
+            path=path,
+        )
+
     def _init_special_tokens(self, store: TokenStore, embed_dim: int) -> None:
         cls = self.encoder.cls_token[0, 0].detach()
         store.write(0, 1, cls.view(1, embed_dim))
@@ -375,6 +422,20 @@ class StreamingEncoder:
         embed_dim = num_heads * head_dim
         scale = attn.scale
 
+        if self.use_triton and self.triton_optimized:
+            self._run_block_triton_optimized(
+                block=block,
+                x_in=x_in,
+                x_out=x_out,
+                total_tokens=total_tokens,
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                scale=scale,
+                rope=rope,
+            )
+            return
+
         q_store, k_store, v_store = self._precompute_qkv(
             block=block,
             x_in=x_in,
@@ -408,13 +469,14 @@ class StreamingEncoder:
             for q_idx, (q_start, q_end) in enumerate(
                 _iter_blocks(total_tokens, self.q_block_tokens)
             ):
-                logger.debug(
-                    "  Q block %d/%d [%d:%d]",
-                    q_idx + 1,
-                    num_q_blocks,
-                    q_start,
-                    q_end,
-                )
+                if self.log_q_blocks and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "  Q block %d/%d [%d:%d]",
+                        q_idx + 1,
+                        num_q_blocks,
+                        q_start,
+                        q_end,
+                    )
                 x_q = x_in.read(q_start, q_end, self.device, self.compute_dtype)
                 q_len = q_end - q_start
 
@@ -448,7 +510,7 @@ class StreamingEncoder:
                         device=self.device,
                         dtype=torch.float32,
                     )
-                    l = torch.zeros(
+                    row_sum = torch.zeros(
                         (num_heads, q_len),
                         device=self.device,
                         dtype=torch.float32,
@@ -482,7 +544,7 @@ class StreamingEncoder:
                             k_3d,
                             v_3d,
                             m,
-                            l,
+                            row_sum,
                             out_acc,
                             scale,
                             block_m=self.triton_block_m,
@@ -491,7 +553,7 @@ class StreamingEncoder:
                             num_warps=self.triton_num_warps,
                             num_stages=self.triton_num_stages,
                         )
-                    out = out_acc / l.unsqueeze(-1)
+                    out = out_acc / row_sum.unsqueeze(-1)
                     out = out.to(dtype=self.compute_dtype)
                     out = out.transpose(0, 1).reshape(1, q_len, embed_dim)
                 else:
@@ -503,7 +565,7 @@ class StreamingEncoder:
                         device=self.device,
                         dtype=torch.float32,
                     )
-                    l = torch.zeros(
+                    row_sum = torch.zeros(
                         (1, num_heads, q_len),
                         device=self.device,
                         dtype=torch.float32,
@@ -534,13 +596,13 @@ class StreamingEncoder:
                         m_new = torch.maximum(m, block_max)
                         exp_m = torch.exp(m - m_new)
                         exp_scores = torch.exp(scores - m_new.unsqueeze(-1))
-                        l = exp_m * l + exp_scores.sum(dim=-1)
+                        row_sum = exp_m * row_sum + exp_scores.sum(dim=-1)
                         out_acc = (
                             exp_m.unsqueeze(-1) * out_acc
                             + torch.matmul(exp_scores.to(self.compute_dtype), v).float()
                         )
                         m = m_new
-                    out = out_acc / l.unsqueeze(-1)
+                    out = out_acc / row_sum.unsqueeze(-1)
                     out = out.to(dtype=self.compute_dtype)
                     out = out.transpose(1, 2).reshape(1, q_len, embed_dim)
 
@@ -574,6 +636,20 @@ class StreamingEncoder:
         head_dim = attn.qkv.in_features // num_heads
         scale = attn.scale
         embed_dim = num_heads * head_dim
+
+        if self.use_triton and self.triton_optimized:
+            return self._run_last_block_triton_optimized(
+                block=block,
+                x_in=x_in,
+                x_out=x_out,
+                total_tokens=total_tokens,
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                scale=scale,
+                norm_feat=norm_feat,
+                rope=rope,
+            )
 
         q_store, k_store, v_store = self._precompute_qkv(
             block=block,
@@ -610,13 +686,14 @@ class StreamingEncoder:
             for q_idx, (q_start, q_end) in enumerate(
                 _iter_blocks(total_tokens, self.q_block_tokens)
             ):
-                logger.debug(
-                    "  Q block %d/%d [%d:%d]",
-                    q_idx + 1,
-                    num_q_blocks,
-                    q_start,
-                    q_end,
-                )
+                if self.log_q_blocks and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "  Q block %d/%d [%d:%d]",
+                        q_idx + 1,
+                        num_q_blocks,
+                        q_start,
+                        q_end,
+                    )
                 x_q = x_in.read(q_start, q_end, self.device, self.compute_dtype)
                 q_len = q_end - q_start
 
@@ -653,7 +730,7 @@ class StreamingEncoder:
                         device=self.device,
                         dtype=torch.float32,
                     )
-                    l = torch.zeros(
+                    row_sum = torch.zeros(
                         (num_heads, q_len),
                         device=self.device,
                         dtype=torch.float32,
@@ -687,7 +764,7 @@ class StreamingEncoder:
                             k_3d,
                             v_3d,
                             m,
-                            l,
+                            row_sum,
                             out_acc,
                             scale,
                             block_m=self.triton_block_m,
@@ -696,7 +773,7 @@ class StreamingEncoder:
                             num_warps=self.triton_num_warps,
                             num_stages=self.triton_num_stages,
                         )
-                    out = out_acc / l.unsqueeze(-1)
+                    out = out_acc / row_sum.unsqueeze(-1)
                     if q_start <= 0 < q_end:
                         cls_index = 0 - q_start
                         cls_context = (
@@ -713,7 +790,7 @@ class StreamingEncoder:
                         device=self.device,
                         dtype=torch.float32,
                     )
-                    l = torch.zeros(
+                    row_sum = torch.zeros(
                         (1, num_heads, q_len),
                         device=self.device,
                         dtype=torch.float32,
@@ -744,13 +821,13 @@ class StreamingEncoder:
                         m_new = torch.maximum(m, block_max)
                         exp_m = torch.exp(m - m_new)
                         exp_scores = torch.exp(scores - m_new.unsqueeze(-1))
-                        l = exp_m * l + exp_scores.sum(dim=-1)
+                        row_sum = exp_m * row_sum + exp_scores.sum(dim=-1)
                         out_acc = (
                             exp_m.unsqueeze(-1) * out_acc
                             + torch.matmul(exp_scores.to(self.compute_dtype), v).float()
                         )
                         m = m_new
-                    out = out_acc / l.unsqueeze(-1)
+                    out = out_acc / row_sum.unsqueeze(-1)
                     if q_start <= 0 < q_end:
                         cls_index = 0 - q_start
                         cls_context = out[:, :, cls_index : cls_index + 1, :].clone()
@@ -833,6 +910,353 @@ class StreamingEncoder:
         x_out.flush()
         return final_store
 
+    def _run_block_triton_optimized(
+        self,
+        block: torch.nn.Module,
+        x_in: TokenStore,
+        x_out: TokenStore,
+        total_tokens: int,
+        embed_dim: int,
+        num_heads: int,
+        head_dim: int,
+        scale: float,
+        rope: Optional[RoPECache] = None,
+    ) -> None:
+        attn = block.attn
+        q_store, k_store, v_store = self._precompute_qkv_head_major(
+            block=block,
+            x_in=x_in,
+            total_tokens=total_tokens,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            rope=rope,
+        )
+
+        num_q_blocks = (total_tokens + self.q_block_tokens - 1) // self.q_block_tokens
+        with torch.inference_mode():
+            for q_idx, (q_start, q_end) in enumerate(
+                _iter_blocks(total_tokens, self.q_block_tokens)
+            ):
+                if self.log_q_blocks and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "  Q block %d/%d [%d:%d]",
+                        q_idx + 1,
+                        num_q_blocks,
+                        q_start,
+                        q_end,
+                    )
+                x_q = x_in.read(q_start, q_end, self.device, self.compute_dtype)
+                q_len = q_end - q_start
+                q_3d = q_store.read_tokens(
+                    q_start, q_end, self.device, self.compute_dtype
+                )
+                out_head, _, _ = self._run_triton_attention_head_major(
+                    q_3d=q_3d,
+                    k_store=k_store,
+                    v_store=v_store,
+                    total_tokens=total_tokens,
+                    scale=scale,
+                )
+                out = out_head.transpose(0, 1).reshape(1, q_len, embed_dim)
+
+                with torch.amp.autocast(
+                    enabled=self.use_amp,
+                    dtype=self.compute_dtype,
+                    device_type=self.device_type,
+                ):
+                    x_attn = attn.proj(out)
+                    x_attn = attn.proj_drop(x_attn)
+                    x_attn = block.ls1(x_attn)
+                    x_new = x_q + x_attn
+                    x_new = x_new + block.ls2(block.mlp(block.norm2(x_new)))
+
+                x_out.write(q_start, q_end, x_new.squeeze(0))
+
+        del q_store, k_store, v_store
+
+    def _run_last_block_triton_optimized(
+        self,
+        block: torch.nn.Module,
+        x_in: TokenStore,
+        x_out: TokenStore,
+        total_tokens: int,
+        embed_dim: int,
+        num_heads: int,
+        head_dim: int,
+        scale: float,
+        norm_feat: str,
+        rope: Optional[RoPECache] = None,
+    ) -> TokenStore:
+        attn = block.attn
+        q_store, k_store, v_store = self._precompute_qkv_head_major(
+            block=block,
+            x_in=x_in,
+            total_tokens=total_tokens,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            rope=rope,
+        )
+
+        cls_context: Optional[torch.Tensor] = None
+        num_q_blocks = (total_tokens + self.q_block_tokens - 1) // self.q_block_tokens
+        with torch.inference_mode():
+            for q_idx, (q_start, q_end) in enumerate(
+                _iter_blocks(total_tokens, self.q_block_tokens)
+            ):
+                if self.log_q_blocks and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "  Q block %d/%d [%d:%d]",
+                        q_idx + 1,
+                        num_q_blocks,
+                        q_start,
+                        q_end,
+                    )
+                x_q = x_in.read(q_start, q_end, self.device, self.compute_dtype)
+                q_len = q_end - q_start
+                q_3d = q_store.read_tokens(
+                    q_start, q_end, self.device, self.compute_dtype
+                )
+                out_head, out_acc, row_sum = self._run_triton_attention_head_major(
+                    q_3d=q_3d,
+                    k_store=k_store,
+                    v_store=v_store,
+                    total_tokens=total_tokens,
+                    scale=scale,
+                )
+                if q_start <= 0 < q_end:
+                    cls_index = 0 - q_start
+                    cls_context = (
+                        out_acc[:, cls_index : cls_index + 1, :]
+                        / row_sum[:, cls_index : cls_index + 1].unsqueeze(-1)
+                    ).clone().unsqueeze(0)
+                out = out_head.transpose(0, 1).reshape(1, q_len, embed_dim)
+
+                with torch.amp.autocast(
+                    enabled=self.use_amp,
+                    dtype=self.compute_dtype,
+                    device_type=self.device_type,
+                ):
+                    x_attn = attn.proj(out)
+                    x_attn = attn.proj_drop(x_attn)
+                    x_attn = block.ls1(x_attn)
+                    x_new = x_q + x_attn
+                    x_new = x_new + block.ls2(block.mlp(block.norm2(x_new)))
+
+                x_out.write(q_start, q_end, x_new.squeeze(0))
+
+        if cls_context is None:
+            raise RuntimeError("Failed to capture CLS context for patch_attn.")
+
+        if norm_feat == "norm":
+            self._apply_norm(self.encoder.norm, x_out, total_tokens)
+
+        attn_store = self._create_store(
+            name="attn_store",
+            shape=(total_tokens, num_heads),
+            num_special=x_out.num_special,
+            grid_size=x_out.grid_size,
+            dtype=self.output_dtype,
+        )
+
+        with torch.inference_mode():
+            if v_store.storage_kind == "gpu":
+                v_all = v_store.tensor.to(dtype=self.compute_dtype)
+                cls_attn = torch.matmul(
+                    cls_context.float(), v_all.float().transpose(-2, -1)
+                )
+                cls_attn = cls_attn.squeeze(2).transpose(1, 2).contiguous()
+                attn_store.write(0, total_tokens, cls_attn.squeeze(0))
+            else:
+                for kv_start, kv_end in _iter_blocks(
+                    total_tokens, self.kv_block_tokens
+                ):
+                    v_3d = v_store.read_tokens(
+                        kv_start, kv_end, self.device, self.compute_dtype
+                    )
+                    cls_attn = torch.matmul(
+                        cls_context.float(), v_3d.float().transpose(-2, -1)
+                    )
+                    cls_attn = cls_attn.squeeze(2).transpose(1, 2).contiguous()
+                    attn_store.write(kv_start, kv_end, cls_attn.squeeze(0))
+
+        del q_store, k_store, v_store
+
+        final_store = self._create_store(
+            name="final_store",
+            shape=(total_tokens, embed_dim + num_heads),
+            num_special=x_out.num_special,
+            grid_size=x_out.grid_size,
+            dtype=self.output_dtype,
+        )
+
+        combine_device = (
+            self.device if self.storage_kind == "gpu" else torch.device("cpu")
+        )
+        for start, end in _iter_blocks(total_tokens, self.q_block_tokens):
+            feats = x_out.read(start, end, combine_device, self.output_dtype)
+            attn = attn_store.read(start, end, combine_device, self.output_dtype)
+            combined = torch.cat([feats, attn], dim=-1)
+            final_store.write(start, end, combined)
+
+        final_store.flush()
+        attn_store.flush()
+        x_out.flush()
+        return final_store
+
+    def _iter_head_major_kv_blocks(
+        self,
+        k_store: HeadMajorStore,
+        v_store: HeadMajorStore,
+        total_tokens: int,
+    ) -> Iterable[Tuple[int, int, torch.Tensor, torch.Tensor]]:
+        if k_store.storage_kind == "gpu":
+            yield (
+                0,
+                total_tokens,
+                k_store.tensor.to(dtype=self.compute_dtype),
+                v_store.tensor.to(dtype=self.compute_dtype),
+            )
+            return
+
+        blocks = list(_iter_blocks(total_tokens, self.kv_block_tokens))
+        if (
+            not self.triton_async_kv_copy
+            or self.device.type != "cuda"
+            or len(blocks) <= 1
+            or self._triton_copy_stream is None
+        ):
+            for start, end in blocks:
+                yield (
+                    start,
+                    end,
+                    k_store.read_tokens(start, end, self.device, self.compute_dtype),
+                    v_store.read_tokens(start, end, self.device, self.compute_dtype),
+                )
+            return
+
+        copy_stream = self._triton_copy_stream
+        compute_stream = torch.cuda.current_stream(self.device)
+        num_heads, _, head_dim = k_store.tensor.shape
+        max_block = max(end - start for start, end in blocks)
+        buffers = [
+            (
+                torch.empty(
+                    (num_heads, max_block, head_dim),
+                    device=self.device,
+                    dtype=self.compute_dtype,
+                ),
+                torch.empty(
+                    (num_heads, max_block, head_dim),
+                    device=self.device,
+                    dtype=self.compute_dtype,
+                ),
+            ),
+            (
+                torch.empty(
+                    (num_heads, max_block, head_dim),
+                    device=self.device,
+                    dtype=self.compute_dtype,
+                ),
+                torch.empty(
+                    (num_heads, max_block, head_dim),
+                    device=self.device,
+                    dtype=self.compute_dtype,
+                ),
+            ),
+        ]
+
+        def schedule(
+            index: int,
+            slot: int,
+        ) -> Tuple[int, int, torch.Tensor, torch.Tensor, torch.cuda.Event, int]:
+            start, end = blocks[index]
+            length = end - start
+            k_block = buffers[slot][0][:, :length, :]
+            v_block = buffers[slot][1][:, :length, :]
+            k_source = k_store.tensor[:, start:end, :]
+            v_source = v_store.tensor[:, start:end, :]
+            with torch.cuda.stream(copy_stream):
+                k_block.copy_(k_source, non_blocking=k_store.pin_memory)
+                v_block.copy_(v_source, non_blocking=v_store.pin_memory)
+                event = torch.cuda.Event()
+                event.record(copy_stream)
+            return start, end, k_block, v_block, event, slot
+
+        pending = schedule(0, 0)
+        for index in range(len(blocks)):
+            start, end, k_block, v_block, event, slot = pending
+            next_pending = (
+                schedule(index + 1, 1 - slot) if index + 1 < len(blocks) else None
+            )
+            compute_stream.wait_event(event)
+            yield start, end, k_block, v_block
+            if next_pending is not None:
+                pending = next_pending
+
+    def _finalize_triton_output(
+        self,
+        out_acc: torch.Tensor,
+        row_sum: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.triton_fused_finalize:
+            return finalize_attn_output(
+                out_acc,
+                row_sum,
+                dtype=self.compute_dtype,
+                block_m=self.triton_block_m,
+                block_d=self.triton_block_d,
+                num_warps=self.triton_num_warps,
+            )
+        out = out_acc / row_sum.unsqueeze(-1)
+        return out.to(dtype=self.compute_dtype)
+
+    def _run_triton_attention_head_major(
+        self,
+        q_3d: torch.Tensor,
+        k_store: HeadMajorStore,
+        v_store: HeadMajorStore,
+        total_tokens: int,
+        scale: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        num_heads, q_len, head_dim = q_3d.shape
+        m = torch.full(
+            (num_heads, q_len),
+            float("-inf"),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        row_sum = torch.zeros(
+            (num_heads, q_len),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        out_acc = torch.zeros(
+            (num_heads, q_len, head_dim),
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        for _, _, k_3d, v_3d in self._iter_head_major_kv_blocks(
+            k_store, v_store, total_tokens
+        ):
+            online_attn_update(
+                q_3d,
+                k_3d,
+                v_3d,
+                m,
+                row_sum,
+                out_acc,
+                scale,
+                block_m=self.triton_block_m,
+                block_n=self.triton_block_n,
+                block_d=self.triton_block_d,
+                num_warps=self.triton_num_warps,
+                num_stages=self.triton_num_stages,
+            )
+
+        out = self._finalize_triton_output(out_acc, row_sum)
+        return out, out_acc, row_sum
+
     def _precompute_qkv(
         self,
         block: torch.nn.Module,
@@ -896,6 +1320,75 @@ class StreamingEncoder:
                 q_store.write(start, end, q_flat)
                 k_store.write(start, end, k_flat)
                 v_store.write(start, end, v_flat)
+
+        q_store.flush()
+        k_store.flush()
+        v_store.flush()
+        return q_store, k_store, v_store
+
+    def _precompute_qkv_head_major(
+        self,
+        block: torch.nn.Module,
+        x_in: TokenStore,
+        total_tokens: int,
+        embed_dim: int,
+        num_heads: int,
+        rope: Optional[RoPECache] = None,
+    ) -> Tuple[HeadMajorStore, HeadMajorStore, HeadMajorStore]:
+        head_dim = embed_dim // num_heads
+        if head_dim > self.triton_block_d:
+            raise ValueError(
+                f"head_dim={head_dim} exceeds streaming_triton_block_d="
+                f"{self.triton_block_d}."
+            )
+
+        attn = block.attn
+        block_tag = f"{id(block)}"
+        shape = (num_heads, total_tokens, head_dim)
+        q_store = self._create_head_major_store(
+            name=f"qkv_q_hm_{block_tag}",
+            shape=shape,
+            dtype=self.kv_storage_dtype,
+            storage_kind=self.kv_storage_kind,
+        )
+        k_store = self._create_head_major_store(
+            name=f"qkv_k_hm_{block_tag}",
+            shape=shape,
+            dtype=self.kv_storage_dtype,
+            storage_kind=self.kv_storage_kind,
+        )
+        v_store = self._create_head_major_store(
+            name=f"qkv_v_hm_{block_tag}",
+            shape=shape,
+            dtype=self.kv_storage_dtype,
+            storage_kind=self.kv_storage_kind,
+        )
+
+        with torch.inference_mode():
+            for start, end in _iter_blocks(total_tokens, self.kv_block_tokens):
+                x_block = x_in.read(start, end, self.device, self.compute_dtype)
+                with torch.amp.autocast(
+                    enabled=self.use_amp,
+                    dtype=self.compute_dtype,
+                    device_type=self.device_type,
+                ):
+                    x_norm = block.norm1(x_block)
+                    qkv = attn.qkv(x_norm)
+                qkv = qkv.view(1, -1, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
+                q_head = qkv[0].squeeze(0)  # [num_heads, seq_len, head_dim]
+                k_head = qkv[1].squeeze(0)
+                if rope is not None:
+                    cos, sin = rope
+                    cos_slice = cos[start:end].unsqueeze(0).unsqueeze(0)
+                    sin_slice = sin[start:end].unsqueeze(0).unsqueeze(0)
+                    q_rot = apply_rotary_emb(qkv[0], cos_slice, sin_slice)
+                    k_rot = apply_rotary_emb(qkv[1], cos_slice, sin_slice)
+                    q_head = q_rot.squeeze(0)
+                    k_head = k_rot.squeeze(0)
+                v_head = qkv[2].squeeze(0)
+                q_store.write_tokens(start, end, q_head)
+                k_store.write_tokens(start, end, k_head)
+                v_store.write_tokens(start, end, v_head)
 
         q_store.flush()
         k_store.flush()

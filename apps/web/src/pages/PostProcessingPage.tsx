@@ -271,11 +271,11 @@ export default function PostProcessingPage() {
   const [probabilityMapBgThreshold, setProbabilityMapBgThreshold] = useState("0.4");
   const [probabilityMapFgThreshold, setProbabilityMapFgThreshold] = useState("0.95");
   const [probabilityMapSeed, setProbabilityMapSeed] = useState("1337");
-  const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("20");
-  const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("10");
+  const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("35");
+  const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("15");
   const [trackingZDistanceWeight, setTrackingZDistanceWeight] = useState("2.5");
-  const [trackingMinDistanceToRemoveCand, setTrackingMinDistanceToRemoveCand] = useState("3");
-  const [trackingVoteThresholds, setTrackingVoteThresholds] = useState("320,300,280,260");
+  const [trackingMinDistanceToRemoveCand, setTrackingMinDistanceToRemoveCand] = useState("0");
+  const [trackingVoteThresholds, setTrackingVoteThresholds] = useState("360,340,320,300");
   const [trackingDiceThreshold, setTrackingDiceThreshold] = useState("0.5");
   const [trackingCorrThreshold, setTrackingCorrThreshold] = useState("0.5");
   const [trackingSaveExtendedResults, setTrackingSaveExtendedResults] = useState(false);
