@@ -363,6 +363,7 @@ class RunProcessFeaturesRequest(BaseModel):
     save_pca: bool = False
     pca_components: int = Field(3, ge=1)
     pca_save_format: str = Field(".tif", min_length=1)
+    global_pca: bool = True
 
 
 class RunSegmentationRequest(BaseModel):
@@ -883,6 +884,7 @@ def _build_process_features_launch_config(
             "save_pca": bool(payload.save_pca),
             "pca_components": int(payload.pca_components),
             "pca_save_format": payload.pca_save_format,
+            "global_pca": bool(payload.global_pca),
             "save_high_resolution_features": bool(payload.save_high_resolution_features),
             "high_resolution_save_format": payload.high_resolution_save_format,
             "subfolder_count": selected_subfolder_count,
@@ -1639,6 +1641,8 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         str(launch_config["pca_components"]),
         "--pca-format",
         launch_config["pca_save_format"],
+        "--global-pca",
+        "true" if launch_config.get("global_pca", True) else "false",
         "--high-resolution-format",
         launch_config["high_resolution_save_format"],
         "--file-start",

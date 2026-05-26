@@ -984,6 +984,11 @@ button {
   min-width: 200px;
 }
 
+.postProcessingPcaFormatSelect {
+  min-width: 100px;
+  width: 100px;
+}
+
 .inferenceBackboneModelSelect {
   min-width: 140px;
 }

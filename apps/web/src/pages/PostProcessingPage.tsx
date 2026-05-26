@@ -50,6 +50,7 @@ type ProcessFeaturesRunRequest = {
   save_pca: boolean;
   pca_components: number;
   pca_save_format: SaveFormat;
+  global_pca: boolean;
 };
 
 type SegmentationRunRequest = {
@@ -161,6 +162,7 @@ const POST_PROCESSING_PARAMETER_HELP = {
   saveHighResolutionFeatures: "Write one full-resolution feature volume per channel under hr_feats/<timepoint>/.",
   saveFormat: "Choose whether the generated outputs are saved as NumPy arrays or TIFF volumes.",
   savePca: "Export PCA-compressed feature volumes under pca_<n_components>/.",
+  globalPca: "Use one PCA basis and one intensity scale across the chosen timepoints.",
   components: "Set how many principal components to keep in the PCA export.",
   voronoiOtsu: "Tune the classical Voronoi-Otsu segmentation pipeline.",
   gaussianBlurSigma: "Smooth the image before seed detection.",
@@ -250,9 +252,10 @@ export default function PostProcessingPage() {
   const [selectedGpuIndex, setSelectedGpuIndex] = useState<number | null>(null);
   const [saveHighResolutionFeatures, setSaveHighResolutionFeatures] = useState(false);
   const [highResolutionSaveFormat, setHighResolutionSaveFormat] = useState<SaveFormat>(".tif");
-  const [savePca, setSavePca] = useState(false);
+  const [savePca, setSavePca] = useState(true);
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
+  const [globalPca, setGlobalPca] = useState(true);
   const [processFeaturesFileRange, setProcessFeaturesFileRange] = useState({ start: "0", end: "" });
   const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
   const [rollingBallRadius, setRollingBallRadius] = useState("10");
@@ -357,6 +360,7 @@ export default function PostProcessingPage() {
     savePca,
     pcaComponents,
     pcaSaveFormat,
+    globalPca,
     processFeaturesFileRange,
     gaussianBlurSigma,
     rollingBallRadius,
@@ -574,6 +578,7 @@ export default function PostProcessingPage() {
       save_pca: savePca,
       pca_components: Number.isFinite(parsedPcaComponents) && parsedPcaComponents > 0 ? parsedPcaComponents : 3,
       pca_save_format: pcaSaveFormat,
+      global_pca: globalPca,
     };
   }
 
@@ -1265,13 +1270,23 @@ export default function PostProcessingPage() {
                     <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
                   </div>
                   <select
-                    className="inferenceSelect inferenceCompactSelect"
+                    className="inferenceSelect inferenceCompactSelect postProcessingPcaFormatSelect"
                     value={pcaSaveFormat}
                     onChange={(event) => setPcaSaveFormat(event.target.value as SaveFormat)}
                   >
                     <option value=".npy">.npy</option>
                     <option value=".tif">.tif</option>
                   </select>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={globalPca}
+                      onChange={(event) => setGlobalPca(event.target.checked)}
+                    />
+                    <span>
+                      <ParameterHelpLabel label="Global PCA" description={POST_PROCESSING_PARAMETER_HELP.globalPca} />
+                    </span>
+                  </label>
                 </>
               ) : null}
             </div>

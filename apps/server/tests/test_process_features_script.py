@@ -5,7 +5,11 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import numpy as np
+import torch
 
 
 def _load_process_features_module():
@@ -80,6 +84,55 @@ class ProcessFeaturesScriptTests(unittest.TestCase):
 
             self.assertFalse((root / "hr_feats").exists())
             self.assertTrue((root / "pca_3").exists())
+
+    def test_parse_bool_accepts_explicit_false(self) -> None:
+        self.assertFalse(process_features_script.parse_bool("false"))
+        self.assertTrue(process_features_script.parse_bool("true"))
+
+    def test_parse_args_defaults_global_pca_to_true(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["process_features.py", "--input-path", "/tmp/input", "--save-pca"],
+        ):
+            args = process_features_script.parse_args()
+
+        self.assertTrue(args.global_pca)
+
+    def test_parse_args_accepts_global_pca_false(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["process_features.py", "--input-path", "/tmp/input", "--save-pca", "--global-pca", "false"],
+        ):
+            args = process_features_script.parse_args()
+
+        self.assertFalse(args.global_pca)
+
+    def test_global_pca_uses_shared_basis_and_ranges(self) -> None:
+        first = np.array([[[[0.0, 0.0], [2.0, 0.0]]]], dtype=np.float32)
+        second = np.array([[[[4.0, 0.0], [6.0, 0.0]]]], dtype=np.float32)
+        device = torch.device("cpu")
+
+        model = process_features_script.fit_pca_model_from_sources(
+            [("first", first), ("second", second)],
+            n_components=1,
+            device=device,
+        )
+        mins, maxs = process_features_script.compute_global_pca_min_max_from_sources(
+            [("first", first), ("second", second)],
+            pca_model=model,
+            device=device,
+        )
+        projected_first = process_features_script.project_pca_volume(first, pca_model=model, device=device)
+        projected_second = process_features_script.project_pca_volume(second, pca_model=model, device=device)
+
+        self.assertGreater(model.components[0, 0], 0.0)
+        np.testing.assert_allclose(model.mean, np.array([3.0, 0.0], dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(mins, np.array([-3.0], dtype=np.float32), atol=1e-5)
+        np.testing.assert_allclose(maxs, np.array([3.0], dtype=np.float32), atol=1e-5)
+        np.testing.assert_allclose(projected_first.reshape(-1), np.array([-3.0, -1.0], dtype=np.float32), atol=1e-5)
+        np.testing.assert_allclose(projected_second.reshape(-1), np.array([1.0, 3.0], dtype=np.float32), atol=1e-5)
 
 
 if __name__ == "__main__":

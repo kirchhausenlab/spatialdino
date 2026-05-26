@@ -599,12 +599,51 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["subfolder_count"], 1)
         self.assertEqual(launch_config["high_resolution_save_format"], ".tif")
         self.assertEqual(launch_config["pca_save_format"], ".tif")
+        self.assertEqual(launch_config["global_pca"], True)
         self.assertEqual(launch_config["output_path"], output_dir)
 
         command = app_module._build_process_features_command(launch_config)
         self.assertIn("scripts/post_processing/process_features.py", command)
         self.assertIn("--output-path", command)
         self.assertIn(str(output_dir), command)
+        self.assertIn("--global-pca", command)
+        self.assertEqual(command[command.index("--global-pca") + 1], "true")
+
+    def test_build_process_features_launch_config_accepts_per_timepoint_pca(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "processed-output"
+            input_dir.mkdir()
+            write_inference_output_timepoint(input_dir, "sample_a")
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                save_pca=True,
+                pca_components=3,
+                pca_save_format=".tif",
+                global_pca=False,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["global_pca"], False)
+
+        command = app_module._build_process_features_command(launch_config)
+        self.assertIn("--global-pca", command)
+        self.assertEqual(command[command.index("--global-pca") + 1], "false")
 
     def test_build_process_features_launch_config_accepts_file_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
