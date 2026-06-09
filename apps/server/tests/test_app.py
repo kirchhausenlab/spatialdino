@@ -1034,6 +1034,9 @@ class AppTests(unittest.TestCase):
                 corr_threshold=0.4,
                 save_extended_results=True,
                 ignore_features=True,
+                disable_centroid_fallback=True,
+                aggressive_feature_matching=True,
+                min_feature_votes=2,
             )
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
@@ -1057,6 +1060,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["output_filename"], "debug_tracks.csv")
         self.assertTrue(launch_config["save_extended_results"])
         self.assertTrue(launch_config["ignore_features"])
+        self.assertTrue(launch_config["disable_centroid_fallback"])
+        self.assertTrue(launch_config["aggressive_feature_matching"])
+        self.assertEqual(launch_config["min_feature_votes"], 2)
         self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
         self.assertEqual(launch_config["output_path"], output_dir)
 
@@ -1074,9 +1080,13 @@ class AppTests(unittest.TestCase):
         self.assertIn("--vote-thresholds", command)
         self.assertIn("--dice-threshold", command)
         self.assertIn("--corr-threshold", command)
+        self.assertIn("--min-feature-votes", command)
+        self.assertEqual(command[command.index("--min-feature-votes") + 1], "2")
         self.assertNotIn("--invert-z", command)
         self.assertIn("--save-extended-results", command)
         self.assertIn("--ignore-features", command)
+        self.assertIn("--disable-centroid-fallback", command)
+        self.assertIn("--aggressive-feature-matching", command)
 
     def test_run_tracking_submits_job_when_valid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1122,6 +1132,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["dice_threshold"], 0.5)
         self.assertEqual(launch_config["corr_threshold"], 0.55)
         self.assertTrue(launch_config["invert_z"])
+        self.assertFalse(launch_config["disable_centroid_fallback"])
+        self.assertFalse(launch_config["aggressive_feature_matching"])
+        self.assertEqual(launch_config["min_feature_votes"], 1)
         self.assertEqual(launch_config["segmentation_path"], segmentation_dir)
         self.assertEqual(launch_config["output_path"], output_dir)
         command = app_module._build_tracking_command(launch_config)

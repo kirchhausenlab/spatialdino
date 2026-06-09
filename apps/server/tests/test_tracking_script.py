@@ -30,6 +30,31 @@ tracking_script = _load_tracking_module()
 
 
 class TrackingScriptTests(unittest.TestCase):
+    @staticmethod
+    def _metrics(
+        ref_id: int,
+        candidate_ids: list[int],
+        distances: list[float],
+        *,
+        dice: list[float],
+        corr: list[list[float]],
+        mse: list[list[float]],
+    ):
+        return tracking_script.RefCandidateMetrics(
+            ref_label=ref_id,
+            ref_centroid=np.array([float(ref_id), 0.0, 0.0], dtype=np.float64),
+            candidate_ids=np.asarray(candidate_ids, dtype=np.int64),
+            candidate_centroids=np.asarray(
+                [[float(candidate_id), 0.0, 0.0] for candidate_id in candidate_ids],
+                dtype=np.float64,
+            ),
+            distances=np.asarray(distances, dtype=np.float32),
+            dice=np.asarray(dice, dtype=np.float32),
+            overlap_counts=np.ones((len(candidate_ids),), dtype=np.int32),
+            corr=np.asarray(corr, dtype=np.float32),
+            mse=np.asarray(mse, dtype=np.float32),
+        )
+
     def test_parse_args_defaults_to_non_inverted_z_export(self) -> None:
         with patch.object(
             sys,
@@ -84,6 +109,90 @@ class TrackingScriptTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(distance, 6.0)
+
+    def test_vote_threshold_one_accepts_one_feature_vote(self) -> None:
+        metrics_by_ref = {
+            1: self._metrics(
+                1,
+                [10],
+                [5.0],
+                dice=[1.0],
+                corr=[[0.0]],
+                mse=[[0.0]],
+            )
+        }
+
+        assignments, _initial_summary, _summary_history, _distance_prefilter = tracking_script.run_assignment_logic(
+            metrics_by_ref,
+            min_distance_to_remove_cand=0.0,
+            vote_thresholds=(1,),
+            dice_threshold=0.0,
+            corr_threshold=-1.0,
+            disable_centroid_fallback=True,
+        )
+
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0].stage, 2)
+        self.assertEqual(assignments[0].method, "vote_threshold_1")
+        self.assertEqual(assignments[0].wins, 1)
+
+    def test_disable_centroid_fallback_leaves_no_vote_pairs_unassigned(self) -> None:
+        metrics_by_ref = {
+            1: self._metrics(
+                1,
+                [10],
+                [5.0],
+                dice=[1.0],
+                corr=[[np.nan]],
+                mse=[[np.nan]],
+            )
+        }
+
+        assignments, _initial_summary, _summary_history, _distance_prefilter = tracking_script.run_assignment_logic(
+            metrics_by_ref,
+            min_distance_to_remove_cand=0.0,
+            vote_thresholds=(1,),
+            dice_threshold=0.0,
+            corr_threshold=-1.0,
+            disable_centroid_fallback=True,
+        )
+
+        self.assertEqual(assignments, [])
+
+    def test_aggressive_feature_matching_resolves_leftover_vote_pairs_without_stage_3(self) -> None:
+        metrics_by_ref = {
+            1: self._metrics(
+                1,
+                [10, 20],
+                [1.0, 10.0],
+                dice=[1.0, 1.0],
+                corr=[[0.0, 0.0], [0.0, 0.0]],
+                mse=[[0.0, 1.0], [0.0, 1.0]],
+            ),
+            2: self._metrics(
+                2,
+                [10, 20],
+                [1.0, 2.0],
+                dice=[1.0, 1.0],
+                corr=[[0.0, 0.0], [0.0, 0.0]],
+                mse=[[0.0, 1.0], [1.0, 0.0]],
+            ),
+        }
+
+        assignments, _initial_summary, _summary_history, _distance_prefilter = tracking_script.run_assignment_logic(
+            metrics_by_ref,
+            min_distance_to_remove_cand=0.0,
+            vote_thresholds=(1,),
+            dice_threshold=0.0,
+            corr_threshold=-1.0,
+            disable_centroid_fallback=True,
+            aggressive_feature_matching=True,
+            min_feature_votes=1,
+        )
+
+        self.assertEqual([(assignment.ref_label, assignment.candidate_label) for assignment in assignments], [(1, 10), (2, 20)])
+        self.assertEqual([assignment.method for assignment in assignments], ["aggressive_feature_votes", "aggressive_feature_votes"])
+        self.assertEqual([assignment.stage for assignment in assignments], [2, 2])
 
     def test_run_tracking_writes_final_tracks_csv_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

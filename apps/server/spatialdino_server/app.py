@@ -406,6 +406,9 @@ class RunTrackingRequest(BaseModel):
     invert_z: bool = False
     save_extended_results: bool = False
     ignore_features: bool = False
+    disable_centroid_fallback: bool = False
+    aggressive_feature_matching: bool = False
+    min_feature_votes: int = Field(1, ge=1)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -1094,6 +1097,9 @@ def _build_tracking_launch_config(
             "invert_z": bool(payload.invert_z),
             "save_extended_results": bool(payload.save_extended_results),
             "ignore_features": bool(payload.ignore_features),
+            "disable_centroid_fallback": bool(payload.disable_centroid_fallback),
+            "aggressive_feature_matching": bool(payload.aggressive_feature_matching),
+            "min_feature_votes": int(payload.min_feature_votes),
         },
     )
 
@@ -1742,6 +1748,8 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         str(launch_config["dice_threshold"]),
         "--corr-threshold",
         str(launch_config["corr_threshold"]),
+        "--min-feature-votes",
+        str(launch_config["min_feature_votes"]),
     ]
     vote_thresholds = launch_config.get("vote_thresholds")
     if vote_thresholds:
@@ -1754,6 +1762,10 @@ def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
         command.append("--save-extended-results")
     if launch_config.get("ignore_features", False):
         command.append("--ignore-features")
+    if launch_config.get("disable_centroid_fallback", False):
+        command.append("--disable-centroid-fallback")
+    if launch_config.get("aggressive_feature_matching", False):
+        command.append("--aggressive-feature-matching")
     return command
 
 

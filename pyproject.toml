@@ -14,6 +14,7 @@ dependencies = [
     "omegaconf>=2.3.0",
     "openpyxl>=3.1.5",
     "pandas>=2.3.2",
+    "pyarrow>=19.0.0",
     "pyclesperanto>=0.18.3",
     "pyparsing>=3.2.4",
     "rich>=14.1.0",
@@ -27,6 +28,7 @@ dependencies = [
     "wandb>=0.25.1",
     "webdataset>=1.0.2",
     "xformers>=0.0.32.post2",
+    "zarr>=2.18.0,<3",
 ]
 
 [tool.uv.workspace]

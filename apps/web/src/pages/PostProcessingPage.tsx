@@ -91,6 +91,9 @@ type TrackingRunRequest = {
   corr_threshold: number;
   save_extended_results: boolean;
   ignore_features: boolean;
+  disable_centroid_fallback: boolean;
+  aggressive_feature_matching: boolean;
+  min_feature_votes: number;
 };
 
 type RunSubmittedResponse = {
@@ -192,11 +195,14 @@ const POST_PROCESSING_PARAMETER_HELP = {
   zDistanceWeight: "Multiplier applied to Z distance when scoring matches.",
   immediateAssignmentDistance: "Distance below which a candidate is assigned immediately.",
   votingThresholds: "Tune the overlap-and-voting acceptance rules for track linking.",
-  voteThresholds: "Comma-separated vote cutoffs checked in order.",
+  voteThresholds: "Comma-separated minimum feature-vote counts checked in order.",
   minDice: "Minimum Dice overlap required for a match.",
   minCorr: "Minimum intensity correlation required for a match.",
   saveExtendedResults: "Append assignment-stage diagnostics and object labels to the tracking CSV.",
   ignoreFeatures: "Skip SpatialDINO feature voting and resolve remaining links by distance only.",
+  disableCentroidFallback: "Skip centroid-only fallback; unresolved detections start or end tracks.",
+  aggressiveFeatureMatching: "Greedily match remaining candidates using feature votes before centroid fallback.",
+  minFeatureVotes: "Minimum feature votes required for aggressive feature matching.",
 } as const;
 
 function getWorkflowLabel(workflow: WorkflowOption | null): string {
@@ -283,6 +289,9 @@ export default function PostProcessingPage() {
   const [trackingCorrThreshold, setTrackingCorrThreshold] = useState("0.5");
   const [trackingSaveExtendedResults, setTrackingSaveExtendedResults] = useState(false);
   const [trackingIgnoreFeatures, setTrackingIgnoreFeatures] = useState(false);
+  const [trackingDisableCentroidFallback, setTrackingDisableCentroidFallback] = useState(false);
+  const [trackingAggressiveFeatureMatching, setTrackingAggressiveFeatureMatching] = useState(false);
+  const [trackingMinFeatureVotes, setTrackingMinFeatureVotes] = useState("1");
   const [voronoiOptionalOpen, setVoronoiOptionalOpen] = useState(false);
   const [probabilityMapOptionalOpen, setProbabilityMapOptionalOpen] = useState(false);
   const [trackingOptionalOpen, setTrackingOptionalOpen] = useState(false);
@@ -387,6 +396,9 @@ export default function PostProcessingPage() {
     trackingCorrThreshold,
     trackingSaveExtendedResults,
     trackingIgnoreFeatures,
+    trackingDisableCentroidFallback,
+    trackingAggressiveFeatureMatching,
+    trackingMinFeatureVotes,
   ]);
 
   const workflowLabel = getWorkflowLabel(selectedWorkflow);
@@ -891,7 +903,14 @@ export default function PostProcessingPage() {
       .map((token) => token.trim())
       .filter((token) => token.length > 0);
     if (normalizedVoteThresholds.some((token) => !/^\d+$/.test(token) || Number.parseInt(token, 10) <= 0)) {
-      setRunFeedback({ tone: "error", message: "Vote thresholds must be a comma-separated list of positive integers." });
+      setRunFeedback({ tone: "error", message: "Vote thresholds must be a comma-separated list of positive minimum counts." });
+      return;
+    }
+
+    const trimmedMinFeatureVotes = trackingMinFeatureVotes.trim();
+    const parsedMinFeatureVotes = Number.parseInt(trimmedMinFeatureVotes, 10);
+    if (!/^\d+$/.test(trimmedMinFeatureVotes) || parsedMinFeatureVotes <= 0) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Min feature votes." });
       return;
     }
 
@@ -909,6 +928,9 @@ export default function PostProcessingPage() {
       corr_threshold: parsedCorrThreshold,
       save_extended_results: trackingSaveExtendedResults,
       ignore_features: trackingIgnoreFeatures,
+      disable_centroid_fallback: trackingDisableCentroidFallback,
+      aggressive_feature_matching: trackingAggressiveFeatureMatching,
+      min_feature_votes: parsedMinFeatureVotes,
     });
   }
 
@@ -1727,6 +1749,49 @@ export default function PostProcessingPage() {
                     />
                     <span>Enabled</span>
                   </label>
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Disable centroid fallback"
+                      description={POST_PROCESSING_PARAMETER_HELP.disableCentroidFallback}
+                    />
+                  </div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={trackingDisableCentroidFallback}
+                      onChange={(event) => setTrackingDisableCentroidFallback(event.target.checked)}
+                    />
+                    <span>Enabled</span>
+                  </label>
+                </div>
+
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Aggressive feature matching"
+                      description={POST_PROCESSING_PARAMETER_HELP.aggressiveFeatureMatching}
+                    />
+                  </div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={trackingAggressiveFeatureMatching}
+                      onChange={(event) => setTrackingAggressiveFeatureMatching(event.target.checked)}
+                    />
+                    <span>Enabled</span>
+                  </label>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel label="Min feature votes" description={POST_PROCESSING_PARAMETER_HELP.minFeatureVotes} />
+                  </div>
+                  <PostProcessingNumberInput
+                    value={trackingMinFeatureVotes}
+                    onChange={setTrackingMinFeatureVotes}
+                    min={1}
+                    step={1}
+                  />
                 </div>
 
                 <div className="inferenceFormRow">
