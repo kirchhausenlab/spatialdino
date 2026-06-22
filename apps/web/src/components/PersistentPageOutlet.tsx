@@ -5,6 +5,8 @@ import DataPage from "../pages/DataPage";
 import InferencePage from "../pages/InferencePage";
 import PostProcessingPage from "../pages/PostProcessingPage";
 import PlaceholderPage from "../pages/PlaceholderPage";
+import SegmentationPage from "../pages/SegmentationPage";
+import TrackingPage from "../pages/TrackingPage";
 
 type PageDefinition = {
   path: string;
@@ -24,13 +26,12 @@ const pageDefinitions: PageDefinition[] = [
   },
   { path: "/inference", render: () => <InferencePage /> },
   { path: "/post-processing", render: () => <PostProcessingPage /> },
+  { path: "/segmentation", render: () => <SegmentationPage /> },
+  { path: "/tracking", render: () => <TrackingPage /> },
 ];
 
 const knownPaths = new Set(pageDefinitions.map((page) => page.path));
-const legacyRedirects = new Map<string, string>([
-  ["/segmentation", "/post-processing"],
-  ["/tracking", "/post-processing"],
-]);
+const legacyRedirects = new Map<string, string>();
 const defaultPath = "/data";
 
 function normalizePathname(pathname: string): string {

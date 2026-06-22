@@ -6,8 +6,10 @@ import { useJobs } from "../components/JobsProvider";
 import ServerDirectoryPicker from "../components/ServerDirectoryPicker";
 import { getClientId } from "../lib/clientId";
 
-type WorkflowOption = "process_features" | "segmentation" | "tracking";
-type SegmentationMode = "voronoi_otsu" | "probability_map";
+export type PostProcessingPageKind = "post_processing" | "segmentation" | "tracking";
+type WorkflowOption = "process_features" | "foreground_probability_map" | "segmentation" | "tracking";
+type PostProcessingMode = "pca" | "high_resolution_features" | "foreground_probability_map";
+type SegmentationMode = "voronoi_otsu" | "probability_map" | "legacy_probability_map";
 type SaveFormat = ".npy" | ".tif";
 
 type GpuOption = {
@@ -74,6 +76,26 @@ type SegmentationRunRequest = {
   hist_sigma_bins: number;
   bg_prob_threshold: number;
   fg_prob_threshold: number;
+  probmap_threshold: number;
+  run_connected_components: boolean;
+  seed: number;
+};
+
+type ForegroundProbabilityMapRunRequest = {
+  input_path: string;
+  output_path: string | null;
+  densities_path: string | null;
+  gpu_index: number | null;
+  run_density_estimation: boolean;
+  training_timepoint: string | null;
+  seg_tif: string | null;
+  valid_mask_tif: string | null;
+  density_method: "gpu-hist" | "kde";
+  feature_batch: number;
+  kde_points: number;
+  kde_max_samples: number;
+  kde_bandwidth: number | null;
+  hist_sigma_bins: number;
   seed: number;
 };
 
@@ -116,21 +138,21 @@ type RunFeedback = {
   message: string;
 };
 
-const WORKFLOW_OPTIONS: Array<{
-  value: WorkflowOption;
+const POST_PROCESSING_OPTIONS: Array<{
+  value: PostProcessingMode;
   label: string;
 }> = [
   {
-    value: "process_features",
-    label: "Process features",
+    value: "pca",
+    label: "PCA",
   },
   {
-    value: "segmentation",
-    label: "Segmentation",
+    value: "high_resolution_features",
+    label: "High-resolution features",
   },
   {
-    value: "tracking",
-    label: "Tracking",
+    value: "foreground_probability_map",
+    label: "Foreground probability map",
   },
 ];
 
@@ -146,6 +168,10 @@ const SEGMENTATION_OPTIONS: Array<{
     value: "probability_map",
     label: "Probability map",
   },
+  {
+    value: "legacy_probability_map",
+    label: "Legacy probability map",
+  },
 ];
 
 const INFERENCE_OUTPUT_FOLDER_DESCRIPTION =
@@ -157,7 +183,9 @@ const POST_PROCESSING_PARAMETER_HELP = {
     "Root folder where Process features saves pca_<n>/ and hr_feats/ outputs.",
   chosenFiles: "Limit processing to a contiguous range of validated timepoints. End file is inclusive.",
   segmentationOutputFolder:
-    "Root folder where segmentation saves seg_voronoi/, seg_probmap/, probmap/, and probmap_densities.npz.",
+    "Root folder where segmentation saves seg_voronoi/, seg_probmap/, seg_probmap_legacy/, and probmap_densities.npz.",
+  foregroundProbabilityMapOutputFolder:
+    "Root folder where foreground probability-map generation saves probmap/ and probmap_densities.npz.",
   trackingOutputFolder: "Folder where tracking saves the output CSV.",
   trackingOutputFilename: "CSV file name to write inside the selected output folder.",
   segmentationFolder: "Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
@@ -188,6 +216,8 @@ const POST_PROCESSING_PARAMETER_HELP = {
   featureBatch: "Number of feature chunks processed at once during estimation.",
   bgProbabilityThreshold: "Minimum background probability used to mark voxels as background.",
   fgProbabilityThreshold: "Minimum foreground probability used to accept a cell candidate.",
+  simpleProbabilityThreshold: "Minimum normalized foreground probability used to mark voxels as foreground.",
+  runConnectedComponents: "Convert the binary foreground mask into connected-component instance labels.",
   matchWindow: "Set the maximum per-frame search distance for track matching.",
   maxXyDistance: "Largest allowed XY displacement between linked detections.",
   maxZDistance: "Largest allowed Z displacement between linked detections.",
@@ -205,11 +235,6 @@ const POST_PROCESSING_PARAMETER_HELP = {
   minFeatureVotes: "Minimum feature votes required for aggressive feature matching.",
 } as const;
 
-function getWorkflowLabel(workflow: WorkflowOption | null): string {
-  if (!workflow) return "Post-processing";
-  return WORKFLOW_OPTIONS.find((option) => option.value === workflow)?.label ?? "Post-processing";
-}
-
 function parentPathForPicker(path: string | null): string | null {
   if (!path) return null;
   const normalized = path.trim();
@@ -219,12 +244,16 @@ function parentPathForPicker(path: string | null): string | null {
   return normalized.slice(0, slashIndex);
 }
 
-export default function PostProcessingPage() {
+type PostProcessingPageProps = {
+  pageKind?: PostProcessingPageKind;
+};
+
+export default function PostProcessingPage({ pageKind = "post_processing" }: PostProcessingPageProps) {
   const jobs = useJobs();
   const validationRequestIdRef = useRef(0);
   const trackingSegmentationValidationRequestIdRef = useRef(0);
 
-  const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowOption | null>(null);
+  const [selectedPostProcessingMode, setSelectedPostProcessingMode] = useState<PostProcessingMode>("pca");
   const [selectedSegmentationMode, setSelectedSegmentationMode] = useState<SegmentationMode>("voronoi_otsu");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<
@@ -256,9 +285,7 @@ export default function PostProcessingPage() {
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [selectedGpuIndex, setSelectedGpuIndex] = useState<number | null>(null);
-  const [saveHighResolutionFeatures, setSaveHighResolutionFeatures] = useState(false);
   const [highResolutionSaveFormat, setHighResolutionSaveFormat] = useState<SaveFormat>(".tif");
-  const [savePca, setSavePca] = useState(true);
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
   const [globalPca, setGlobalPca] = useState(true);
@@ -279,6 +306,8 @@ export default function PostProcessingPage() {
   const [probabilityMapHistSigmaBins, setProbabilityMapHistSigmaBins] = useState("1.5");
   const [probabilityMapBgThreshold, setProbabilityMapBgThreshold] = useState("0.4");
   const [probabilityMapFgThreshold, setProbabilityMapFgThreshold] = useState("0.95");
+  const [simpleProbabilityMapThreshold, setSimpleProbabilityMapThreshold] = useState("0.5");
+  const [runProbabilityMapCcl, setRunProbabilityMapCcl] = useState(true);
   const [probabilityMapSeed, setProbabilityMapSeed] = useState("1337");
   const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("35");
   const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("15");
@@ -297,6 +326,28 @@ export default function PostProcessingPage() {
   const [trackingOptionalOpen, setTrackingOptionalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [runFeedback, setRunFeedback] = useState<RunFeedback | null>(null);
+
+  const selectedWorkflow: WorkflowOption =
+    pageKind === "tracking"
+      ? "tracking"
+      : pageKind === "segmentation"
+        ? "segmentation"
+        : selectedPostProcessingMode === "foreground_probability_map"
+          ? "foreground_probability_map"
+          : "process_features";
+  const pageTitle =
+    pageKind === "tracking" ? "Tracking" : pageKind === "segmentation" ? "Segmentation" : "Post-processing";
+  const processFeaturesSelected = selectedWorkflow === "process_features";
+  const foregroundProbabilityMapSelected = selectedWorkflow === "foreground_probability_map";
+  const segmentationSelected = selectedWorkflow === "segmentation";
+  const trackingSelected = selectedWorkflow === "tracking";
+  const pcaSelected = pageKind === "post_processing" && selectedPostProcessingMode === "pca";
+  const highResolutionFeaturesSelected =
+    pageKind === "post_processing" && selectedPostProcessingMode === "high_resolution_features";
+  const voronoiOtsuSelected = segmentationSelected && selectedSegmentationMode === "voronoi_otsu";
+  const probabilityMapSelected = segmentationSelected && selectedSegmentationMode === "probability_map";
+  const legacyProbabilityMapSelected = segmentationSelected && selectedSegmentationMode === "legacy_probability_map";
+  const densityControlsSelected = foregroundProbabilityMapSelected || legacyProbabilityMapSelected;
 
   useEffect(() => {
     let cancelled = false;
@@ -352,6 +403,8 @@ export default function PostProcessingPage() {
   useEffect(() => {
     setRunFeedback(null);
   }, [
+    pageKind,
+    selectedPostProcessingMode,
     selectedWorkflow,
     selectedSegmentationMode,
     inputPath,
@@ -364,9 +417,7 @@ export default function PostProcessingPage() {
     trackingOutputPath,
     trackingOutputFilename,
     selectedGpuIndex,
-    saveHighResolutionFeatures,
     highResolutionSaveFormat,
-    savePca,
     pcaComponents,
     pcaSaveFormat,
     globalPca,
@@ -386,6 +437,8 @@ export default function PostProcessingPage() {
     probabilityMapHistSigmaBins,
     probabilityMapBgThreshold,
     probabilityMapFgThreshold,
+    simpleProbabilityMapThreshold,
+    runProbabilityMapCcl,
     probabilityMapSeed,
     trackingMaxDistanceXy,
     trackingMaxDistanceZ,
@@ -401,13 +454,6 @@ export default function PostProcessingPage() {
     trackingMinFeatureVotes,
   ]);
 
-  const workflowLabel = getWorkflowLabel(selectedWorkflow);
-  const inputStepVisible = selectedWorkflow !== null;
-  const processFeaturesSelected = selectedWorkflow === "process_features";
-  const segmentationSelected = selectedWorkflow === "segmentation";
-  const trackingSelected = selectedWorkflow === "tracking";
-  const voronoiOtsuSelected = segmentationSelected && selectedSegmentationMode === "voronoi_otsu";
-  const probabilityMapSelected = segmentationSelected && selectedSegmentationMode === "probability_map";
   const inputValidated = validationResult?.valid === true;
   const trackingSegmentationValidated = trackingSegmentationValidationResult?.valid === true;
   const parametersVisible = trackingSelected ? inputValidated && trackingSegmentationValidated : inputValidated;
@@ -435,7 +481,9 @@ export default function PostProcessingPage() {
       : pickerTarget === "process_output" || pickerTarget === "tracking_output"
         ? "Choose the output folder"
         : pickerTarget === "segmentation_output"
-          ? "Choose the segmentation output folder"
+          ? foregroundProbabilityMapSelected
+            ? "Choose the output folder"
+            : "Choose the segmentation output folder"
           : pickerTarget === "tracking_segmentation"
             ? "Choose the segmentation mask folder"
           : pickerTarget === "probmap_densities"
@@ -461,27 +509,28 @@ export default function PostProcessingPage() {
                 : parentPathForPicker(validMaskTifPath) ?? inputPath;
 
   useEffect(() => {
-    if (!probabilityMapSelected) return;
+    if (!densityControlsSelected) return;
     if (!validatedSubfolderNames.length) return;
     if (densityEstimationTimepoint && validatedSubfolderNames.includes(densityEstimationTimepoint)) return;
     setDensityEstimationTimepoint(validatedSubfolderNames[0]);
-  }, [densityEstimationTimepoint, probabilityMapSelected, validatedSubfolderNames]);
+  }, [densityControlsSelected, densityEstimationTimepoint, validatedSubfolderNames]);
 
   useEffect(() => {
-    if (!probabilityMapSelected || runDensityEstimation || !runProbabilityMapStage2) return;
+    if (!densityControlsSelected || runDensityEstimation) return;
+    if (legacyProbabilityMapSelected && !runProbabilityMapStage2) return;
     if (probmapDensitiesFilePath || !probmapDensitiesExists || !probmapDensitiesPath) return;
     setProbmapDensitiesFilePath(probmapDensitiesPath);
   }, [
+    densityControlsSelected,
+    legacyProbabilityMapSelected,
     probmapDensitiesExists,
     probmapDensitiesPath,
-    probabilityMapSelected,
     runDensityEstimation,
     runProbabilityMapStage2,
   ]);
 
   async function validateInputFolder() {
     if (!inputPath) return;
-    if (!selectedWorkflow) return;
 
     const requestId = validationRequestIdRef.current + 1;
     validationRequestIdRef.current = requestId;
@@ -492,9 +541,11 @@ export default function PostProcessingPage() {
       const validationUrl =
         selectedWorkflow === "tracking"
           ? "/api/post-processing/tracking/validate-input"
-          : selectedWorkflow === "segmentation"
-            ? "/api/post-processing/segmentation/validate-input"
-            : "/api/post-processing/process-features/validate-input";
+          : probabilityMapSelected
+            ? "/api/post-processing/probability-map/validate-input"
+            : selectedWorkflow === "segmentation" || selectedWorkflow === "foreground_probability_map"
+              ? "/api/post-processing/segmentation/validate-input"
+              : "/api/post-processing/process-features/validate-input";
       const resp = await fetch(validationUrl, {
         method: "POST",
         headers: {
@@ -573,7 +624,7 @@ export default function PostProcessingPage() {
     if (!inputPath || !effectiveProcessFeaturesOutputPath) return null;
 
     const parsedPcaComponents = Number.parseInt(pcaComponents.trim(), 10);
-    if (savePca && (!Number.isFinite(parsedPcaComponents) || parsedPcaComponents < 1)) {
+    if (pcaSelected && (!Number.isFinite(parsedPcaComponents) || parsedPcaComponents < 1)) {
       return null;
     }
 
@@ -585,9 +636,9 @@ export default function PostProcessingPage() {
         start: parseNullableInteger(processFeaturesFileRange.start),
         end: parseNullableInteger(processFeaturesFileRange.end),
       },
-      save_high_resolution_features: saveHighResolutionFeatures,
+      save_high_resolution_features: highResolutionFeaturesSelected,
       high_resolution_save_format: highResolutionSaveFormat,
-      save_pca: savePca,
+      save_pca: pcaSelected,
       pca_components: Number.isFinite(parsedPcaComponents) && parsedPcaComponents > 0 ? parsedPcaComponents : 3,
       pca_save_format: pcaSaveFormat,
       global_pca: globalPca,
@@ -596,7 +647,7 @@ export default function PostProcessingPage() {
 
   async function submitRun(
     url: string,
-    request: ProcessFeaturesRunRequest | SegmentationRunRequest | TrackingRunRequest
+    request: ProcessFeaturesRunRequest | ForegroundProbabilityMapRunRequest | SegmentationRunRequest | TrackingRunRequest
   ) {
     setSubmitting(true);
     setRunFeedback(null);
@@ -653,15 +704,113 @@ export default function PostProcessingPage() {
       setRunFeedback({ tone: "error", message: "Select one GPU." });
       return;
     }
-    if (!saveHighResolutionFeatures && !savePca) {
+    await submitRun("/api/post-processing/process-features/run", request);
+  }
+
+  function buildProbabilityMapBaseRequest(outputPath: string | null): ForegroundProbabilityMapRunRequest | null {
+    if (!inputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an inference output folder." });
+      return null;
+    }
+    if (!outputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an output folder." });
+      return null;
+    }
+    if (selectedGpuIndex === null) {
+      setRunFeedback({ tone: "error", message: "Select one GPU." });
+      return null;
+    }
+
+    const selectedTrainingTimepoint =
+      validatedSubfolderNames.length === 1 ? validatedSubfolderNames[0] ?? "" : densityEstimationTimepoint;
+
+    const parsedFeatureBatch = Number.parseInt(probabilityMapFeatureBatch.trim(), 10);
+    if (!Number.isFinite(parsedFeatureBatch) || parsedFeatureBatch < 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Feature batch." });
+      return null;
+    }
+
+    const parsedKdePoints = Number.parseInt(probabilityMapKdePoints.trim(), 10);
+    if (!Number.isFinite(parsedKdePoints) || parsedKdePoints < 2) {
+      setRunFeedback({ tone: "error", message: "Enter a valid integer of at least 2 for Density grid size." });
+      return null;
+    }
+
+    const parsedKdeMaxSamples = Number.parseInt(probabilityMapKdeMaxSamples.trim(), 10);
+    if (!Number.isFinite(parsedKdeMaxSamples) || parsedKdeMaxSamples < 1) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Max samples per class." });
+      return null;
+    }
+
+    const parsedSeed = Number.parseInt(probabilityMapSeed.trim(), 10);
+    if (!Number.isFinite(parsedSeed)) {
+      setRunFeedback({ tone: "error", message: "Enter a valid integer for Random seed." });
+      return null;
+    }
+
+    const parsedHistSigmaBins = Number.parseFloat(probabilityMapHistSigmaBins.trim());
+    if (
+      probabilityMapDensityMethod === "gpu-hist" &&
+      (!Number.isFinite(parsedHistSigmaBins) || parsedHistSigmaBins <= 0)
+    ) {
+      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Histogram sigma." });
+      return null;
+    }
+
+    let parsedKdeBandwidth: number | null = null;
+    if (probabilityMapDensityMethod === "kde" && probabilityMapKdeBandwidth.trim()) {
+      parsedKdeBandwidth = Number.parseFloat(probabilityMapKdeBandwidth.trim());
+      if (!Number.isFinite(parsedKdeBandwidth) || parsedKdeBandwidth <= 0) {
+        setRunFeedback({ tone: "error", message: "Enter a valid positive KDE bandwidth, or leave it blank for auto." });
+        return null;
+      }
+    }
+
+    if (runDensityEstimation) {
+      if (!selectedTrainingTimepoint) {
+        setRunFeedback({ tone: "error", message: "Choose one training timepoint for Stage 1." });
+        return null;
+      }
+      if (!segTifPath) {
+        setRunFeedback({ tone: "error", message: "Choose an annotated FG/BG mask for Stage 1." });
+        return null;
+      }
+    } else if (!probmapDensitiesFilePath) {
       setRunFeedback({
         tone: "error",
-        message: "Choose at least one output: Save high-resolution features and/or Save PCA.",
+        message: "Choose a Stage 1 output file.",
       });
+      return null;
+    }
+
+    return {
+      input_path: inputPath,
+      output_path: outputPath,
+      densities_path: runDensityEstimation ? null : probmapDensitiesFilePath,
+      gpu_index: selectedGpuIndex,
+      run_density_estimation: runDensityEstimation,
+      training_timepoint: runDensityEstimation ? selectedTrainingTimepoint : null,
+      seg_tif: runDensityEstimation ? segTifPath : null,
+      valid_mask_tif: runDensityEstimation ? validMaskTifPath : null,
+      density_method: probabilityMapDensityMethod,
+      feature_batch: parsedFeatureBatch,
+      kde_points: parsedKdePoints,
+      kde_max_samples: parsedKdeMaxSamples,
+      kde_bandwidth: probabilityMapDensityMethod === "kde" ? parsedKdeBandwidth : null,
+      hist_sigma_bins: probabilityMapDensityMethod === "gpu-hist" ? parsedHistSigmaBins : 1.5,
+      seed: parsedSeed,
+    };
+  }
+
+  async function handleForegroundProbabilityMapRun() {
+    if (saveSegmentationInDifferentOutputFolder && !segmentationOutputPath) {
+      setRunFeedback({ tone: "error", message: "Choose an output folder." });
       return;
     }
 
-    await submitRun("/api/post-processing/process-features/run", request);
+    const request = buildProbabilityMapBaseRequest(effectiveSegmentationOutputPath);
+    if (!request) return;
+    await submitRun("/api/post-processing/foreground-probability-map/run", request);
   }
 
   async function handleSegmentationRun() {
@@ -669,16 +818,53 @@ export default function PostProcessingPage() {
       setRunFeedback({ tone: "error", message: "Choose an inference output folder." });
       return;
     }
+
+    if (saveSegmentationInDifferentOutputFolder && !segmentationOutputPath) {
+      setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
+      return;
+    }
+
+    if (selectedSegmentationMode === "probability_map") {
+      const parsedThreshold = Number.parseFloat(simpleProbabilityMapThreshold.trim());
+      if (!Number.isFinite(parsedThreshold) || parsedThreshold < 0 || parsedThreshold > 1) {
+        setRunFeedback({ tone: "error", message: "Enter a valid foreground probability threshold between 0 and 1." });
+        return;
+      }
+
+      await submitRun("/api/post-processing/segmentation/run", {
+        input_path: inputPath,
+        output_path: effectiveSegmentationOutputPath,
+        densities_path: null,
+        gpu_index: null,
+        mode: "probability_map",
+        gaussian_blur_sigma: 3,
+        rolling_ball_radius: 10,
+        run_density_estimation: false,
+        run_stage_2: true,
+        training_timepoint: null,
+        seg_tif: null,
+        valid_mask_tif: null,
+        density_method: "gpu-hist",
+        feature_batch: 32,
+        kde_points: 512,
+        kde_max_samples: 200000,
+        kde_bandwidth: null,
+        hist_sigma_bins: 1.5,
+        bg_prob_threshold: 0.4,
+        fg_prob_threshold: 0.95,
+        probmap_threshold: parsedThreshold,
+        run_connected_components: runProbabilityMapCcl,
+        seed: 1337,
+      });
+      return;
+    }
+
     if (selectedGpuIndex === null) {
       setRunFeedback({ tone: "error", message: "Select one GPU." });
       return;
     }
 
     if (selectedSegmentationMode === "voronoi_otsu") {
-      if (saveSegmentationInDifferentOutputFolder && !segmentationOutputPath) {
-        setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
-        return;
-      }
       const parsedGaussianBlurSigma = Number.parseInt(gaussianBlurSigma.trim(), 10);
       if (!Number.isFinite(parsedGaussianBlurSigma) || parsedGaussianBlurSigma < 0) {
         setRunFeedback({ tone: "error", message: "Enter a valid nonnegative integer for Gaussian blur sigma." });
@@ -712,6 +898,8 @@ export default function PostProcessingPage() {
         hist_sigma_bins: 1.5,
         bg_prob_threshold: 0.4,
         fg_prob_threshold: 0.95,
+        probmap_threshold: 0.5,
+        run_connected_components: true,
         seed: 1337,
       });
       return;
@@ -721,31 +909,9 @@ export default function PostProcessingPage() {
       setRunFeedback({ tone: "error", message: "Choose at least one stage: Run stage 1 and/or Run stage 2." });
       return;
     }
-    if (saveSegmentationInDifferentOutputFolder && !segmentationOutputPath) {
-      setRunFeedback({ tone: "error", message: "Choose a segmentation output folder." });
-      return;
-    }
 
-    const selectedTrainingTimepoint =
-      validatedSubfolderNames.length === 1 ? validatedSubfolderNames[0] ?? "" : densityEstimationTimepoint;
-
-    const parsedFeatureBatch = Number.parseInt(probabilityMapFeatureBatch.trim(), 10);
-    if (!Number.isFinite(parsedFeatureBatch) || parsedFeatureBatch < 1) {
-      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Feature batch." });
-      return;
-    }
-
-    const parsedKdePoints = Number.parseInt(probabilityMapKdePoints.trim(), 10);
-    if (!Number.isFinite(parsedKdePoints) || parsedKdePoints < 2) {
-      setRunFeedback({ tone: "error", message: "Enter a valid integer of at least 2 for Density grid size." });
-      return;
-    }
-
-    const parsedKdeMaxSamples = Number.parseInt(probabilityMapKdeMaxSamples.trim(), 10);
-    if (!Number.isFinite(parsedKdeMaxSamples) || parsedKdeMaxSamples < 1) {
-      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for Max samples per class." });
-      return;
-    }
+    const baseRequest = buildProbabilityMapBaseRequest(effectiveSegmentationOutputPath);
+    if (!baseRequest) return;
 
     const parsedBgThreshold = Number.parseFloat(probabilityMapBgThreshold.trim());
     if (!Number.isFinite(parsedBgThreshold) || parsedBgThreshold < 0 || parsedBgThreshold > 1) {
@@ -759,69 +925,16 @@ export default function PostProcessingPage() {
       return;
     }
 
-    const parsedSeed = Number.parseInt(probabilityMapSeed.trim(), 10);
-    if (!Number.isFinite(parsedSeed)) {
-      setRunFeedback({ tone: "error", message: "Enter a valid integer for Random seed." });
-      return;
-    }
-
-    const parsedHistSigmaBins = Number.parseFloat(probabilityMapHistSigmaBins.trim());
-    if (
-      probabilityMapDensityMethod === "gpu-hist" &&
-      (!Number.isFinite(parsedHistSigmaBins) || parsedHistSigmaBins <= 0)
-    ) {
-      setRunFeedback({ tone: "error", message: "Enter a valid positive number for Histogram sigma." });
-      return;
-    }
-
-    let parsedKdeBandwidth: number | null = null;
-    if (probabilityMapDensityMethod === "kde" && probabilityMapKdeBandwidth.trim()) {
-      parsedKdeBandwidth = Number.parseFloat(probabilityMapKdeBandwidth.trim());
-      if (!Number.isFinite(parsedKdeBandwidth) || parsedKdeBandwidth <= 0) {
-        setRunFeedback({ tone: "error", message: "Enter a valid positive KDE bandwidth, or leave it blank for auto." });
-        return;
-      }
-    }
-
-    if (runDensityEstimation) {
-      if (!selectedTrainingTimepoint) {
-        setRunFeedback({ tone: "error", message: "Choose one training timepoint for Stage 1." });
-        return;
-      }
-      if (!segTifPath) {
-        setRunFeedback({ tone: "error", message: "Choose an annotated FG/BG mask for Stage 1." });
-        return;
-      }
-    } else if (runProbabilityMapStage2 && !probmapDensitiesFilePath) {
-      setRunFeedback({
-        tone: "error",
-        message: "Choose a Stage 1 output file.",
-      });
-      return;
-    }
-
     await submitRun("/api/post-processing/segmentation/run", {
-      input_path: inputPath,
-      output_path: effectiveSegmentationOutputPath,
-      densities_path: runDensityEstimation ? null : probmapDensitiesFilePath,
-      gpu_index: selectedGpuIndex,
-      mode: "probability_map",
+      ...baseRequest,
+      mode: "legacy_probability_map",
       gaussian_blur_sigma: 3,
       rolling_ball_radius: 10,
-      run_density_estimation: runDensityEstimation,
       run_stage_2: runProbabilityMapStage2,
-      training_timepoint: runDensityEstimation ? selectedTrainingTimepoint : null,
-      seg_tif: runDensityEstimation ? segTifPath : null,
-      valid_mask_tif: runDensityEstimation ? validMaskTifPath : null,
-      density_method: probabilityMapDensityMethod,
-      feature_batch: parsedFeatureBatch,
-      kde_points: parsedKdePoints,
-      kde_max_samples: parsedKdeMaxSamples,
-      kde_bandwidth: probabilityMapDensityMethod === "kde" ? parsedKdeBandwidth : null,
-      hist_sigma_bins: probabilityMapDensityMethod === "gpu-hist" ? parsedHistSigmaBins : 1.5,
       bg_prob_threshold: parsedBgThreshold,
       fg_prob_threshold: parsedFgThreshold,
-      seed: parsedSeed,
+      probmap_threshold: 0.5,
+      run_connected_components: true,
     });
   }
 
@@ -936,32 +1049,34 @@ export default function PostProcessingPage() {
 
   return (
     <div className="preprocessPage">
-      <section className="validationCard inferenceIntroCard" aria-label="Post-processing overview">
+      <section className="validationCard inferenceIntroCard" aria-label={`${pageTitle} overview`}>
         <header className="validationHeader">
           <div>
-            <h1 className="inferenceTitle">Post-processing</h1>
+            <h1 className="inferenceTitle">{pageTitle}</h1>
           </div>
         </header>
       </section>
 
-      <section className="datasetCard" aria-label="Post-processing workflows">
-        <div className="postProcessingOptionGrid">
-          {WORKFLOW_OPTIONS.map((option) => {
-            const active = option.value === selectedWorkflow;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={active ? "postProcessingOptionButton isActive" : "postProcessingOptionButton"}
-                aria-pressed={active}
-                onClick={() => setSelectedWorkflow(option.value)}
-              >
-                <div className="postProcessingOptionLabel">{option.label}</div>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      {pageKind === "post_processing" ? (
+        <section className="datasetCard" aria-label="Post-processing options">
+          <div className="postProcessingOptionGrid">
+            {POST_PROCESSING_OPTIONS.map((option) => {
+              const active = option.value === selectedPostProcessingMode;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={active ? "postProcessingOptionButton isActive" : "postProcessingOptionButton"}
+                  aria-pressed={active}
+                  onClick={() => setSelectedPostProcessingMode(option.value)}
+                >
+                  <div className="postProcessingOptionLabel">{option.label}</div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       {segmentationSelected ? (
         <section className="datasetCard" aria-label="Segmentation workflows">
@@ -984,8 +1099,7 @@ export default function PostProcessingPage() {
         </section>
       ) : null}
 
-      {inputStepVisible ? (
-        <section className="datasetCard inferenceInputCard" aria-label={`${workflowLabel} folder selection`}>
+      <section className="datasetCard inferenceInputCard" aria-label={`${pageTitle} folder selection`}>
           <DirectoryFieldRow
             label={
               <ParameterHelpLabel
@@ -1052,6 +1166,45 @@ export default function PostProcessingPage() {
                   emptyLabel="No directory selected yet"
                   onChoose={() => {
                     setPickerTarget("process_output");
+                    setPickerOpen(true);
+                  }}
+                />
+              ) : null}
+            </>
+          ) : null}
+
+          {foregroundProbabilityMapSelected ? (
+            <>
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel
+                    label="Save in a different output folder"
+                    description={POST_PROCESSING_PARAMETER_HELP.foregroundProbabilityMapOutputFolder}
+                  />
+                </div>
+                <label className="inferenceCheckboxLabel">
+                  <input
+                    type="checkbox"
+                    checked={saveSegmentationInDifferentOutputFolder}
+                    onChange={(event) => setSaveSegmentationInDifferentOutputFolder(event.target.checked)}
+                  />
+                  <span>Enabled</span>
+                </label>
+              </div>
+
+              {saveSegmentationInDifferentOutputFolder ? (
+                <DirectoryFieldRow
+                  label={
+                    <ParameterHelpLabel
+                      label="Output folder"
+                      description={POST_PROCESSING_PARAMETER_HELP.foregroundProbabilityMapOutputFolder}
+                    />
+                  }
+                  path={segmentationOutputPath}
+                  buttonLabel="Choose directory"
+                  emptyLabel="No directory selected yet"
+                  onChoose={() => {
+                    setPickerTarget("segmentation_output");
                     setPickerOpen(true);
                   }}
                 />
@@ -1194,8 +1347,7 @@ export default function PostProcessingPage() {
               ) : null}
             </>
           ) : null}
-        </section>
-      ) : null}
+      </section>
 
       {parametersVisible && processFeaturesSelected ? (
         <section className="datasetCard inferenceFormCard" aria-label="Process features parameters">
@@ -1235,83 +1387,58 @@ export default function PostProcessingPage() {
               />
             </div>
 
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">
-                <ParameterHelpLabel
-                  label="Save high-resolution features"
-                  description={POST_PROCESSING_PARAMETER_HELP.saveHighResolutionFeatures}
-                />
+            {highResolutionFeaturesSelected ? (
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
+                </div>
+                <select
+                  className="inferenceSelect inferenceCompactSelect"
+                  value={highResolutionSaveFormat}
+                  onChange={(event) => setHighResolutionSaveFormat(event.target.value as SaveFormat)}
+                >
+                  <option value=".npy">.npy</option>
+                  <option value=".tif">.tif</option>
+                </select>
               </div>
-              <label className="inferenceCheckboxLabel">
-                <input
-                  type="checkbox"
-                  checked={saveHighResolutionFeatures}
-                  onChange={(event) => setSaveHighResolutionFeatures(event.target.checked)}
-                />
-                <span>Enabled</span>
-              </label>
-              {saveHighResolutionFeatures ? (
-                <>
-                  <div className="inferenceInlineLabel isStrong">
-                    <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
-                  </div>
-                  <select
-                    className="inferenceSelect inferenceCompactSelect"
-                    value={highResolutionSaveFormat}
-                    onChange={(event) => setHighResolutionSaveFormat(event.target.value as SaveFormat)}
-                  >
-                    <option value=".npy">.npy</option>
-                    <option value=".tif">.tif</option>
-                  </select>
-                </>
-              ) : null}
-            </div>
+            ) : null}
 
-            {saveHighResolutionFeatures ? (
+            {highResolutionFeaturesSelected ? (
               <div className="sidebarWarning">
                 Saving high-resolution features writes one full 3D file per feature, typically 390 files per
                 timepoint, and can consume a huge amount of disk space.
               </div>
             ) : null}
 
-            <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">
-                <ParameterHelpLabel label="Save PCA" description={POST_PROCESSING_PARAMETER_HELP.savePca} />
+            {pcaSelected ? (
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel label="Components" description={POST_PROCESSING_PARAMETER_HELP.components} />
+                </div>
+                <PostProcessingNumberInput value={pcaComponents} onChange={setPcaComponents} min={1} step={1} />
+                <div className="inferenceInlineLabel isStrong">
+                  <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
+                </div>
+                <select
+                  className="inferenceSelect inferenceCompactSelect postProcessingPcaFormatSelect"
+                  value={pcaSaveFormat}
+                  onChange={(event) => setPcaSaveFormat(event.target.value as SaveFormat)}
+                >
+                  <option value=".npy">.npy</option>
+                  <option value=".tif">.tif</option>
+                </select>
+                <label className="inferenceCheckboxLabel">
+                  <input
+                    type="checkbox"
+                    checked={globalPca}
+                    onChange={(event) => setGlobalPca(event.target.checked)}
+                  />
+                  <span>
+                    <ParameterHelpLabel label="Global PCA" description={POST_PROCESSING_PARAMETER_HELP.globalPca} />
+                  </span>
+                </label>
               </div>
-              <label className="inferenceCheckboxLabel">
-                <input type="checkbox" checked={savePca} onChange={(event) => setSavePca(event.target.checked)} />
-                <span>Enabled</span>
-              </label>
-              {savePca ? (
-                <>
-                  <div className="inferenceInlineLabel isStrong">
-                    <ParameterHelpLabel label="Components" description={POST_PROCESSING_PARAMETER_HELP.components} />
-                  </div>
-                  <PostProcessingNumberInput value={pcaComponents} onChange={setPcaComponents} min={1} step={1} />
-                  <div className="inferenceInlineLabel isStrong">
-                    <ParameterHelpLabel label="Save format" description={POST_PROCESSING_PARAMETER_HELP.saveFormat} />
-                  </div>
-                  <select
-                    className="inferenceSelect inferenceCompactSelect postProcessingPcaFormatSelect"
-                    value={pcaSaveFormat}
-                    onChange={(event) => setPcaSaveFormat(event.target.value as SaveFormat)}
-                  >
-                    <option value=".npy">.npy</option>
-                    <option value=".tif">.tif</option>
-                  </select>
-                  <label className="inferenceCheckboxLabel">
-                    <input
-                      type="checkbox"
-                      checked={globalPca}
-                      onChange={(event) => setGlobalPca(event.target.checked)}
-                    />
-                    <span>
-                      <ParameterHelpLabel label="Global PCA" description={POST_PROCESSING_PARAMETER_HELP.globalPca} />
-                    </span>
-                  </label>
-                </>
-              ) : null}
-            </div>
+            ) : null}
           </div>
 
           <div className="validationActions">
@@ -1329,8 +1456,8 @@ export default function PostProcessingPage() {
         </section>
       ) : null}
 
-      {parametersVisible && segmentationSelected ? (
-        <section className="datasetCard inferenceFormCard" aria-label="Segmentation parameters">
+      {parametersVisible && (segmentationSelected || foregroundProbabilityMapSelected) ? (
+        <section className="datasetCard inferenceFormCard" aria-label={`${pageTitle} parameters`}>
           {optionsError ? <div className="sidebarError">{optionsError}</div> : null}
 
           {voronoiOtsuSelected ? (
@@ -1390,6 +1517,42 @@ export default function PostProcessingPage() {
           ) : null}
 
           {probabilityMapSelected ? (
+            <div className="inferenceFormRows">
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel
+                    label="Foreground probability threshold"
+                    description={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
+                  />
+                </div>
+                <PostProcessingNumberInput
+                  value={simpleProbabilityMapThreshold}
+                  onChange={setSimpleProbabilityMapThreshold}
+                  min={0}
+                  step={0.01}
+                />
+              </div>
+
+              <div className="inferenceFormRow">
+                <div className="inferenceFieldLabel">
+                  <ParameterHelpLabel
+                    label="Run connected-component labeling"
+                    description={POST_PROCESSING_PARAMETER_HELP.runConnectedComponents}
+                  />
+                </div>
+                <label className="inferenceCheckboxLabel">
+                  <input
+                    type="checkbox"
+                    checked={runProbabilityMapCcl}
+                    onChange={(event) => setRunProbabilityMapCcl(event.target.checked)}
+                  />
+                  <span>Enabled</span>
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          {densityControlsSelected ? (
             <>
               <div className="inferenceFormRows">
                 <GpuSelectionRow
@@ -1487,7 +1650,7 @@ export default function PostProcessingPage() {
                         }
                       />
                     </>
-                  ) : runProbabilityMapStage2 ? (
+                  ) : foregroundProbabilityMapSelected || runProbabilityMapStage2 ? (
                     <DirectoryFieldRow
                       label={
                         <ParameterHelpLabel
@@ -1517,15 +1680,19 @@ export default function PostProcessingPage() {
                   ) : null}
                 </div>
 
-                <div className="postProcessingStageTitle">Stage 2: Apply probability maps</div>
+                <div className="postProcessingStageTitle">
+                  {foregroundProbabilityMapSelected ? "Stage 2: Generate foreground probability maps" : "Stage 2: Apply probability maps"}
+                </div>
 
                 <div className="postProcessingParameterGroup">
                   <div className="postProcessingStageDescription">
-                    Apply the probability maps from Stage 1 on a full movie to produce probability-map volumes and
-                    FG/BG masks, which are then turned into instance segmentation masks via Connected Component Labeling.
+                    {foregroundProbabilityMapSelected
+                      ? "Apply the densities from Stage 1 on a full movie to produce normalized foreground probability-map volumes."
+                      : "Apply the probability maps from Stage 1 on a full movie to produce FG/BG masks, which are then turned into instance segmentation masks via Connected Component Labeling."}
                   </div>
 
-                  <div className="inferenceFormRow">
+                  {legacyProbabilityMapSelected ? (
+                    <div className="inferenceFormRow">
                     <label className="inferenceCheckboxLabel">
                       <input
                         type="checkbox"
@@ -1534,7 +1701,8 @@ export default function PostProcessingPage() {
                       />
                       <span>Run stage 2</span>
                     </label>
-                  </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="inferenceOptionalToggleRow">
@@ -1661,30 +1829,34 @@ export default function PostProcessingPage() {
                         min={1}
                         step={1}
                       />
-                      <div className="inferenceInlineLabel isStrong">
-                        <ParameterHelpLabel
-                          label="BG probability threshold"
-                          description={POST_PROCESSING_PARAMETER_HELP.bgProbabilityThreshold}
-                        />
-                      </div>
-                      <PostProcessingNumberInput
-                        value={probabilityMapBgThreshold}
-                        onChange={setProbabilityMapBgThreshold}
-                        min={0}
-                        step={0.01}
-                      />
-                      <div className="inferenceInlineLabel isStrong">
-                        <ParameterHelpLabel
-                          label="FG probability threshold"
-                          description={POST_PROCESSING_PARAMETER_HELP.fgProbabilityThreshold}
-                        />
-                      </div>
-                      <PostProcessingNumberInput
-                        value={probabilityMapFgThreshold}
-                        onChange={setProbabilityMapFgThreshold}
-                        min={0}
-                        step={0.01}
-                      />
+                      {legacyProbabilityMapSelected ? (
+                        <>
+                          <div className="inferenceInlineLabel isStrong">
+                            <ParameterHelpLabel
+                              label="BG probability threshold"
+                              description={POST_PROCESSING_PARAMETER_HELP.bgProbabilityThreshold}
+                            />
+                          </div>
+                          <PostProcessingNumberInput
+                            value={probabilityMapBgThreshold}
+                            onChange={setProbabilityMapBgThreshold}
+                            min={0}
+                            step={0.01}
+                          />
+                          <div className="inferenceInlineLabel isStrong">
+                            <ParameterHelpLabel
+                              label="FG probability threshold"
+                              description={POST_PROCESSING_PARAMETER_HELP.fgProbabilityThreshold}
+                            />
+                          </div>
+                          <PostProcessingNumberInput
+                            value={probabilityMapFgThreshold}
+                            onChange={setProbabilityMapFgThreshold}
+                            min={0}
+                            step={0.01}
+                          />
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
@@ -1696,7 +1868,9 @@ export default function PostProcessingPage() {
             <button
               type="button"
               className="preprocessValidateButton"
-              onClick={() => void handleSegmentationRun()}
+              onClick={() =>
+                foregroundProbabilityMapSelected ? void handleForegroundProbabilityMapRun() : void handleSegmentationRun()
+              }
               disabled={submitting}
             >
               {submitting ? "Submitting..." : "Run"}

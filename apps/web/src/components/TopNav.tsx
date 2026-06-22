@@ -6,7 +6,9 @@ const navItems: Array<{ to: string; label: string }> = [
   { to: "/data", label: "Data" },
   { to: "/training", label: "Training" },
   { to: "/inference", label: "Inference" },
-  { to: "/post-processing", label: "Post-processing" }
+  { to: "/post-processing", label: "Post-processing" },
+  { to: "/segmentation", label: "Segmentation" },
+  { to: "/tracking", label: "Tracking" }
 ];
 
 export default function TopNav() {

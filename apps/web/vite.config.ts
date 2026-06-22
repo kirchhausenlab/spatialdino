@@ -20,6 +20,9 @@ export default defineConfig({
       }
     }
   ],
+  css: {
+    postcss: {}
+  },
   server: {
     host: true,
     port: 5173,

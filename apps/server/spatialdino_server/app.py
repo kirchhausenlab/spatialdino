@@ -37,6 +37,7 @@ from spatialdino.inference.output_layout import (
     inference_lr_feats_path,
     inference_managed_output_paths,
     norm_per_vol_stats_path as inference_norm_per_vol_stats_path,
+    probability_map_dir,
     probability_map_densities_path,
 )
 
@@ -388,6 +389,26 @@ class RunSegmentationRequest(BaseModel):
     hist_sigma_bins: float = Field(1.5, gt=0.0)
     bg_prob_threshold: float = Field(0.4, ge=0.0, le=1.0)
     fg_prob_threshold: float = Field(0.95, ge=0.0, le=1.0)
+    probmap_threshold: float = Field(0.5, ge=0.0, le=1.0)
+    run_connected_components: bool = True
+    seed: int = 1337
+
+
+class RunForegroundProbabilityMapRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    output_path: str | None = None
+    densities_path: str | None = None
+    gpu_index: int | None = None
+    run_density_estimation: bool = True
+    training_timepoint: str | None = None
+    seg_tif: str | None = None
+    valid_mask_tif: str | None = None
+    density_method: str = Field("gpu-hist", min_length=1)
+    feature_batch: int = Field(32, ge=1)
+    kde_points: int = Field(512, ge=2)
+    kde_max_samples: int = Field(200000, ge=1)
+    kde_bandwidth: float | None = Field(None, gt=0.0)
+    hist_sigma_bins: float = Field(1.5, gt=0.0)
     seed: int = 1337
 
 
@@ -580,6 +601,35 @@ def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
     }
 
 
+def validate_probability_map_input_folder(raw_path: str) -> dict[str, Any]:
+    validation = validate_segmentation_input_folder(raw_path)
+    if not validation["valid"]:
+        return validation
+
+    input_path = _resolve_allowed_inference_path(raw_path)
+    probmap_path = probability_map_dir(input_path)
+    if not probmap_path.is_dir():
+        return _invalid_process_features_input(
+            "missing_probmap_folder",
+            f"Input folder is missing {probmap_path.name}/.",
+        )
+
+    subfolder_names = [str(name) for name in validation.get("subfolderNames", [])]
+    for subfolder_name in subfolder_names:
+        map_path = probmap_path / f"{subfolder_name}.tif"
+        if not map_path.is_file():
+            return _invalid_process_features_input(
+                "missing_required_files",
+                f"Probability-map folder is missing {map_path.name}.",
+            )
+
+    return {
+        **validation,
+        "probmapPath": str(probmap_path),
+        "probmapExists": True,
+    }
+
+
 def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
     error, timepoint_names = _post_processing_timepoints_or_error(raw_path)
     if error is not None or timepoint_names is None:
@@ -712,9 +762,11 @@ NORMALIZATION_MODE_GLOBAL_MANUAL = "global_manual"
 PROCESS_FEATURES_SAVE_FORMATS = {".npy", ".tif"}
 SEGMENTATION_MODE_VORONOI_OTSU = "voronoi_otsu"
 SEGMENTATION_MODE_PROBABILITY_MAP = "probability_map"
+SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP = "legacy_probability_map"
 SEGMENTATION_MODE_OPTIONS = {
     SEGMENTATION_MODE_VORONOI_OTSU,
     SEGMENTATION_MODE_PROBABILITY_MAP,
+    SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
 }
 PROBABILITY_MAP_DENSITY_METHODS = {"kde", "gpu-hist"}
 NORMALIZATION_MODE_OPTIONS = {
@@ -739,6 +791,18 @@ def _invalid_process_features_run(reason_code: str, message: str) -> dict[str, A
         "reasonCode": reason_code,
         "message": message,
     }
+
+
+def _validate_requested_gpu(gpu_index: int | None) -> tuple[dict[str, Any] | None, int | None]:
+    if gpu_index is None:
+        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+    requested_gpu = int(gpu_index)
+    gpu_status = get_nvidia_gpu_memory()
+    available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
+    if requested_gpu not in available_gpus:
+        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
+    return None, requested_gpu
 
 
 def _validate_post_processing_output_path(
@@ -899,58 +963,12 @@ def _build_process_features_launch_config(
     )
 
 
-def _build_segmentation_launch_config(
-    payload: RunSegmentationRequest,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    input_validation = validate_segmentation_input_folder(payload.input_path)
-    if not input_validation["valid"]:
-        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
-
-    if payload.gpu_index is None:
-        return _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
-
-    requested_gpu = int(payload.gpu_index)
-    gpu_status = get_nvidia_gpu_memory()
-    available_gpus = {int(gpu["index"]) for gpu in gpu_status.get("gpus", [])}
-    if requested_gpu not in available_gpus:
-        return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
-
-    segmentation_mode = (payload.mode or "").strip() or (
-        SEGMENTATION_MODE_VORONOI_OTSU if payload.enable_voronoi_otsu else ""
-    )
-    if segmentation_mode not in SEGMENTATION_MODE_OPTIONS:
-        return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
-
-    input_path = _resolve_allowed_inference_path(payload.input_path)
-    output_error, output_path = _validate_post_processing_output_path(
-        payload.output_path,
-        input_path=input_path,
-        label="Segmentation output",
-    )
-    if output_error is not None or output_path is None:
-        return output_error or _invalid_process_features_run("output_not_directory", "Segmentation output is invalid."), None
-    subfolder_count = int(input_validation["subfolderCount"])
-
-    if segmentation_mode == SEGMENTATION_MODE_VORONOI_OTSU:
-        launch_config: dict[str, Any] = {
-            "input_path": input_path,
-            "output_path": output_path,
-            "gpu_index": requested_gpu,
-            "mode": segmentation_mode,
-            "subfolder_count": subfolder_count,
-            "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
-            "rolling_ball_radius": float(payload.rolling_ball_radius),
-            "enable_voronoi_otsu": True,
-        }
-        return (
-            {
-                "valid": True,
-                "message": "Validation passed.",
-                "subfolderCount": subfolder_count,
-            },
-            launch_config,
-        )
-
+def _build_probability_map_density_config(
+    payload: RunForegroundProbabilityMapRequest | RunSegmentationRequest,
+    *,
+    input_validation: dict[str, Any],
+    output_path: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if payload.density_method not in PROBABILITY_MAP_DENSITY_METHODS:
         return _invalid_process_features_run(
             "invalid_density_method",
@@ -958,18 +976,10 @@ def _build_segmentation_launch_config(
         ), None
 
     run_density_estimation = bool(payload.run_density_estimation)
-    run_stage_2 = bool(payload.run_stage_2)
     training_timepoint = (payload.training_timepoint or "").strip() or None
     subfolder_names = set(input_validation.get("subfolderNames", []))
     seg_tif_path: Path | None = None
     valid_mask_tif_path: Path | None = None
-    densities_path: Path
-
-    if not run_density_estimation and not run_stage_2:
-        return _invalid_process_features_run(
-            "no_probability_map_stages_selected",
-            "Choose at least one stage: Run stage 1 and/or Run stage 2.",
-        ), None
 
     if run_density_estimation:
         densities_path = probability_map_densities_path(output_path)
@@ -1005,15 +1015,8 @@ def _build_segmentation_launch_config(
         if not densities_path.is_file():
             return _invalid_process_features_run("missing_probmap_densities", "Stage 1 output file does not exist."), None
 
-    progress_total = (2 if run_density_estimation else 0) + (subfolder_count if run_stage_2 else 0)
-    launch_config: dict[str, Any] = {
-        "input_path": input_path,
-        "output_path": output_path,
-        "gpu_index": requested_gpu,
-        "mode": segmentation_mode,
-        "subfolder_count": subfolder_count,
+    return None, {
         "run_density_estimation": run_density_estimation,
-        "run_stage_2": run_stage_2,
         "training_timepoint": training_timepoint,
         "seg_tif": seg_tif_path,
         "valid_mask_tif": valid_mask_tif_path,
@@ -1024,18 +1027,177 @@ def _build_segmentation_launch_config(
         "kde_max_samples": int(payload.kde_max_samples),
         "kde_bandwidth": float(payload.kde_bandwidth) if payload.kde_bandwidth is not None else None,
         "hist_sigma_bins": float(payload.hist_sigma_bins),
+        "seed": int(payload.seed),
+    }
+
+
+def _build_segmentation_launch_config(
+    payload: RunSegmentationRequest,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    segmentation_mode = (payload.mode or "").strip() or (
+        SEGMENTATION_MODE_VORONOI_OTSU if payload.enable_voronoi_otsu else ""
+    )
+    if segmentation_mode not in SEGMENTATION_MODE_OPTIONS:
+        return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
+
+    input_validation = (
+        validate_probability_map_input_folder(payload.input_path)
+        if segmentation_mode == SEGMENTATION_MODE_PROBABILITY_MAP
+        else validate_segmentation_input_folder(payload.input_path)
+    )
+    if not input_validation["valid"]:
+        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_error, output_path = _validate_post_processing_output_path(
+        payload.output_path,
+        input_path=input_path,
+        label="Segmentation output",
+    )
+    if output_error is not None or output_path is None:
+        return output_error or _invalid_process_features_run("output_not_directory", "Segmentation output is invalid."), None
+    subfolder_count = int(input_validation["subfolderCount"])
+
+    if segmentation_mode == SEGMENTATION_MODE_VORONOI_OTSU:
+        gpu_error, requested_gpu = _validate_requested_gpu(payload.gpu_index)
+        if gpu_error is not None or requested_gpu is None:
+            return gpu_error or _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+        launch_config: dict[str, Any] = {
+            "input_path": input_path,
+            "output_path": output_path,
+            "gpu_index": requested_gpu,
+            "mode": segmentation_mode,
+            "subfolder_count": subfolder_count,
+            "gaussian_blur_sigma": int(payload.gaussian_blur_sigma),
+            "rolling_ball_radius": float(payload.rolling_ball_radius),
+            "enable_voronoi_otsu": True,
+        }
+        return (
+            {
+                "valid": True,
+                "message": "Validation passed.",
+                "subfolderCount": subfolder_count,
+            },
+            launch_config,
+        )
+
+    if segmentation_mode == SEGMENTATION_MODE_PROBABILITY_MAP:
+        launch_config = {
+            "input_path": input_path,
+            "output_path": output_path,
+            "mode": segmentation_mode,
+            "subfolder_count": subfolder_count,
+            "probmap_threshold": float(payload.probmap_threshold),
+            "run_connected_components": bool(payload.run_connected_components),
+            "progress_total": subfolder_count,
+        }
+        return (
+            {
+                "valid": True,
+                "message": "Validation passed.",
+                "subfolderCount": subfolder_count,
+                "probmapPath": input_validation.get("probmapPath"),
+                "probmapExists": bool(input_validation.get("probmapExists")),
+            },
+            launch_config,
+        )
+
+    gpu_error, requested_gpu = _validate_requested_gpu(payload.gpu_index)
+    if gpu_error is not None or requested_gpu is None:
+        return gpu_error or _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+    run_stage_2 = bool(payload.run_stage_2)
+    if not payload.run_density_estimation and not run_stage_2:
+        return _invalid_process_features_run(
+            "no_probability_map_stages_selected",
+            "Choose at least one stage: Run stage 1 and/or Run stage 2.",
+        ), None
+
+    density_error, density_config = _build_probability_map_density_config(
+        payload,
+        input_validation=input_validation,
+        output_path=output_path,
+    )
+    if density_error is not None or density_config is None:
+        return density_error or _invalid_process_features_run("invalid_density_settings", "Invalid density settings."), None
+
+    progress_total = (2 if density_config["run_density_estimation"] else 0) + (subfolder_count if run_stage_2 else 0)
+    launch_config: dict[str, Any] = {
+        "input_path": input_path,
+        "output_path": output_path,
+        "gpu_index": requested_gpu,
+        "mode": segmentation_mode,
+        "subfolder_count": subfolder_count,
+        "run_stage_2": run_stage_2,
         "bg_prob_threshold": float(payload.bg_prob_threshold),
         "fg_prob_threshold": float(payload.fg_prob_threshold),
-        "seed": int(payload.seed),
         "progress_total": progress_total,
+        "stage_2_output": "legacy",
+        **density_config,
     }
     return (
         {
             "valid": True,
             "message": "Validation passed.",
             "subfolderCount": subfolder_count,
-            "probmapDensitiesPath": str(densities_path),
-            "probmapDensitiesExists": densities_path.is_file(),
+            "probmapDensitiesPath": str(density_config["densities_path"]),
+            "probmapDensitiesExists": density_config["densities_path"].is_file(),
+        },
+        launch_config,
+    )
+
+
+def _build_foreground_probability_map_launch_config(
+    payload: RunForegroundProbabilityMapRequest,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    input_validation = validate_segmentation_input_folder(payload.input_path)
+    if not input_validation["valid"]:
+        return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
+
+    gpu_error, requested_gpu = _validate_requested_gpu(payload.gpu_index)
+    if gpu_error is not None or requested_gpu is None:
+        return gpu_error or _invalid_process_features_run("missing_gpu_selection", "Select one GPU."), None
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    output_error, output_path = _validate_post_processing_output_path(
+        payload.output_path,
+        input_path=input_path,
+        label="Output",
+    )
+    if output_error is not None or output_path is None:
+        return output_error or _invalid_process_features_run("output_not_directory", "Output is invalid."), None
+
+    density_error, density_config = _build_probability_map_density_config(
+        payload,
+        input_validation=input_validation,
+        output_path=output_path,
+    )
+    if density_error is not None or density_config is None:
+        return density_error or _invalid_process_features_run("invalid_density_settings", "Invalid density settings."), None
+
+    subfolder_count = int(input_validation["subfolderCount"])
+    progress_total = (2 if density_config["run_density_estimation"] else 0) + subfolder_count
+    launch_config: dict[str, Any] = {
+        "input_path": input_path,
+        "output_path": output_path,
+        "gpu_index": requested_gpu,
+        "mode": "foreground_probability_map",
+        "subfolder_count": subfolder_count,
+        "run_stage_2": True,
+        "bg_prob_threshold": 0.4,
+        "fg_prob_threshold": 0.95,
+        "progress_total": progress_total,
+        "stage_2_output": "probmap",
+        **density_config,
+    }
+    return (
+        {
+            "valid": True,
+            "message": "Validation passed.",
+            "subfolderCount": subfolder_count,
+            "probmapDensitiesPath": str(density_config["densities_path"]),
+            "probmapDensitiesExists": density_config["densities_path"].is_file(),
         },
         launch_config,
     )
@@ -1663,48 +1825,68 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
     return command
 
 
+def _build_probability_map_command(launch_config: dict[str, Any]) -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/post_processing/probability_map.py",
+        "--input-path",
+        str(launch_config["input_path"]),
+        "--output-path",
+        str(launch_config["output_path"]),
+        "--densities-path",
+        str(launch_config["densities_path"]),
+        "--device",
+        "cuda:0",
+        "--feature-batch",
+        str(launch_config["feature_batch"]),
+        "--kde-points",
+        str(launch_config["kde_points"]),
+        "--kde-max-samples",
+        str(launch_config["kde_max_samples"]),
+        "--density-method",
+        launch_config["density_method"],
+        "--hist-sigma-bins",
+        str(launch_config["hist_sigma_bins"]),
+        "--bg-prob-threshold",
+        str(launch_config["bg_prob_threshold"]),
+        "--fg-prob-threshold",
+        str(launch_config["fg_prob_threshold"]),
+        "--stage-2-output",
+        launch_config.get("stage_2_output", "legacy"),
+        "--seed",
+        str(launch_config["seed"]),
+    ]
+    if launch_config.get("run_stage_2", True):
+        command.append("--run-stage-2")
+    else:
+        command.append("--skip-stage-2")
+    if launch_config.get("kde_bandwidth") is not None:
+        command.extend(["--kde-bandwidth", str(launch_config["kde_bandwidth"])])
+    if launch_config.get("run_density_estimation"):
+        command.extend(["--run-density-estimation", "--training-timepoint", launch_config["training_timepoint"]])
+        if launch_config.get("seg_tif") is not None:
+            command.extend(["--seg-tif", str(launch_config["seg_tif"])])
+        if launch_config.get("valid_mask_tif") is not None:
+            command.extend(["--valid-mask-tif", str(launch_config["valid_mask_tif"])])
+    return command
+
+
 def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
+    if launch_config["mode"] == SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP:
+        return _build_probability_map_command(launch_config)
+
     if launch_config["mode"] == SEGMENTATION_MODE_PROBABILITY_MAP:
         command = [
             sys.executable,
-            "scripts/post_processing/probability_map.py",
+            "scripts/post_processing/probmap_segmentation.py",
             "--input-path",
             str(launch_config["input_path"]),
             "--output-path",
             str(launch_config["output_path"]),
-            "--densities-path",
-            str(launch_config["densities_path"]),
-            "--device",
-            "cuda:0",
-            "--feature-batch",
-            str(launch_config["feature_batch"]),
-            "--kde-points",
-            str(launch_config["kde_points"]),
-            "--kde-max-samples",
-            str(launch_config["kde_max_samples"]),
-            "--density-method",
-            launch_config["density_method"],
-            "--hist-sigma-bins",
-            str(launch_config["hist_sigma_bins"]),
-            "--bg-prob-threshold",
-            str(launch_config["bg_prob_threshold"]),
-            "--fg-prob-threshold",
-            str(launch_config["fg_prob_threshold"]),
-            "--seed",
-            str(launch_config["seed"]),
+            "--threshold",
+            str(launch_config["probmap_threshold"]),
         ]
-        if launch_config.get("run_stage_2", True):
-            command.append("--run-stage-2")
-        else:
-            command.append("--skip-stage-2")
-        if launch_config.get("kde_bandwidth") is not None:
-            command.extend(["--kde-bandwidth", str(launch_config["kde_bandwidth"])])
-        if launch_config.get("run_density_estimation"):
-            command.extend(["--run-density-estimation", "--training-timepoint", launch_config["training_timepoint"]])
-            if launch_config.get("seg_tif") is not None:
-                command.extend(["--seg-tif", str(launch_config["seg_tif"])])
-            if launch_config.get("valid_mask_tif") is not None:
-                command.extend(["--valid-mask-tif", str(launch_config["valid_mask_tif"])])
+        command.append("--run-ccl" if launch_config.get("run_connected_components", True) else "--skip-ccl")
         return command
 
     command = [
@@ -1722,6 +1904,10 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
     if launch_config["enable_voronoi_otsu"]:
         command.append("--enable-voronoi-otsu")
     return command
+
+
+def _build_foreground_probability_map_command(launch_config: dict[str, Any]) -> list[str]:
+    return _build_probability_map_command(launch_config)
 
 
 def _build_tracking_command(launch_config: dict[str, Any]) -> list[str]:
@@ -2315,10 +2501,26 @@ def _run_segmentation_job(job: jobs_api.JobState, launch_config: dict[str, Any])
         job,
         launch_config,
         command=_build_segmentation_command(launch_config),
-        command_env=_build_process_features_command_env(launch_config),
+        command_env=(
+            _build_tracking_command_env()
+            if launch_config.get("mode") == SEGMENTATION_MODE_PROBABILITY_MAP
+            else _build_process_features_command_env(launch_config)
+        ),
         launch_log_line="[server] Launching segmentation job.",
         success_log_line="[server] Segmentation job completed successfully.",
         job_name="Segmentation",
+    )
+
+
+def _run_foreground_probability_map_job(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    _run_single_gpu_post_processing_job(
+        job,
+        launch_config,
+        command=_build_foreground_probability_map_command(launch_config),
+        command_env=_build_process_features_command_env(launch_config),
+        launch_log_line="[server] Launching foreground probability-map job.",
+        success_log_line="[server] Foreground probability-map job completed successfully.",
+        job_name="Foreground probability-map",
     )
 
 
@@ -2599,6 +2801,16 @@ def _launch_segmentation_job_thread(job: jobs_api.JobState, launch_config: dict[
     thread.start()
 
 
+def _launch_foreground_probability_map_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
+    thread = threading.Thread(
+        target=_run_foreground_probability_map_job,
+        args=(job, launch_config),
+        daemon=True,
+        name=f"foreground-probability-map-job-{job.job_id}",
+    )
+    thread.start()
+
+
 def _launch_tracking_job_thread(job: jobs_api.JobState, launch_config: dict[str, Any]) -> None:
     thread = threading.Thread(
         target=_run_tracking_job,
@@ -2791,6 +3003,11 @@ def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) ->
     return validate_segmentation_input_folder(payload.path)
 
 
+@api.post("/post-processing/probability-map/validate-input")
+def validate_probability_map_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+    return validate_probability_map_input_folder(payload.path)
+
+
 @api.post("/post-processing/tracking/validate-input")
 def validate_tracking_input(payload: ValidateTrackingInputRequest) -> dict[str, Any]:
     return validate_tracking_input_folder(payload.path)
@@ -2838,6 +3055,45 @@ def run_process_features(
         }
 
     return {"submitted": True, "jobId": job.job_id, "message": "Process-features job submitted."}
+
+
+@api.post("/post-processing/foreground-probability-map/run")
+def run_foreground_probability_map(
+    payload: RunForegroundProbabilityMapRequest,
+    x_spatialdino_clientid: str | None = Header(None),
+) -> dict[str, Any]:
+    client_id = jobs_api._require_client_id(x_spatialdino_clientid)
+    validation, launch_config = _build_foreground_probability_map_launch_config(payload)
+    if launch_config is None:
+        return {"submitted": False, **validation}
+
+    input_path = Path(launch_config["input_path"])
+    output_path = Path(launch_config["output_path"])
+    label = f"Foreground probability map {input_path.name}".strip()
+    job = jobs_api.JobState(
+        job_id=str(uuid.uuid4()),
+        owner_client_id=client_id,
+        type="foreground-probability-map",
+        status="running",
+        processed=0,
+        total=int(launch_config.get("progress_total", launch_config["subfolder_count"])),
+        current="Queued",
+        label=label,
+        save_dir=str(output_path.parent),
+        datasets=[{"source_dir": str(input_path), "save_to": output_path.name or str(output_path)}],
+    )
+    jobs_api.register_job(job)
+
+    try:
+        _launch_foreground_probability_map_job_thread(job, launch_config)
+    except Exception as exc:
+        jobs_api.unregister_job(job.job_id)
+        return {
+            "submitted": False,
+            **_invalid_process_features_run("submit_failed", f"Could not start foreground probability-map job: {exc}"),
+        }
+
+    return {"submitted": True, "jobId": job.job_id, "message": "Foreground probability-map job submitted."}
 
 
 @api.post("/post-processing/segmentation/run")

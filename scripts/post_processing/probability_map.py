@@ -19,7 +19,7 @@ from spatialdino.inference.output_layout import (
     discover_inference_timepoints,
     probability_map_dir,
     probability_map_densities_path,
-    segmentation_probmap_dir,
+    segmentation_probmap_legacy_dir,
 )
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -49,6 +49,7 @@ class ProbabilityMapParams:
     fg_prob_threshold: float
     seed: int
     device_name: str | None
+    stage_2_output: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.95,
         help="Foreground probability threshold used in probability-map estimation.",
+    )
+    parser.add_argument(
+        "--stage-2-output",
+        choices=["probmap", "legacy"],
+        default="legacy",
+        help=(
+            "Stage 2 output mode. 'probmap' writes normalized foreground probability maps only; "
+            "'legacy' writes legacy per-feature-threshold CCL segmentations only."
+        ),
     )
     parser.add_argument("--seed", type=int, default=1337, help="Random seed for Stage 1 sampling.")
     return parser.parse_args()
@@ -655,8 +665,12 @@ def classify_timepoint(
     feature_batch: int,
     bg_prob_threshold: float,
     fg_prob_threshold: float,
+    stage_2_output: str,
     device: torch.device,
-) -> tuple[Path, Path]:
+) -> Path:
+    if stage_2_output not in {"probmap", "legacy"}:
+        raise ValueError("Stage 2 output mode must be 'probmap' or 'legacy'.")
+
     lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
     raw_shape = read_tiff_shape(timepoint.raw_path)
     sampler = UpsampledFeatureSampler(lr_feats, raw_shape, device)
@@ -665,14 +679,26 @@ def classify_timepoint(
             f"{timepoint.name} has {sampler.channel_count} feature channels, but densities expect {int(densities.x1.shape[0])}."
         )
     z_size, y_size, x_size = raw_shape
-    stack_semantic = np.empty((z_size, y_size, x_size), dtype=np.uint8)
-    stack_probmap = np.empty((z_size, y_size, x_size), dtype=np.float32)
+    stack_semantic = np.empty((z_size, y_size, x_size), dtype=np.uint8) if stage_2_output == "legacy" else None
+    stack_probmap = np.empty((z_size, y_size, x_size), dtype=np.float32) if stage_2_output == "probmap" else None
 
     for z_indices in iter_z_index_chunks(z_size):
         chunk_depth = len(z_indices)
-        cnt_bg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
-        cnt_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
-        sum_prob_fg = torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.float32)
+        cnt_bg = (
+            torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
+            if stage_2_output == "legacy"
+            else None
+        )
+        cnt_fg = (
+            torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.int32)
+            if stage_2_output == "legacy"
+            else None
+        )
+        sum_prob_fg = (
+            torch.zeros((chunk_depth, y_size, x_size), device=device, dtype=torch.float32)
+            if stage_2_output == "probmap"
+            else None
+        )
 
         for start in range(0, sampler.channel_count, feature_batch):
             end = min(sampler.channel_count, start + feature_batch)
@@ -693,25 +719,39 @@ def classify_timepoint(
             zero_mask = denom == 0
             prob_bg = torch.where(zero_mask, 0.5, p_bg / denom).view(end - start, chunk_depth, y_size, x_size)
             prob_fg = torch.where(zero_mask, 0.5, p_fg / denom).view(end - start, chunk_depth, y_size, x_size)
-            sum_prob_fg += prob_fg.sum(dim=0)
-            cnt_bg += (prob_bg > bg_prob_threshold).sum(dim=0)
-            cnt_fg += (prob_fg > fg_prob_threshold).sum(dim=0)
+            if sum_prob_fg is not None:
+                sum_prob_fg += prob_fg.sum(dim=0)
+            if cnt_bg is not None and cnt_fg is not None:
+                cnt_bg += (prob_bg > bg_prob_threshold).sum(dim=0)
+                cnt_fg += (prob_fg > fg_prob_threshold).sum(dim=0)
             sampler.clear_feature_range_cache()
 
-        semantic_chunk = (cnt_fg > cnt_bg).to(torch.uint8)
-        stack_semantic[z_indices] = semantic_chunk.detach().cpu().numpy()
-        stack_probmap[z_indices] = sum_prob_fg.detach().cpu().numpy()
+        if stage_2_output == "legacy":
+            assert cnt_fg is not None
+            assert cnt_bg is not None
+            assert stack_semantic is not None
+            semantic_chunk = (cnt_fg > cnt_bg).to(torch.uint8)
+            stack_semantic[z_indices] = semantic_chunk.detach().cpu().numpy()
+        else:
+            assert sum_prob_fg is not None
+            assert stack_probmap is not None
+            stack_probmap[z_indices] = (sum_prob_fg / float(sampler.channel_count)).detach().cpu().numpy()
 
-    segmentation_output_path = segmentation_probmap_dir(output_root)
+    if stage_2_output == "legacy":
+        assert stack_semantic is not None
+        segmentation_output_path = segmentation_probmap_legacy_dir(output_root)
+        ensure_dir(segmentation_output_path)
+        instance_path = segmentation_output_path / f"{timepoint.name}.tif"
+        instance_seg = semantic_to_instance_seg(stack_semantic)
+        tifffile.imwrite(instance_path, instance_seg, bigtiff=True, metadata=None, photometric="minisblack")
+        return instance_path
+
+    assert stack_probmap is not None
     probmap_output_path = probability_map_dir(output_root)
-    ensure_dir(segmentation_output_path)
     ensure_dir(probmap_output_path)
-    instance_path = segmentation_output_path / f"{timepoint.name}.tif"
     probmap_path = probmap_output_path / f"{timepoint.name}.tif"
-    instance_seg = semantic_to_instance_seg(stack_semantic)
-    tifffile.imwrite(instance_path, instance_seg, bigtiff=True, metadata=None, photometric="minisblack")
     tifffile.imwrite(probmap_path, stack_probmap, bigtiff=True, metadata=None, photometric="minisblack")
-    return instance_path, probmap_path
+    return probmap_path
 
 
 def load_or_compute_densities(
@@ -793,8 +833,10 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
         print("[probmap] Done", flush=True)
         return params.densities_path
 
-    shutil.rmtree(segmentation_probmap_dir(output_root), ignore_errors=True)
-    shutil.rmtree(probability_map_dir(output_root), ignore_errors=True)
+    if params.stage_2_output == "legacy":
+        shutil.rmtree(segmentation_probmap_legacy_dir(output_root), ignore_errors=True)
+    else:
+        shutil.rmtree(probability_map_dir(output_root), ignore_errors=True)
     packed_densities = pack_densities(x1_all, f1_all, x2_all, f2_all, device=device)
 
     for index, timepoint in enumerate(timepoints, start=1):
@@ -806,6 +848,7 @@ def run_probability_map(input_path: Path, *, params: ProbabilityMapParams) -> Pa
             feature_batch=params.feature_batch,
             bg_prob_threshold=params.bg_prob_threshold,
             fg_prob_threshold=params.fg_prob_threshold,
+            stage_2_output=params.stage_2_output,
             device=device,
         )
         print(f"[probmap] Completed {timepoint.name}", flush=True)
@@ -850,6 +893,7 @@ def main() -> None:
         fg_prob_threshold=float(args.fg_prob_threshold),
         seed=int(args.seed),
         device_name=args.device,
+        stage_2_output=args.stage_2_output,
     )
     run_probability_map(input_path, params=params)
 

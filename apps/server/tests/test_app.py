@@ -813,7 +813,7 @@ class AppTests(unittest.TestCase):
         self.assertTrue(validation["probmapDensitiesExists"])
         self.assertEqual(validation["probmapDensitiesPath"], str(input_dir / "probmap_densities.npz"))
 
-    def test_build_segmentation_launch_config_accepts_probability_map_request_with_density_estimation(self) -> None:
+    def test_build_segmentation_launch_config_accepts_legacy_probability_map_request_with_density_estimation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -830,7 +830,7 @@ class AppTests(unittest.TestCase):
                 input_path=str(input_dir),
                 output_path=str(output_dir),
                 gpu_index=0,
-                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                mode=app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
                 run_density_estimation=True,
                 training_timepoint="sample_b",
                 seg_tif=str(seg_tif),
@@ -857,7 +857,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(validation["valid"], True)
         self.assertIsNotNone(launch_config)
         assert launch_config is not None
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP)
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["training_timepoint"], "sample_b")
         self.assertEqual(launch_config["feature_batch"], 24)
@@ -868,6 +868,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(launch_config["fg_prob_threshold"], 0.9)
         self.assertEqual(launch_config["seed"], 9)
         self.assertEqual(launch_config["progress_total"], 4)
+        self.assertEqual(launch_config["stage_2_output"], "legacy")
         self.assertEqual(launch_config["densities_path"], output_dir / "probmap_densities.npz")
         self.assertEqual(launch_config["output_path"], output_dir)
 
@@ -881,8 +882,10 @@ class AppTests(unittest.TestCase):
         self.assertIn("--density-method", command)
         self.assertIn("--bg-prob-threshold", command)
         self.assertIn("--fg-prob-threshold", command)
+        self.assertIn("--stage-2-output", command)
+        self.assertIn("legacy", command)
 
-    def test_build_segmentation_launch_config_rejects_probability_map_without_saved_densities(self) -> None:
+    def test_build_segmentation_launch_config_rejects_legacy_probability_map_without_saved_densities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -894,7 +897,7 @@ class AppTests(unittest.TestCase):
                 input_path=str(input_dir),
                 output_path=str(output_dir),
                 gpu_index=0,
-                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                mode=app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
                 run_density_estimation=False,
                 densities_path=None,
             )
@@ -911,6 +914,90 @@ class AppTests(unittest.TestCase):
         self.assertEqual(validation["valid"], False)
         self.assertEqual(validation["reasonCode"], "missing_probmap_densities")
         self.assertIsNone(launch_config)
+
+    def test_build_segmentation_launch_config_accepts_saved_probability_map_thresholding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            input_dir.mkdir()
+            probmap_dir = input_dir / "probmap"
+            probmap_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                write_inference_output_timepoint(input_dir, name)
+                tifffile.imwrite(probmap_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.float32))
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=None,
+                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                probmap_threshold=0.6,
+                run_connected_components=False,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertEqual(launch_config["probmap_threshold"], 0.6)
+        self.assertFalse(launch_config["run_connected_components"])
+        self.assertEqual(launch_config["progress_total"], 2)
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertIn("scripts/post_processing/probmap_segmentation.py", command)
+        self.assertIn("--threshold", command)
+        self.assertIn("0.6", command)
+        self.assertIn("--skip-ccl", command)
+
+    def test_build_foreground_probability_map_launch_config_accepts_density_estimation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "probmap-output"
+            input_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                write_inference_output_timepoint(input_dir, name)
+            seg_tif = root / "seg.tif"
+            tifffile.imwrite(seg_tif, np.zeros((4, 4, 4), dtype=np.uint8))
+
+            payload = app_module.RunForegroundProbabilityMapRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                run_density_estimation=True,
+                training_timepoint="sample_a",
+                seg_tif=str(seg_tif),
+                feature_batch=16,
+                kde_points=128,
+                kde_max_samples=500,
+                seed=3,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_foreground_probability_map_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["mode"], "foreground_probability_map")
+        self.assertEqual(launch_config["stage_2_output"], "probmap")
+        self.assertEqual(launch_config["progress_total"], 4)
+        self.assertEqual(launch_config["densities_path"], output_dir / "probmap_densities.npz")
+
+        command = app_module._build_foreground_probability_map_command(launch_config)
+        self.assertIn("scripts/post_processing/probability_map.py", command)
+        self.assertIn("--stage-2-output", command)
+        self.assertIn("probmap", command)
 
     def test_validate_tracking_input_folder_accepts_valid_subfolders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1316,7 +1403,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(job.total, 1)
             self.assertEqual(job.datasets, [{"source_dir": str(input_dir), "save_to": "segmentation-output"}])
 
-    def test_run_segmentation_probability_map_submits_job_with_density_step(self) -> None:
+    def test_run_segmentation_legacy_probability_map_submits_job_with_density_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -1331,7 +1418,7 @@ class AppTests(unittest.TestCase):
                 input_path=str(input_dir),
                 output_path=str(output_dir),
                 gpu_index=0,
-                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                mode=app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
                 run_density_estimation=True,
                 training_timepoint="sample_a",
                 seg_tif=str(seg_tif),
@@ -1350,7 +1437,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response["submitted"], True)
         launch_thread.assert_called_once()
         launch_config = launch_thread.call_args.args[1]
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP)
         self.assertTrue(launch_config["run_density_estimation"])
         self.assertEqual(launch_config["progress_total"], 4)
         self.assertEqual(launch_config["output_path"], output_dir)
