@@ -41,6 +41,8 @@ class FeatureMeanConfig:
     centroid_feature_weight: float = 0.1
     feature_norm_clip: float = 3.0
     z_weight: float = 1.0
+    max_distance_xy: float = 20.0
+    max_distance_z: float = 10.0
     three_frame_direct_weight: float = 0.25
     three_frame_candidate_top_k: int = 8
     three_frame_time_limit_seconds: float = 60.0
@@ -528,6 +530,86 @@ def centroid_cost_matrix(
     )
 
 
+def search_window_mask_from_centroids(
+    ref_centroids_yxz: np.ndarray,
+    cand_centroids_yxz: np.ndarray,
+    *,
+    max_distance_xy: float,
+    max_distance_z: float,
+) -> np.ndarray:
+    if ref_centroids_yxz.ndim != 2 or cand_centroids_yxz.ndim != 2:
+        raise ValueError("Centroid matrices must be 2D.")
+    if ref_centroids_yxz.shape[1] != 3 or cand_centroids_yxz.shape[1] != 3:
+        raise ValueError(
+            f"Expected YXZ centroid matrices, got {ref_centroids_yxz.shape}, {cand_centroids_yxz.shape}."
+        )
+    if ref_centroids_yxz.shape[0] == 0 or cand_centroids_yxz.shape[0] == 0:
+        return np.zeros(
+            (ref_centroids_yxz.shape[0], cand_centroids_yxz.shape[0]),
+            dtype=bool,
+        )
+
+    delta = np.abs(
+        cand_centroids_yxz[None, :, :].astype(np.float32, copy=False)
+        - ref_centroids_yxz[:, None, :].astype(np.float32, copy=False)
+    )
+    return (
+        (delta[..., 0] <= float(max_distance_xy))
+        & (delta[..., 1] <= float(max_distance_xy))
+        & (delta[..., 2] <= float(max_distance_z))
+    )
+
+
+def search_window_mask(
+    ref: FrameObjects,
+    cand: FrameObjects,
+    *,
+    config: FeatureMeanConfig,
+) -> np.ndarray:
+    return search_window_mask_from_centroids(
+        ref.centroids_yxz,
+        cand.centroids_yxz,
+        max_distance_xy=float(config.max_distance_xy),
+        max_distance_z=float(config.max_distance_z),
+    )
+
+
+def _linear_sum_assignment_with_allowed_pairs(
+    cost: np.ndarray,
+    allowed_pairs: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if allowed_pairs is None:
+        return linear_sum_assignment(cost)
+
+    allowed = np.asarray(allowed_pairs, dtype=bool)
+    if allowed.shape != cost.shape:
+        raise ValueError(
+            f"Allowed-pair mask shape {allowed.shape} does not match cost shape {cost.shape}."
+        )
+    valid = allowed & np.isfinite(cost)
+    if not np.any(valid):
+        return (
+            np.empty((0,), dtype=np.int64),
+            np.empty((0,), dtype=np.int64),
+        )
+    if np.all(valid):
+        return linear_sum_assignment(cost)
+
+    finite_values = cost[valid].astype(np.float64, copy=False)
+    finite_min = float(np.min(finite_values))
+    finite_max = float(np.max(finite_values))
+    span = max(1.0, finite_max - finite_min)
+    min_dimension = min(cost.shape)
+    sentinel = finite_max + (span * float(min_dimension + 1))
+    if not math.isfinite(sentinel):
+        sentinel = np.finfo(np.float64).max / 4.0
+
+    blocked_cost = np.where(valid, cost.astype(np.float64, copy=False), sentinel)
+    row_indices, col_indices = linear_sum_assignment(blocked_cost)
+    keep = valid[row_indices, col_indices]
+    return row_indices[keep], col_indices[keep]
+
+
 def robust_cost_scale(cost: np.ndarray) -> float:
     finite = cost[np.isfinite(cost)]
     finite = finite[finite > 0.0]
@@ -812,12 +894,16 @@ def match_adjacent_pair(
         config=config,
         device=device,
     )
+    allowed_pairs = search_window_mask(ref, cand, config=config)
     assignment_rows: list[dict[str, Any]] = []
     pair_metric_rows: list[dict[str, Any]] = []
     for method, cost in cost_matrices.items():
         method_rows: list[dict[str, Any]] = []
         if cost.size > 0 and ref.labels.size > 0 and cand.labels.size > 0:
-            row_indices, col_indices = linear_sum_assignment(cost)
+            row_indices, col_indices = _linear_sum_assignment_with_allowed_pairs(
+                cost,
+                allowed_pairs,
+            )
             for row_index, col_index in zip(row_indices.tolist(), col_indices.tolist()):
                 ref_label = int(ref.labels[row_index])
                 cand_label = int(cand.labels[col_index])
@@ -934,6 +1020,25 @@ def prototype_cost_matrix(
     return cost.astype(np.float32, copy=False), diagnostics
 
 
+def prototype_search_window_mask(
+    states: Sequence[PrototypeTrackState],
+    cand: FrameObjects,
+    *,
+    config: FeatureMeanConfig,
+) -> np.ndarray:
+    if not states:
+        return np.zeros((0, cand.labels.size), dtype=bool)
+    ref_centroids = np.stack(
+        [state.last_centroid_yxz for state in states], axis=0
+    ).astype(np.float32, copy=False)
+    return search_window_mask_from_centroids(
+        ref_centroids,
+        cand.centroids_yxz,
+        max_distance_xy=float(config.max_distance_xy),
+        max_distance_z=float(config.max_distance_z),
+    )
+
+
 def match_prototype_tracks(
     frames: Sequence[FrameObjects],
     *,
@@ -976,8 +1081,16 @@ def match_prototype_tracks(
             config=config,
             device=device,
         )
+        allowed_pairs = prototype_search_window_mask(
+            active_states,
+            cand,
+            config=config,
+        )
         if cost.size > 0:
-            row_indices, col_indices = linear_sum_assignment(cost)
+            row_indices, col_indices = _linear_sum_assignment_with_allowed_pairs(
+                cost,
+                allowed_pairs,
+            )
             for row_index, col_index in zip(row_indices.tolist(), col_indices.tolist()):
                 state = active_states[row_index]
                 cand_label = int(cand.labels[col_index])
@@ -1406,9 +1519,9 @@ def build_tracks_by_method(
     *,
     methods: Sequence[str],
 ) -> dict[str, pd.DataFrame]:
-    if assignments.empty:
+    if assignments.empty or "method" not in assignments.columns:
         return {
-            str(method): pd.DataFrame(columns=list(TRACK_COLUMNS)) for method in methods
+            str(method): build_tracks(frames, assignments) for method in methods
         }
     tracks_by_method: dict[str, pd.DataFrame] = {}
     for method in methods:
@@ -1453,6 +1566,10 @@ def run_feature_mean_tracking(
         raise ValueError("feature_norm_clip must be positive.")
     if float(config.z_weight) <= 0.0:
         raise ValueError("z_weight must be positive.")
+    if float(config.max_distance_xy) <= 0.0:
+        raise ValueError("max_distance_xy must be positive.")
+    if float(config.max_distance_z) <= 0.0:
+        raise ValueError("max_distance_z must be positive.")
     if float(config.three_frame_direct_weight) < 0.0:
         raise ValueError("three_frame_direct_weight must be non-negative.")
     if int(config.three_frame_candidate_top_k) <= 0:
@@ -1703,6 +1820,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Multiplier applied to z centroid deltas before distance computation.",
     )
     parser.add_argument(
+        "--max-distance-xy",
+        type=float,
+        default=20.0,
+        help="Maximum candidate centroid displacement along X and Y, in voxels.",
+    )
+    parser.add_argument(
+        "--max-distance-z",
+        type=float,
+        default=10.0,
+        help="Maximum candidate centroid displacement along Z, in voxels.",
+    )
+    parser.add_argument(
         "--three-frame-direct-weight",
         type=float,
         default=0.25,
@@ -1750,6 +1879,8 @@ def config_from_args(args: argparse.Namespace) -> FeatureMeanConfig:
         centroid_feature_weight=float(args.centroid_feature_weight),
         feature_norm_clip=float(args.feature_norm_clip),
         z_weight=float(args.z_weight),
+        max_distance_xy=float(args.max_distance_xy),
+        max_distance_z=float(args.max_distance_z),
         three_frame_direct_weight=float(args.three_frame_direct_weight),
         three_frame_candidate_top_k=int(args.three_frame_candidate_top_k),
         three_frame_time_limit_seconds=float(args.three_frame_time_limit_seconds),

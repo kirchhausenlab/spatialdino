@@ -129,6 +129,50 @@ class FeatureMeanTrackingTests(unittest.TestCase):
         self.assertEqual(saved_fieldnames, list(feature_mean_tracking.TRACK_COLUMNS))
         self.assertEqual(saved_row_count, 4)
 
+    def test_default_search_window_blocks_far_feature_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature_dir = root / "lr_feats"
+            segmentation_dir = root / "gt"
+            feature_dir.mkdir()
+            segmentation_dir.mkdir()
+
+            shape_yxz = (30, 6, 3)
+            for frame_index in (1, 2):
+                segmentation = np.zeros(shape_yxz, dtype=np.uint16)
+                if frame_index == 1:
+                    segmentation[1:3, 1:3, 1:2] = 1
+                else:
+                    segmentation[25:27, 1:3, 1:2] = 1
+
+                features_yxz = np.zeros((*shape_yxz, 1), dtype=np.float32)
+                features_yxz[segmentation == 1] = np.array([1.0], dtype=np.float32)
+                np.save(
+                    feature_dir / f"stack{frame_index:04d}.npy",
+                    np.transpose(features_yxz, (2, 0, 1, 3)),
+                )
+                write_internal_volume(
+                    segmentation_dir / f"stack{frame_index:04d}.tif", segmentation
+                )
+
+            result = feature_mean_tracking.run_feature_mean_tracking(
+                root,
+                segmentation_dir,
+                config=feature_mean_tracking.FeatureMeanConfig(
+                    n_features=1,
+                    samples_per_object=4,
+                    device="cpu",
+                    methods=(feature_mean_tracking.METHOD_FEATURE_MEAN,),
+                    tracks_method=feature_mean_tracking.METHOD_FEATURE_MEAN,
+                    progress=False,
+                ),
+            )
+
+        self.assertTrue(result.assignments.empty)
+        self.assertEqual(len(result.tracks), 2)
+        self.assertEqual(set(result.tracks["track_length"].astype(int)), {1})
+        self.assertEqual(len(set(result.tracks["track_id"].astype(int))), 2)
+
     def test_three_frame_method_writes_conventional_tracks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -178,6 +222,8 @@ class FeatureMeanTrackingTests(unittest.TestCase):
                     tracks_method=feature_mean_tracking.METHOD_CENTROID_FEATURE_3FRAME,
                     three_frame_candidate_top_k=2,
                     three_frame_time_limit_seconds=5.0,
+                    max_distance_xy=0.1,
+                    max_distance_z=0.1,
                     progress=False,
                 ),
             )
