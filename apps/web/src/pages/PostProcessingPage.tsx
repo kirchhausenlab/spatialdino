@@ -138,6 +138,68 @@ type RunFeedback = {
   message: string;
 };
 
+type ProbabilityMapPreviewView = "slice" | "max_projection";
+
+type ProbabilityMapPreviewShape = {
+  z: number;
+  y: number;
+  x: number;
+};
+
+type ProbabilityMapPreviewTimepoint = {
+  name: string;
+  compatible: boolean;
+  message?: string;
+  rawShape?: ProbabilityMapPreviewShape;
+  probmapShape?: ProbabilityMapPreviewShape;
+  shape?: ProbabilityMapPreviewShape;
+  zCount?: number;
+  width?: number;
+  height?: number;
+};
+
+type ProbabilityMapPreviewMetadataResponse = {
+  valid: boolean;
+  message: string;
+  reasonCode?: string;
+  subfolderCount?: number;
+  subfolderNames?: string[];
+  timepoints?: ProbabilityMapPreviewTimepoint[];
+  defaultTimepoint?: string | null;
+};
+
+type ProbabilityMapPreviewImageResponse = {
+  timepoint: string;
+  view: ProbabilityMapPreviewView;
+  zIndex: number | null;
+  width: number;
+  height: number;
+  shape: ProbabilityMapPreviewShape;
+  raw: {
+    dtype: "uint8";
+    data: string;
+    displayLow: number;
+    displayHigh: number;
+  };
+  probability: {
+    dtype: "float32";
+    data: string;
+  };
+};
+
+type ProbabilityMapPreviewFrame = {
+  timepoint: string;
+  view: ProbabilityMapPreviewView;
+  zIndex: number | null;
+  width: number;
+  height: number;
+  shape: ProbabilityMapPreviewShape;
+  raw: Uint8Array;
+  probability: Float32Array;
+  rawDisplayLow: number;
+  rawDisplayHigh: number;
+};
+
 const POST_PROCESSING_OPTIONS: Array<{
   value: PostProcessingMode;
   label: string;
@@ -1518,20 +1580,13 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
 
           {probabilityMapSelected ? (
             <div className="inferenceFormRows">
-              <div className="inferenceFormRow">
-                <div className="inferenceFieldLabel">
-                  <ParameterHelpLabel
-                    label="Foreground probability threshold"
-                    description={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
-                  />
-                </div>
-                <PostProcessingNumberInput
-                  value={simpleProbabilityMapThreshold}
-                  onChange={setSimpleProbabilityMapThreshold}
-                  min={0}
-                  step={0.01}
-                />
-              </div>
+              <ProbabilityMapPreview
+                inputPath={inputPath}
+                enabled={probabilityMapSelected && parametersVisible}
+                threshold={simpleProbabilityMapThreshold}
+                onThresholdChange={setSimpleProbabilityMapThreshold}
+                thresholdDescription={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
+              />
 
               <div className="inferenceFormRow">
                 <div className="inferenceFieldLabel">
@@ -2111,6 +2166,339 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   );
 }
 
+function ProbabilityMapPreview({
+  inputPath,
+  enabled,
+  threshold,
+  onThresholdChange,
+  thresholdDescription,
+}: {
+  inputPath: string | null;
+  enabled: boolean;
+  threshold: string;
+  onThresholdChange: (value: string) => void;
+  thresholdDescription: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [metadata, setMetadata] = useState<ProbabilityMapPreviewMetadataResponse | null>(null);
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [selectedTimepoint, setSelectedTimepoint] = useState("");
+  const [selectedView, setSelectedView] = useState<ProbabilityMapPreviewView>("slice");
+  const [zIndex, setZIndex] = useState(0);
+  const [maskVisible, setMaskVisible] = useState(true);
+  const [frame, setFrame] = useState<ProbabilityMapPreviewFrame | null>(null);
+  const [frameLoading, setFrameLoading] = useState(false);
+  const [frameError, setFrameError] = useState<string | null>(null);
+  const [foregroundPixels, setForegroundPixels] = useState(0);
+
+  const timepoints = metadata?.timepoints ?? [];
+  const compatibleTimepoints = timepoints.filter((timepoint) => timepoint.compatible);
+  const selectedTimepointMetadata =
+    compatibleTimepoints.find((timepoint) => timepoint.name === selectedTimepoint) ?? null;
+  const zMax = Math.max(0, (selectedTimepointMetadata?.zCount ?? 1) - 1);
+  const thresholdValue = normalizeProbabilityThreshold(threshold);
+  const totalPixels = frame ? frame.width * frame.height : 0;
+  const foregroundPercent = totalPixels > 0 ? (foregroundPixels / totalPixels) * 100 : 0;
+
+  useEffect(() => {
+    if (!enabled || !inputPath) {
+      setMetadata(null);
+      setMetadataLoading(false);
+      setMetadataError(null);
+      setSelectedTimepoint("");
+      setFrame(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setMetadataLoading(true);
+    setMetadataError(null);
+    setMetadata(null);
+    setFrame(null);
+
+    async function loadMetadata() {
+      try {
+        const resp = await fetch("/api/post-processing/probability-map/preview/metadata", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ input_path: inputPath }),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const detail = await safeJson(resp);
+          const message =
+            detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+              ? detail.detail
+              : `Preview metadata failed: ${resp.status} ${resp.statusText}`;
+          throw new Error(message);
+        }
+
+        const json = (await resp.json()) as ProbabilityMapPreviewMetadataResponse;
+        if (!json.valid) {
+          throw new Error(json.message || "Preview metadata is not available.");
+        }
+        setMetadata(json);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setMetadataError(error instanceof Error ? error.message : "Unknown preview metadata error");
+      } finally {
+        if (!controller.signal.aborted) {
+          setMetadataLoading(false);
+        }
+      }
+    }
+
+    void loadMetadata();
+    return () => controller.abort();
+  }, [enabled, inputPath]);
+
+  useEffect(() => {
+    if (!metadata) return;
+    const compatible = metadata.timepoints?.filter((timepoint) => timepoint.compatible) ?? [];
+    if (!compatible.length) return;
+    if (selectedTimepoint && compatible.some((timepoint) => timepoint.name === selectedTimepoint)) return;
+
+    const defaultTimepoint =
+      metadata.defaultTimepoint && compatible.some((timepoint) => timepoint.name === metadata.defaultTimepoint)
+        ? metadata.defaultTimepoint
+        : compatible[0].name;
+    setSelectedTimepoint(defaultTimepoint);
+  }, [metadata, selectedTimepoint]);
+
+  useEffect(() => {
+    if (!selectedTimepointMetadata?.zCount) return;
+    setZIndex((current) => clampInteger(current, 0, selectedTimepointMetadata.zCount! - 1));
+  }, [selectedTimepointMetadata?.zCount]);
+
+  useEffect(() => {
+    if (!enabled || !inputPath || !selectedTimepoint || !selectedTimepointMetadata) {
+      setFrame(null);
+      setFrameLoading(false);
+      setFrameError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setFrameLoading(true);
+    setFrameError(null);
+
+    async function loadFrame() {
+      try {
+        const requestBody = {
+          input_path: inputPath,
+          timepoint: selectedTimepoint,
+          view: selectedView,
+          z_index: selectedView === "slice" ? clampInteger(zIndex, 0, zMax) : null,
+        };
+        const resp = await fetch("/api/post-processing/probability-map/preview/image", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const detail = await safeJson(resp);
+          const message =
+            detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+              ? detail.detail
+              : `Preview image failed: ${resp.status} ${resp.statusText}`;
+          throw new Error(message);
+        }
+
+        const json = (await resp.json()) as ProbabilityMapPreviewImageResponse;
+        const raw = decodeBase64Bytes(json.raw.data);
+        const probability = decodeFloat32Base64(json.probability.data);
+        const pixelCount = json.width * json.height;
+        if (raw.length !== pixelCount || probability.length !== pixelCount) {
+          throw new Error("Preview payload size does not match its dimensions.");
+        }
+        setFrame({
+          timepoint: json.timepoint,
+          view: json.view,
+          zIndex: json.zIndex,
+          width: json.width,
+          height: json.height,
+          shape: json.shape,
+          raw,
+          probability,
+          rawDisplayLow: json.raw.displayLow,
+          rawDisplayHigh: json.raw.displayHigh,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setFrame(null);
+        setFrameError(error instanceof Error ? error.message : "Unknown preview image error");
+      } finally {
+        if (!controller.signal.aborted) {
+          setFrameLoading(false);
+        }
+      }
+    }
+
+    void loadFrame();
+    return () => controller.abort();
+  }, [enabled, inputPath, selectedTimepoint, selectedTimepointMetadata, selectedView, zIndex, zMax]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !frame) return;
+
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const imageData = context.createImageData(frame.width, frame.height);
+    const output = imageData.data;
+    let currentForegroundPixels = 0;
+    for (let index = 0; index < frame.raw.length; index += 1) {
+      const gray = frame.raw[index];
+      const masked = frame.probability[index] >= thresholdValue;
+      if (masked) {
+        currentForegroundPixels += 1;
+      }
+      const outputIndex = index * 4;
+      if (maskVisible && masked) {
+        output[outputIndex] = Math.round(gray * 0.35 + 255 * 0.65);
+        output[outputIndex + 1] = Math.round(gray * 0.35 + 132 * 0.65);
+        output[outputIndex + 2] = Math.round(gray * 0.35 + 32 * 0.65);
+      } else {
+        output[outputIndex] = gray;
+        output[outputIndex + 1] = gray;
+        output[outputIndex + 2] = gray;
+      }
+      output[outputIndex + 3] = 255;
+    }
+
+    context.putImageData(imageData, 0, 0);
+    setForegroundPixels(currentForegroundPixels);
+  }, [frame, maskVisible, thresholdValue]);
+
+  if (!enabled) return null;
+
+  return (
+    <div className="probabilityMapPreview">
+      <div className="postProcessingStageTitle">Probability map preview</div>
+
+      {metadataLoading ? <ValidationMessage tone="neutral">Loading preview metadata...</ValidationMessage> : null}
+      {metadataError ? <ValidationMessage tone="error">{metadataError}</ValidationMessage> : null}
+      {!metadataLoading && !metadataError && metadata && compatibleTimepoints.length === 0 ? (
+        <ValidationMessage tone="error">No previewable timepoints have matching raw and probability-map shapes.</ValidationMessage>
+      ) : null}
+
+      {compatibleTimepoints.length > 0 ? (
+        <>
+          <div className="probabilityMapPreviewControls">
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">Timepoint</div>
+              <select
+                className="inferenceSelect"
+                value={selectedTimepoint}
+                onChange={(event) => setSelectedTimepoint(event.target.value)}
+              >
+                {compatibleTimepoints.map((timepoint) => (
+                  <option key={timepoint.name} value={timepoint.name}>
+                    {timepoint.name}
+                  </option>
+                ))}
+              </select>
+              <div className="inferenceInlineLabel">
+                {selectedTimepointMetadata
+                  ? `${selectedTimepointMetadata.width} x ${selectedTimepointMetadata.height} x ${selectedTimepointMetadata.zCount}`
+                  : null}
+              </div>
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">View</div>
+              <select
+                className="inferenceSelect inferenceCompactSelect"
+                value={selectedView}
+                onChange={(event) => setSelectedView(event.target.value as ProbabilityMapPreviewView)}
+              >
+                <option value="slice">Z plane</option>
+                <option value="max_projection">Max projection</option>
+              </select>
+              {selectedView === "slice" ? (
+                <>
+                  <input
+                    type="range"
+                    className="probabilityMapPreviewSlider"
+                    min={0}
+                    max={zMax}
+                    step={1}
+                    value={clampInteger(zIndex, 0, zMax)}
+                    onChange={(event) => setZIndex(clampInteger(Number(event.target.value), 0, zMax))}
+                    aria-label="Z plane"
+                  />
+                  <PostProcessingNumberInput
+                    value={String(clampInteger(zIndex, 0, zMax))}
+                    onChange={(value) => setZIndex(clampInteger(Number.parseInt(value, 10), 0, zMax))}
+                    min={0}
+                    max={zMax}
+                    step={1}
+                    ariaLabel="Z plane"
+                  />
+                </>
+              ) : null}
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Threshold" description={thresholdDescription} />
+              </div>
+              <input
+                type="range"
+                className="probabilityMapPreviewSlider"
+                min={0}
+                max={1}
+                step={0.01}
+                value={thresholdValue}
+                onChange={(event) => onThresholdChange(event.target.value)}
+                aria-label="Foreground probability threshold"
+              />
+              <PostProcessingNumberInput
+                value={threshold}
+                onChange={onThresholdChange}
+                min={0}
+                max={1}
+                step={0.01}
+                ariaLabel="Foreground probability threshold"
+              />
+              <button
+                type="button"
+                className="pickerSecondaryButton"
+                onClick={() => setMaskVisible((current) => !current)}
+              >
+                {maskVisible ? "Hide mask" : "Show mask"}
+              </button>
+              {frame ? (
+                <div className="inferenceInlineLabel">{`Foreground ${foregroundPercent.toFixed(1)}%`}</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="probabilityMapPreviewCanvasFrame">
+            <canvas ref={canvasRef} className="probabilityMapPreviewCanvas" aria-label="Probability map preview" />
+            {frameLoading ? <div className="probabilityMapPreviewOverlay">Loading preview...</div> : null}
+            {frameError ? <div className="probabilityMapPreviewOverlay isError">{frameError}</div> : null}
+            {!frameLoading && !frameError && !frame ? (
+              <div className="probabilityMapPreviewOverlay">No preview loaded.</div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function DirectoryFieldRow({
   label,
   path,
@@ -2255,4 +2643,30 @@ function parseNullableInteger(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number.parseInt(trimmed, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function decodeBase64Bytes(value: string): Uint8Array {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function decodeFloat32Base64(value: string): Float32Array {
+  const bytes = decodeBase64Bytes(value);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return new Float32Array(buffer);
+}
+
+function normalizeProbabilityThreshold(value: string): number {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return 0.5;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }

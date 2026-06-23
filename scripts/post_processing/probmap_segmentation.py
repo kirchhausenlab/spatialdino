@@ -9,7 +9,8 @@ from scipy import ndimage
 import tifffile
 
 from spatialdino.inference.output_layout import (
-    discover_inference_timepoints,
+    inference_raw_dir,
+    natural_sort_key,
     probability_map_dir,
     segmentation_probmap_dir,
 )
@@ -47,6 +48,56 @@ def semantic_to_instance_seg(semantic_seg: np.ndarray) -> np.ndarray:
     return labeled.astype(np.uint32, copy=False)
 
 
+def named_tiff_file_map(directory: Path) -> dict[str, Path]:
+    names_to_paths: dict[str, Path] = {}
+    if not directory.is_dir():
+        return names_to_paths
+
+    for path in directory.iterdir():
+        if path.name.startswith(".") or not path.is_file():
+            continue
+        if path.suffix.lower() not in {".tif", ".tiff"}:
+            continue
+        existing = names_to_paths.get(path.stem)
+        if existing is not None:
+            raise ValueError(
+                f"Duplicate TIFF files map to the same timepoint name {path.stem!r}: "
+                f"{existing.name} and {path.name}."
+            )
+        names_to_paths[path.stem] = path
+    return names_to_paths
+
+
+def list_probability_map_timepoints(input_path: Path) -> list[tuple[str, Path]]:
+    raw_root = inference_raw_dir(input_path)
+    if not raw_root.is_dir():
+        raise FileNotFoundError(f"Missing raw folder: {raw_root}")
+
+    probmap_root = probability_map_dir(input_path)
+    if not probmap_root.is_dir():
+        raise FileNotFoundError(f"Missing probability-map folder: {probmap_root}")
+
+    raw_paths = named_tiff_file_map(raw_root)
+    probmap_paths = named_tiff_file_map(probmap_root)
+    if not raw_paths:
+        raise FileNotFoundError(f"{raw_root} contains no TIFF files.")
+    if not probmap_paths:
+        raise FileNotFoundError(f"{probmap_root} contains no TIFF files.")
+
+    missing_probmap = sorted(set(raw_paths) - set(probmap_paths), key=natural_sort_key)
+    if missing_probmap:
+        missing_name = missing_probmap[0]
+        raise FileNotFoundError(f"Missing probability-map volume for {missing_name}: {probmap_root / f'{missing_name}.tif'}")
+
+    missing_raw = sorted(set(probmap_paths) - set(raw_paths), key=natural_sort_key)
+    if missing_raw:
+        missing_name = missing_raw[0]
+        raise FileNotFoundError(f"Missing raw volume for {missing_name}: {raw_root / f'{missing_name}.tif'}")
+
+    names = sorted(raw_paths, key=natural_sort_key)
+    return [(name, probmap_paths[name]) for name in names]
+
+
 def segment_probability_maps(
     input_path: Path,
     *,
@@ -61,28 +112,21 @@ def segment_probability_maps(
     if output_path.exists() and not output_path.is_dir():
         raise FileNotFoundError(f"Output folder exists but is not a directory: {output_path}")
 
-    timepoints = discover_inference_timepoints(input_path)
-    probmap_root = probability_map_dir(input_path)
-    if not probmap_root.is_dir():
-        raise FileNotFoundError(f"Missing probability-map folder: {probmap_root}")
+    timepoints = list_probability_map_timepoints(input_path)
 
     output_root = segmentation_probmap_dir(output_path)
     shutil.rmtree(output_root, ignore_errors=True)
     output_root.mkdir(parents=True, exist_ok=True)
 
     print(f"[segmentation] Found {len(timepoints)} timepoints", flush=True)
-    for index, timepoint in enumerate(timepoints, start=1):
-        print(f"[segmentation] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
-        probmap_path = probmap_root / f"{timepoint.name}.tif"
-        if not probmap_path.is_file():
-            raise FileNotFoundError(f"Missing probability-map volume for {timepoint.name}: {probmap_path}")
-
+    for index, (timepoint_name, probmap_path) in enumerate(timepoints, start=1):
+        print(f"[segmentation] Processing {timepoint_name} ({index}/{len(timepoints)})", flush=True)
         probmap = read_tiff_volume(probmap_path)
         semantic = (probmap >= threshold).astype(np.uint8, copy=False)
         output_array = semantic_to_instance_seg(semantic) if run_ccl else semantic
-        mask_path = output_root / f"{timepoint.name}.tif"
+        mask_path = output_root / f"{timepoint_name}.tif"
         tifffile.imwrite(mask_path, output_array, bigtiff=True, metadata=None, photometric="minisblack")
-        print(f"[segmentation] Completed {timepoint.name}", flush=True)
+        print(f"[segmentation] Completed {timepoint_name}", flush=True)
 
     print("[segmentation] Done", flush=True)
     return output_root

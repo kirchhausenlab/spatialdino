@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -63,7 +64,7 @@ def write_inference_output_timepoint(
     lr_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
     np.save(lr_dir / f"{name}.npy", np.zeros(lr_shape, dtype=np.float32))
-    tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros(raw_shape, dtype=raw_dtype))
+    tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros(raw_shape, dtype=raw_dtype), photometric="minisblack")
 
 
 class AppTests(unittest.TestCase):
@@ -925,7 +926,11 @@ class AppTests(unittest.TestCase):
             probmap_dir.mkdir()
             for name in ("sample_a", "sample_b"):
                 write_inference_output_timepoint(input_dir, name)
-                tifffile.imwrite(probmap_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.float32))
+                tifffile.imwrite(
+                    probmap_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.float32),
+                    photometric="minisblack",
+                )
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
@@ -952,6 +957,156 @@ class AppTests(unittest.TestCase):
         self.assertIn("--threshold", command)
         self.assertIn("0.6", command)
         self.assertIn("--skip-ccl", command)
+
+    def test_build_segmentation_launch_config_accepts_probability_map_without_lr_feats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            raw_dir = input_dir / "raw"
+            probmap_dir = input_dir / "probmap"
+            raw_dir.mkdir(parents=True)
+            probmap_dir.mkdir(parents=True)
+            for name in ("sample_a", "sample_b"):
+                tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint8), photometric="minisblack")
+                tifffile.imwrite(
+                    probmap_dir / f"{name}.tif",
+                    np.zeros((4, 4, 4), dtype=np.float32),
+                    photometric="minisblack",
+                )
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=None,
+                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
+                probmap_threshold=0.6,
+                run_connected_components=False,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                folder_validation = app_module.validate_probability_map_input_folder(str(input_dir))
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(folder_validation["valid"], True)
+        self.assertEqual(folder_validation["subfolderNames"], ["sample_a", "sample_b"])
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["subfolder_count"], 2)
+        self.assertEqual(launch_config["probmap_threshold"], 0.6)
+
+    def test_probability_map_preview_metadata_reports_timepoint_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            probmap_dir = input_dir / "probmap"
+            probmap_dir.mkdir()
+            for name in ("sample_a", "sample_b"):
+                write_inference_output_timepoint(input_dir, name, raw_shape=(3, 4, 5))
+                tifffile.imwrite(
+                    probmap_dir / f"{name}.tif",
+                    np.zeros((3, 4, 5), dtype=np.float32),
+                    photometric="minisblack",
+                )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.probability_map_preview_metadata(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertEqual(payload["defaultTimepoint"], "sample_a")
+        self.assertEqual([item["name"] for item in payload["timepoints"]], ["sample_a", "sample_b"])
+        self.assertEqual(payload["timepoints"][0]["shape"], {"z": 3, "y": 4, "x": 5})
+        self.assertEqual(payload["timepoints"][0]["width"], 5)
+        self.assertEqual(payload["timepoints"][0]["height"], 4)
+        self.assertEqual(payload["timepoints"][0]["zCount"], 3)
+        self.assertTrue(payload["timepoints"][0]["compatible"])
+
+    def test_probability_map_preview_image_returns_slice_and_max_projection_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            probmap_dir = input_dir / "probmap"
+            probmap_dir.mkdir()
+            write_inference_output_timepoint(input_dir, "sample_a", raw_shape=(2, 2, 3))
+            raw = np.array(
+                [
+                    [[0, 10, 20], [30, 40, 50]],
+                    [[60, 70, 80], [90, 100, 110]],
+                ],
+                dtype=np.uint16,
+            )
+            probmap = np.array(
+                [
+                    [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                    [[0.7, 0.8, 0.9], [1.0, 0.0, 0.25]],
+                ],
+                dtype=np.float32,
+            )
+            tifffile.imwrite(input_dir / "raw" / "sample_a.tif", raw, photometric="minisblack")
+            tifffile.imwrite(probmap_dir / "sample_a.tif", probmap, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                slice_payload = app_module.probability_map_preview_image(
+                    app_module.ProbabilityMapPreviewImageRequest(
+                        input_path=str(input_dir),
+                        timepoint="sample_a",
+                        view="slice",
+                        z_index=1,
+                    )
+                )
+                projection_payload = app_module.probability_map_preview_image(
+                    app_module.ProbabilityMapPreviewImageRequest(
+                        input_path=str(input_dir),
+                        timepoint="sample_a",
+                        view="max_projection",
+                    )
+                )
+
+        self.assertEqual(slice_payload["width"], 3)
+        self.assertEqual(slice_payload["height"], 2)
+        self.assertEqual(slice_payload["zIndex"], 1)
+        slice_probability = np.frombuffer(
+            base64.b64decode(slice_payload["probability"]["data"]),
+            dtype=np.float32,
+        ).reshape(2, 3)
+        np.testing.assert_allclose(slice_probability, probmap[1], rtol=1e-6, atol=1e-6)
+        self.assertEqual(
+            len(base64.b64decode(slice_payload["raw"]["data"])),
+            2 * 3,
+        )
+
+        projection_probability = np.frombuffer(
+            base64.b64decode(projection_payload["probability"]["data"]),
+            dtype=np.float32,
+        ).reshape(2, 3)
+        np.testing.assert_allclose(projection_probability, probmap.max(axis=0), rtol=1e-6, atol=1e-6)
+        expected_mask = probmap.max(axis=0) >= 0.5
+        preview_mask = projection_probability >= 0.5
+        np.testing.assert_array_equal(preview_mask, expected_mask)
+
+    def test_probability_map_preview_metadata_marks_shape_mismatch_incompatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            input_dir.mkdir()
+            probmap_dir = input_dir / "probmap"
+            probmap_dir.mkdir()
+            write_inference_output_timepoint(input_dir, "sample_a", raw_shape=(3, 4, 5))
+            tifffile.imwrite(
+                probmap_dir / "sample_a.tif",
+                np.zeros((2, 4, 5), dtype=np.float32),
+                photometric="minisblack",
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.probability_map_preview_metadata(str(input_dir))
+
+        self.assertEqual(payload["valid"], True)
+        self.assertFalse(payload["timepoints"][0]["compatible"])
+        self.assertIn("do not match", payload["timepoints"][0]["message"])
 
     def test_build_foreground_probability_map_launch_config_accepts_density_estimation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

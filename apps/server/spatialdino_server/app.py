@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import ipaddress
 import json
@@ -22,6 +23,7 @@ import zipfile
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
+import numpy as np
 import tifffile
 
 from spatialdino_server.fs_api import router as fs_router
@@ -34,8 +36,10 @@ from spatialdino.inference.output_layout import (
     TRACKS_FILENAME,
     discover_inference_timepoints,
     has_duplicate_timepoint_names,
+    inference_raw_dir,
     inference_lr_feats_path,
     inference_managed_output_paths,
+    natural_sort_key,
     norm_per_vol_stats_path as inference_norm_per_vol_stats_path,
     probability_map_dir,
     probability_map_densities_path,
@@ -84,6 +88,9 @@ DEFAULT_PUBLIC_DATA_MANIFEST_URL = (
 )
 PUBLIC_DATA_DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _default_inference_backbone_download_lock = threading.Lock()
+PROBABILITY_MAP_PREVIEW_CACHE_MAX_ITEMS = 16
+_probability_map_preview_cache_lock = threading.Lock()
+_probability_map_preview_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
 
 
 def get_repo_root() -> Path:
@@ -394,6 +401,17 @@ class RunSegmentationRequest(BaseModel):
     seed: int = 1337
 
 
+class ProbabilityMapPreviewMetadataRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+
+
+class ProbabilityMapPreviewImageRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    timepoint: str = Field(..., min_length=1)
+    view: Literal["slice", "max_projection"] = "slice"
+    z_index: int | None = Field(None, ge=0)
+
+
 class RunForegroundProbabilityMapRequest(BaseModel):
     input_path: str = Field(..., min_length=1)
     output_path: str | None = None
@@ -601,12 +619,44 @@ def validate_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
     }
 
 
-def validate_probability_map_input_folder(raw_path: str) -> dict[str, Any]:
-    validation = validate_segmentation_input_folder(raw_path)
-    if not validation["valid"]:
-        return validation
+def _named_tiff_file_map(directory: Path) -> dict[str, Path]:
+    names_to_paths: dict[str, Path] = {}
+    if not directory.is_dir():
+        return names_to_paths
 
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            lowered = entry.name.lower()
+            if not lowered.endswith((".tif", ".tiff")):
+                continue
+            path = Path(entry.path)
+            name = path.stem
+            existing = names_to_paths.get(name)
+            if existing is not None:
+                raise ValueError(
+                    f"Duplicate TIFF files map to the same timepoint name {name!r}: "
+                    f"{existing.name} and {path.name}."
+                )
+            names_to_paths[name] = path
+    return names_to_paths
+
+
+def validate_probability_map_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
+    if not input_path.exists():
+        return _invalid_process_features_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+
+    raw_path_root = inference_raw_dir(input_path)
+    if not raw_path_root.is_dir():
+        return _invalid_process_features_input(
+            "missing_raw_folder",
+            f"Input folder is missing {raw_path_root.name}/.",
+        )
+
     probmap_path = probability_map_dir(input_path)
     if not probmap_path.is_dir():
         return _invalid_process_features_input(
@@ -614,20 +664,294 @@ def validate_probability_map_input_folder(raw_path: str) -> dict[str, Any]:
             f"Input folder is missing {probmap_path.name}/.",
         )
 
-    subfolder_names = [str(name) for name in validation.get("subfolderNames", [])]
-    for subfolder_name in subfolder_names:
-        map_path = probmap_path / f"{subfolder_name}.tif"
-        if not map_path.is_file():
-            return _invalid_process_features_input(
-                "missing_required_files",
-                f"Probability-map folder is missing {map_path.name}.",
-            )
+    try:
+        raw_paths = _named_tiff_file_map(raw_path_root)
+        probmap_paths = _named_tiff_file_map(probmap_path)
+    except ValueError as exc:
+        return _invalid_process_features_input("duplicate_timepoint_names", str(exc))
+
+    if not raw_paths:
+        return _invalid_process_features_input("missing_required_files", f"{raw_path_root.name}/ contains no TIFF files.")
+    if not probmap_paths:
+        return _invalid_process_features_input("missing_required_files", f"{probmap_path.name}/ contains no TIFF files.")
+
+    missing_probmap = sorted(set(raw_paths) - set(probmap_paths), key=natural_sort_key)
+    if missing_probmap:
+        missing_name = missing_probmap[0]
+        return _invalid_process_features_input(
+            "missing_required_files",
+            f"Probability-map folder is missing {missing_name}.tif.",
+        )
+
+    missing_raw = sorted(set(probmap_paths) - set(raw_paths), key=natural_sort_key)
+    if missing_raw:
+        missing_name = missing_raw[0]
+        return _invalid_process_features_input(
+            "missing_required_files",
+            f"Raw folder is missing {missing_name}.tif.",
+        )
+
+    subfolder_names = sorted(raw_paths, key=natural_sort_key)
+    subfolder_count = len(subfolder_names)
 
     return {
-        **validation,
+        "valid": True,
+        "message": f"Valid probability-map folder. Found {subfolder_count} timepoint{'s' if subfolder_count != 1 else ''}.",
+        "subfolderCount": subfolder_count,
+        "subfolderNames": subfolder_names,
+        "rawPath": str(raw_path_root),
         "probmapPath": str(probmap_path),
         "probmapExists": True,
     }
+
+
+def _shape_zyx_dict(shape: tuple[int, int, int]) -> dict[str, int]:
+    return {"z": int(shape[0]), "y": int(shape[1]), "x": int(shape[2])}
+
+
+def _read_tiff_zyx_shape(path: Path) -> tuple[int, int, int]:
+    with tifffile.TiffFile(path) as tif:
+        if not tif.series:
+            raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
+        shape = tuple(int(dim) for dim in tif.series[0].shape)
+    if len(shape) != 3:
+        raise ValueError(f"{path.name} must be a 3D TIFF volume.")
+    return shape  # type: ignore[return-value]
+
+
+def _read_tiff_z_slice(path: Path, *, z_index: int) -> np.ndarray:
+    shape = _read_tiff_zyx_shape(path)
+    if z_index < 0 or z_index >= shape[0]:
+        raise ValueError(f"Z plane {z_index} is outside the valid range 0..{shape[0] - 1}.")
+
+    try:
+        mapped = tifffile.memmap(path)
+        if mapped.ndim == 3 and tuple(int(dim) for dim in mapped.shape) == shape:
+            return np.asarray(mapped[z_index])
+    except Exception:
+        pass
+
+    with tifffile.TiffFile(path) as tif:
+        series = tif.series[0]
+        if len(series.pages) == shape[0]:
+            return np.asarray(series.pages[z_index].asarray())
+        return np.asarray(series.asarray()[z_index])
+
+
+def _read_tiff_max_projection(path: Path, *, ignore_nan: bool = False) -> np.ndarray:
+    shape = _read_tiff_zyx_shape(path)
+
+    try:
+        mapped = tifffile.memmap(path)
+        if mapped.ndim == 3 and tuple(int(dim) for dim in mapped.shape) == shape:
+            if ignore_nan:
+                return np.asarray(np.fmax.reduce(mapped, axis=0))
+            return np.asarray(np.max(mapped, axis=0))
+    except Exception:
+        pass
+
+    with tifffile.TiffFile(path) as tif:
+        series = tif.series[0]
+        if len(series.pages) == shape[0]:
+            projection: np.ndarray | None = None
+            for page in series.pages:
+                plane = np.asarray(page.asarray())
+                if projection is None:
+                    projection = plane.copy()
+                else:
+                    if ignore_nan:
+                        np.fmax(projection, plane, out=projection)
+                    else:
+                        np.maximum(projection, plane, out=projection)
+            if projection is not None:
+                return projection
+        volume = series.asarray()
+        if ignore_nan:
+            return np.asarray(np.fmax.reduce(volume, axis=0))
+        return np.asarray(np.max(volume, axis=0))
+
+
+def _normalize_raw_preview(array: np.ndarray) -> tuple[np.ndarray, float, float]:
+    values = np.asarray(array, dtype=np.float32)
+    finite = np.isfinite(values)
+    if not bool(finite.any()):
+        return np.zeros(values.shape, dtype=np.uint8), 0.0, 0.0
+
+    finite_values = values[finite]
+    low = float(np.percentile(finite_values, 1.0))
+    high = float(np.percentile(finite_values, 99.8))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        low = float(np.min(finite_values))
+        high = float(np.max(finite_values))
+
+    if high <= low:
+        return np.zeros(values.shape, dtype=np.uint8), low, high
+
+    safe_values = np.nan_to_num(values, nan=low, neginf=low, posinf=high)
+    scaled = np.clip((safe_values - low) / (high - low), 0.0, 1.0)
+    return np.asarray(np.rint(scaled * 255.0), dtype=np.uint8), low, high
+
+
+def _preview_array_base64(array: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(array).tobytes()).decode("ascii")
+
+
+def _file_cache_stamp(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return str(path), int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def _preview_cache_get(key: tuple[Any, ...]) -> dict[str, Any] | None:
+    with _probability_map_preview_cache_lock:
+        cached = _probability_map_preview_cache.get(key)
+        if cached is None:
+            return None
+        _probability_map_preview_cache.pop(key)
+        _probability_map_preview_cache[key] = cached
+        return dict(cached)
+
+
+def _preview_cache_put(key: tuple[Any, ...], value: dict[str, Any]) -> None:
+    with _probability_map_preview_cache_lock:
+        _probability_map_preview_cache[key] = dict(value)
+        while len(_probability_map_preview_cache) > PROBABILITY_MAP_PREVIEW_CACHE_MAX_ITEMS:
+            oldest_key = next(iter(_probability_map_preview_cache))
+            _probability_map_preview_cache.pop(oldest_key, None)
+
+
+def _probability_map_timepoint_paths(input_path: Path, timepoint_name: str) -> tuple[Path, Path]:
+    try:
+        raw_paths = _named_tiff_file_map(inference_raw_dir(input_path))
+        probmap_paths = _named_tiff_file_map(probability_map_dir(input_path))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    raw_path = raw_paths.get(timepoint_name)
+    probmap_path = probmap_paths.get(timepoint_name)
+    if raw_path is not None and probmap_path is not None:
+        return raw_path, probmap_path
+
+    raise HTTPException(status_code=404, detail=f"Unknown timepoint: {timepoint_name}.")
+
+
+def probability_map_preview_metadata(raw_path: str) -> dict[str, Any]:
+    validation = validate_probability_map_input_folder(raw_path)
+    if not validation["valid"]:
+        return validation
+
+    input_path = _resolve_allowed_inference_path(raw_path)
+    try:
+        raw_paths = _named_tiff_file_map(inference_raw_dir(input_path))
+        probmap_paths = _named_tiff_file_map(probability_map_dir(input_path))
+    except ValueError as exc:
+        return _invalid_process_features_input("missing_required_files", str(exc))
+
+    preview_timepoints: list[dict[str, Any]] = []
+    default_timepoint: str | None = None
+    subfolder_names = [str(name) for name in validation.get("subfolderNames", [])]
+    for timepoint_name in subfolder_names:
+        raw_timepoint_path = raw_paths[timepoint_name]
+        probmap_path = probmap_paths[timepoint_name]
+        entry: dict[str, Any] = {"name": timepoint_name, "compatible": False}
+        try:
+            raw_shape = _read_tiff_zyx_shape(raw_timepoint_path)
+            probmap_shape = _read_tiff_zyx_shape(probmap_path)
+            compatible = raw_shape == probmap_shape
+            entry.update(
+                {
+                    "rawShape": _shape_zyx_dict(raw_shape),
+                    "probmapShape": _shape_zyx_dict(probmap_shape),
+                    "shape": _shape_zyx_dict(raw_shape),
+                    "zCount": int(raw_shape[0]),
+                    "height": int(raw_shape[1]),
+                    "width": int(raw_shape[2]),
+                    "compatible": compatible,
+                    "message": "Ready" if compatible else "Raw and probability-map TIFF shapes do not match.",
+                }
+            )
+            if compatible and default_timepoint is None:
+                default_timepoint = timepoint_name
+        except Exception as exc:
+            entry["message"] = str(exc)
+        preview_timepoints.append(entry)
+
+    return {
+        **validation,
+        "timepoints": preview_timepoints,
+        "defaultTimepoint": default_timepoint or (preview_timepoints[0]["name"] if preview_timepoints else None),
+    }
+
+
+def probability_map_preview_image(payload: ProbabilityMapPreviewImageRequest) -> dict[str, Any]:
+    validation = validate_probability_map_input_folder(payload.input_path)
+    if not validation["valid"]:
+        raise HTTPException(status_code=400, detail=validation["message"])
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    raw_path, probmap_path = _probability_map_timepoint_paths(input_path, payload.timepoint)
+    raw_shape = _read_tiff_zyx_shape(raw_path)
+    probmap_shape = _read_tiff_zyx_shape(probmap_path)
+    if raw_shape != probmap_shape:
+        raise HTTPException(status_code=400, detail="Raw and probability-map TIFF shapes do not match.")
+
+    if payload.view == "slice":
+        z_index = 0 if payload.z_index is None else int(payload.z_index)
+        if z_index < 0 or z_index >= raw_shape[0]:
+            raise HTTPException(status_code=400, detail=f"Z plane must be between 0 and {raw_shape[0] - 1}.")
+    else:
+        z_index = None
+
+    cache_key = (
+        "probability-map-preview-v1",
+        _file_cache_stamp(raw_path),
+        _file_cache_stamp(probmap_path),
+        payload.view,
+        z_index,
+    )
+    cached = _preview_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        if payload.view == "slice":
+            assert z_index is not None
+            raw_image = _read_tiff_z_slice(raw_path, z_index=z_index)
+            probability_image = _read_tiff_z_slice(probmap_path, z_index=z_index)
+        else:
+            raw_image = _read_tiff_max_projection(raw_path)
+            probability_image = _read_tiff_max_projection(probmap_path, ignore_nan=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read preview TIFF data: {exc}") from exc
+
+    if raw_image.ndim != 2 or probability_image.ndim != 2:
+        raise HTTPException(status_code=400, detail="Preview data must be 2D.")
+    if raw_image.shape != probability_image.shape:
+        raise HTTPException(status_code=400, detail="Raw and probability-map preview shapes do not match.")
+
+    raw_uint8, display_low, display_high = _normalize_raw_preview(raw_image)
+    probability_float = np.asarray(probability_image, dtype=np.float32)
+    probability_float = np.nan_to_num(probability_float, nan=-1.0, neginf=-1.0, posinf=1.0)
+    height, width = (int(dim) for dim in raw_uint8.shape)
+    response = {
+        "timepoint": payload.timepoint,
+        "view": payload.view,
+        "zIndex": z_index,
+        "width": width,
+        "height": height,
+        "shape": _shape_zyx_dict(raw_shape),
+        "raw": {
+            "dtype": "uint8",
+            "data": _preview_array_base64(raw_uint8),
+            "displayLow": display_low,
+            "displayHigh": display_high,
+        },
+        "probability": {
+            "dtype": "float32",
+            "data": _preview_array_base64(probability_float),
+        },
+    }
+    _preview_cache_put(cache_key, response)
+    return response
 
 
 def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
@@ -3006,6 +3330,16 @@ def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) ->
 @api.post("/post-processing/probability-map/validate-input")
 def validate_probability_map_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
     return validate_probability_map_input_folder(payload.path)
+
+
+@api.post("/post-processing/probability-map/preview/metadata")
+def probability_map_preview_metadata_endpoint(payload: ProbabilityMapPreviewMetadataRequest) -> dict[str, Any]:
+    return probability_map_preview_metadata(payload.input_path)
+
+
+@api.post("/post-processing/probability-map/preview/image")
+def probability_map_preview_image_endpoint(payload: ProbabilityMapPreviewImageRequest) -> dict[str, Any]:
+    return probability_map_preview_image(payload)
 
 
 @api.post("/post-processing/tracking/validate-input")
