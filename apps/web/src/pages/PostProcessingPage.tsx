@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import ParameterHelpLabel from "../components/ParameterHelpLabel";
@@ -8,9 +8,41 @@ import { getClientId } from "../lib/clientId";
 
 export type PostProcessingPageKind = "post_processing" | "segmentation" | "tracking";
 type WorkflowOption = "process_features" | "foreground_probability_map" | "segmentation" | "tracking";
-type PostProcessingMode = "pca" | "high_resolution_features" | "foreground_probability_map";
-type SegmentationMode = "voronoi_otsu" | "probability_map" | "legacy_probability_map";
+type PostProcessingMode = "pca" | "high_resolution_features" | "feature_statistics" | "foreground_probability_map";
+type SegmentationMode = "voronoi_otsu" | "general_segmentation" | "legacy_probability_map";
 type SaveFormat = ".npy" | ".tif";
+type GeneralSegmentationSourceKind = "raw" | "probmap" | "pca" | "feature_stats";
+type GeneralSegmentationDisplaySource = "raw" | "evaluation";
+type GeneralSegmentationDataOperationType =
+  | "invert_lut"
+  | "subtract_background"
+  | "gaussian_smoothing"
+  | "laplacian_of_gaussian";
+type GeneralSegmentationMaskOperationType = "remove_small_objects";
+type GeneralSegmentationInstanceMethod = "none" | "connected_components" | "voronoi_otsu";
+type GeneralSegmentationLogResponse = "bright" | "dark";
+
+type GeneralSegmentationDataOperation = {
+  id: string;
+  type: GeneralSegmentationDataOperationType;
+  radius: string;
+  sigma: string;
+  response: GeneralSegmentationLogResponse;
+};
+
+type GeneralSegmentationMaskOperation = {
+  id: string;
+  type: GeneralSegmentationMaskOperationType;
+  size: string;
+};
+
+type SerializedGeneralSegmentationDataOperation =
+  | { type: "invert_lut" }
+  | { type: "subtract_background"; radius: number }
+  | { type: "gaussian_smoothing"; sigma: number }
+  | { type: "laplacian_of_gaussian"; sigma: number; response: GeneralSegmentationLogResponse };
+
+type SerializedGeneralSegmentationMaskOperation = { type: "remove_small_objects"; size: number };
 
 type GpuOption = {
   index: number;
@@ -29,6 +61,8 @@ type PostProcessingValidationSuccess = {
   subfolderNames?: string[];
   probmapDensitiesPath?: string;
   probmapDensitiesExists?: boolean;
+  availableSources?: GeneralSegmentationSource[];
+  sourceWarnings?: GeneralSegmentationSourceWarning[];
 };
 
 type PostProcessingValidationFailure = {
@@ -53,6 +87,9 @@ type ProcessFeaturesRunRequest = {
   pca_components: number;
   pca_save_format: SaveFormat;
   global_pca: boolean;
+  save_feature_statistics: boolean;
+  ignore_trailing_channels: boolean;
+  trailing_channels: number;
 };
 
 type SegmentationRunRequest = {
@@ -61,6 +98,15 @@ type SegmentationRunRequest = {
   densities_path: string | null;
   gpu_index: number | null;
   mode: SegmentationMode;
+  source_id: string;
+  threshold: number | null;
+  component_index: number;
+  invert_mask: boolean;
+  data_operations: SerializedGeneralSegmentationDataOperation[];
+  mask_operations: SerializedGeneralSegmentationMaskOperation[];
+  instance_method: GeneralSegmentationInstanceMethod;
+  voronoi_spot_sigma: number;
+  voronoi_outline_sigma: number;
   gaussian_blur_sigma: number;
   rolling_ball_radius: number;
   run_density_estimation: boolean;
@@ -138,66 +184,152 @@ type RunFeedback = {
   message: string;
 };
 
-type ProbabilityMapPreviewView = "slice" | "max_projection";
+type GeneralSegmentationPreviewView = "slice" | "max_projection" | "min_projection";
+type GeneralSegmentationDisplayContrast = "auto" | "full_range";
 
-type ProbabilityMapPreviewShape = {
+type GeneralSegmentationPreviewShape = {
   z: number;
   y: number;
   x: number;
 };
 
-type ProbabilityMapPreviewTimepoint = {
+type GeneralSegmentationSource = {
+  id: string;
+  kind: GeneralSegmentationSourceKind;
+  label: string;
+  folderName: string;
+  componentCount: number;
+  componentNames?: string[];
+  thresholdMin?: number | null;
+  thresholdMax?: number | null;
+  thresholdStep?: number | null;
+};
+
+type GeneralSegmentationSourceWarning = {
+  folderName: string;
+  message: string;
+};
+
+type GeneralSegmentationPreviewTimepoint = {
   name: string;
   compatible: boolean;
   message?: string;
-  rawShape?: ProbabilityMapPreviewShape;
-  probmapShape?: ProbabilityMapPreviewShape;
-  shape?: ProbabilityMapPreviewShape;
+  rawShape?: GeneralSegmentationPreviewShape;
+  shape?: GeneralSegmentationPreviewShape;
   zCount?: number;
   width?: number;
   height?: number;
 };
 
-type ProbabilityMapPreviewMetadataResponse = {
+type GeneralSegmentationPreviewMetadataResponse = {
   valid: boolean;
   message: string;
   reasonCode?: string;
   subfolderCount?: number;
   subfolderNames?: string[];
-  timepoints?: ProbabilityMapPreviewTimepoint[];
+  availableSources?: GeneralSegmentationSource[];
+  sourceWarnings?: GeneralSegmentationSourceWarning[];
+  timepoints?: GeneralSegmentationPreviewTimepoint[];
   defaultTimepoint?: string | null;
 };
 
-type ProbabilityMapPreviewImageResponse = {
+type GeneralSegmentationPreviewSurfaceResponse = {
   timepoint: string;
-  view: ProbabilityMapPreviewView;
+  sourceId: string;
+  view: GeneralSegmentationPreviewView;
   zIndex: number | null;
   width: number;
   height: number;
-  shape: ProbabilityMapPreviewShape;
-  raw: {
+  shape: GeneralSegmentationPreviewShape;
+  display: {
     dtype: "uint8";
     data: string;
     displayLow: number;
     displayHigh: number;
   };
-  probability: {
-    dtype: "float32";
-    data: string;
-  };
+  evaluation:
+    | {
+        kind: "slice";
+        values: {
+          dtype: "float32";
+          data: string;
+        };
+      }
+    | {
+        kind: "projection";
+        maxValues: {
+          dtype: "float32";
+          data: string;
+        };
+        minValues: {
+          dtype: "float32";
+          data: string;
+        };
+      };
 };
 
-type ProbabilityMapPreviewFrame = {
+type GeneralSegmentationPreviewDataResponse = {
   timepoint: string;
-  view: ProbabilityMapPreviewView;
+  sourceId: string;
+  shape: GeneralSegmentationPreviewShape;
+  rangeMin: number;
+  rangeMax: number;
+  step: number;
+};
+
+type GeneralSegmentationPreviewMaskResponse = {
+  timepoint: string;
+  sourceId: string;
+  view: GeneralSegmentationPreviewView;
   zIndex: number | null;
   width: number;
   height: number;
-  shape: ProbabilityMapPreviewShape;
-  raw: Uint8Array;
-  probability: Float32Array;
-  rawDisplayLow: number;
-  rawDisplayHigh: number;
+  shape: GeneralSegmentationPreviewShape;
+  mask: {
+    dtype: "uint32";
+    data: string;
+    instance: boolean;
+  };
+};
+
+type GeneralSegmentationPreviewFrame = {
+  key: string;
+  evaluationKey: string;
+  timepoint: string;
+  sourceId: string;
+  view: GeneralSegmentationPreviewView;
+  zIndex: number | null;
+  width: number;
+  height: number;
+  shape: GeneralSegmentationPreviewShape;
+  display: Uint8Array;
+  evaluationKind: "slice" | "projection";
+  evaluationValues: Float32Array | null;
+  evaluationMaxValues: Float32Array | null;
+  evaluationMinValues: Float32Array | null;
+  displayLow: number;
+  displayHigh: number;
+};
+
+type GeneralSegmentationThresholdRange = {
+  key: string;
+  min: number;
+  max: number;
+  step: number;
+};
+
+type GeneralSegmentationPreviewMaskFrame = {
+  key: string;
+  evaluationKey: string;
+  timepoint: string;
+  sourceId: string;
+  view: GeneralSegmentationPreviewView;
+  zIndex: number | null;
+  width: number;
+  height: number;
+  shape: GeneralSegmentationPreviewShape;
+  mask: Uint32Array;
+  maskIsInstance: boolean;
 };
 
 const POST_PROCESSING_OPTIONS: Array<{
@@ -213,6 +345,10 @@ const POST_PROCESSING_OPTIONS: Array<{
     label: "High-resolution features",
   },
   {
+    value: "feature_statistics",
+    label: "Feature statistics",
+  },
+  {
     value: "foreground_probability_map",
     label: "Foreground probability map",
   },
@@ -224,11 +360,11 @@ const SEGMENTATION_OPTIONS: Array<{
 }> = [
   {
     value: "voronoi_otsu",
-    label: "Voronoi-Otsu",
+    label: "Legacy Voronoi-Otsu",
   },
   {
-    value: "probability_map",
-    label: "Probability map",
+    value: "general_segmentation",
+    label: "General segmentation",
   },
   {
     value: "legacy_probability_map",
@@ -242,10 +378,10 @@ const INFERENCE_OUTPUT_FOLDER_DESCRIPTION =
 const POST_PROCESSING_PARAMETER_HELP = {
   inferenceOutputFolder: INFERENCE_OUTPUT_FOLDER_DESCRIPTION,
   processFeaturesOutputFolder:
-    "Root folder where Process features saves pca_<n>/ and hr_feats/ outputs.",
+    "Root folder where Process features saves pca_<n>/, hr_feats/, and feature_stats/ outputs.",
   chosenFiles: "Limit processing to a contiguous range of validated timepoints. End file is inclusive.",
   segmentationOutputFolder:
-    "Root folder where segmentation saves seg_voronoi/, seg_probmap/, seg_probmap_legacy/, and probmap_densities.npz.",
+    "Root folder where segmentation saves seg_voronoi/, seg_general/, seg_probmap_legacy/, and probmap_densities.npz.",
   foregroundProbabilityMapOutputFolder:
     "Root folder where foreground probability-map generation saves probmap/ and probmap_densities.npz.",
   trackingOutputFolder: "Folder where tracking saves the output CSV.",
@@ -253,6 +389,10 @@ const POST_PROCESSING_PARAMETER_HELP = {
   segmentationFolder: "Folder containing one segmentation mask per timepoint, named <timepoint>.tif.",
   selectGpu: "Choose the GPU that will run this post-processing step.",
   saveHighResolutionFeatures: "Write one full-resolution feature volume per channel under hr_feats/<timepoint>/.",
+  featureStatistics:
+    "Write compact high-resolution feature-channel statistics under feature_stats/ without saving every feature volume.",
+  ignoreTrailingChannels: "Exclude trailing attention-style channels before computing feature statistics.",
+  trailingChannels: "Number of final feature channels to exclude when enabled.",
   saveFormat: "Choose whether the generated outputs are saved as NumPy arrays or TIFF volumes.",
   savePca: "Export PCA-compressed feature volumes under pca_<n_components>/.",
   globalPca: "Use one PCA basis and one intensity scale across the chosen timepoints.",
@@ -278,7 +418,15 @@ const POST_PROCESSING_PARAMETER_HELP = {
   featureBatch: "Number of feature chunks processed at once during estimation.",
   bgProbabilityThreshold: "Minimum background probability used to mark voxels as background.",
   fgProbabilityThreshold: "Minimum foreground probability used to accept a cell candidate.",
-  simpleProbabilityThreshold: "Minimum normalized foreground probability used to mark voxels as foreground.",
+  generalSegmentationSource: "Choose which validated data source is thresholded to create the mask.",
+  generalEvaluationData: "Choose which validated data source is processed and thresholded.",
+  generalDisplaySource: "Choose whether the preview shows raw data or the processed evaluation data.",
+  generalThresholdComponent: "Choose the source component or statistic used for thresholding.",
+  dataProcessing: "Apply operations to the evaluation data before thresholding.",
+  maskProcessing: "Apply operations to the binary mask after thresholding.",
+  instanceSegmentation: "Choose whether the final mask stays binary or becomes an instance-label image.",
+  simpleProbabilityThreshold: "Minimum source value used to mark voxels as foreground.",
+  invertMask: "Use values below the threshold as foreground.",
   runConnectedComponents: "Convert the binary foreground mask into connected-component instance labels.",
   matchWindow: "Set the maximum per-frame search distance for track matching.",
   maxXyDistance: "Largest allowed XY displacement between linked detections.",
@@ -304,6 +452,96 @@ function parentPathForPicker(path: string | null): string | null {
   const slashIndex = normalized.lastIndexOf("/");
   if (slashIndex <= 0) return "/";
   return normalized.slice(0, slashIndex);
+}
+
+function createGeneralDataOperation(
+  type: GeneralSegmentationDataOperationType = "gaussian_smoothing"
+): GeneralSegmentationDataOperation {
+  return {
+    id: `data-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type,
+    radius: "10",
+    sigma: "1",
+    response: "bright",
+  };
+}
+
+function createGeneralMaskOperation(
+  type: GeneralSegmentationMaskOperationType = "remove_small_objects"
+): GeneralSegmentationMaskOperation {
+  return {
+    id: `mask-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type,
+    size: "64",
+  };
+}
+
+function parseNonnegativeNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parseNonnegativeInteger(value: string): number | null {
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function serializeGeneralDataOperations(
+  enabled: boolean,
+  operations: GeneralSegmentationDataOperation[],
+  strict: boolean
+): { operations: SerializedGeneralSegmentationDataOperation[]; error: string | null } {
+  if (!enabled) return { operations: [], error: null };
+  const serialized: SerializedGeneralSegmentationDataOperation[] = [];
+  for (const operation of operations) {
+    if (operation.type === "invert_lut") {
+      serialized.push({ type: "invert_lut" });
+    } else if (operation.type === "subtract_background") {
+      const radius = parseNonnegativeNumber(operation.radius);
+      if (radius === null) {
+        if (strict) return { operations: [], error: "Enter a valid nonnegative rolling-ball radius." };
+        serialized.push({ type: "subtract_background", radius: 10 });
+      } else {
+        serialized.push({ type: "subtract_background", radius });
+      }
+    } else if (operation.type === "gaussian_smoothing") {
+      const sigma = parseNonnegativeNumber(operation.sigma);
+      if (sigma === null) {
+        if (strict) return { operations: [], error: "Enter a valid nonnegative Gaussian sigma." };
+        serialized.push({ type: "gaussian_smoothing", sigma: 1 });
+      } else {
+        serialized.push({ type: "gaussian_smoothing", sigma });
+      }
+    } else if (operation.type === "laplacian_of_gaussian") {
+      const sigma = parseNonnegativeNumber(operation.sigma);
+      if (sigma === null) {
+        if (strict) return { operations: [], error: "Enter a valid nonnegative LoG sigma." };
+        serialized.push({ type: "laplacian_of_gaussian", sigma: 1, response: operation.response });
+      } else {
+        serialized.push({ type: "laplacian_of_gaussian", sigma, response: operation.response });
+      }
+    }
+  }
+  return { operations: serialized, error: null };
+}
+
+function serializeGeneralMaskOperations(
+  enabled: boolean,
+  operations: GeneralSegmentationMaskOperation[],
+  strict: boolean
+): { operations: SerializedGeneralSegmentationMaskOperation[]; error: string | null } {
+  if (!enabled) return { operations: [], error: null };
+  const serialized: SerializedGeneralSegmentationMaskOperation[] = [];
+  for (const operation of operations) {
+    const size = parseNonnegativeInteger(operation.size);
+    if (size === null) {
+      if (strict) return { operations: [], error: "Enter a valid nonnegative small-object size." };
+      serialized.push({ type: "remove_small_objects", size: 64 });
+    } else {
+      serialized.push({ type: "remove_small_objects", size });
+    }
+  }
+  return { operations: serialized, error: null };
 }
 
 type PostProcessingPageProps = {
@@ -351,6 +589,8 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   const [pcaComponents, setPcaComponents] = useState("3");
   const [pcaSaveFormat, setPcaSaveFormat] = useState<SaveFormat>(".tif");
   const [globalPca, setGlobalPca] = useState(true);
+  const [ignoreTrailingChannels, setIgnoreTrailingChannels] = useState(true);
+  const [trailingChannels, setTrailingChannels] = useState("6");
   const [processFeaturesFileRange, setProcessFeaturesFileRange] = useState({ start: "0", end: "" });
   const [gaussianBlurSigma, setGaussianBlurSigma] = useState("3");
   const [rollingBallRadius, setRollingBallRadius] = useState("10");
@@ -368,8 +608,24 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   const [probabilityMapHistSigmaBins, setProbabilityMapHistSigmaBins] = useState("1.5");
   const [probabilityMapBgThreshold, setProbabilityMapBgThreshold] = useState("0.4");
   const [probabilityMapFgThreshold, setProbabilityMapFgThreshold] = useState("0.95");
-  const [simpleProbabilityMapThreshold, setSimpleProbabilityMapThreshold] = useState("0.5");
-  const [runProbabilityMapCcl, setRunProbabilityMapCcl] = useState(true);
+  const [generalSegmentationSourceId, setGeneralSegmentationSourceId] = useState("raw");
+  const [generalSegmentationThresholdComponent, setGeneralSegmentationThresholdComponent] = useState(0);
+  const [generalSegmentationDisplaySource, setGeneralSegmentationDisplaySource] =
+    useState<GeneralSegmentationDisplaySource>("raw");
+  const [generalSegmentationProcessData, setGeneralSegmentationProcessData] = useState(false);
+  const [generalSegmentationDataOperations, setGeneralSegmentationDataOperations] = useState<
+    GeneralSegmentationDataOperation[]
+  >([]);
+  const [generalSegmentationThreshold, setGeneralSegmentationThreshold] = useState("0.5");
+  const [generalSegmentationInvertMask, setGeneralSegmentationInvertMask] = useState(false);
+  const [generalSegmentationProcessMask, setGeneralSegmentationProcessMask] = useState(false);
+  const [generalSegmentationMaskOperations, setGeneralSegmentationMaskOperations] = useState<
+    GeneralSegmentationMaskOperation[]
+  >([]);
+  const [generalSegmentationInstanceMethod, setGeneralSegmentationInstanceMethod] =
+    useState<GeneralSegmentationInstanceMethod>("connected_components");
+  const [generalSegmentationVoronoiSpotSigma, setGeneralSegmentationVoronoiSpotSigma] = useState("2");
+  const [generalSegmentationVoronoiOutlineSigma, setGeneralSegmentationVoronoiOutlineSigma] = useState("2");
   const [probabilityMapSeed, setProbabilityMapSeed] = useState("1337");
   const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("35");
   const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("15");
@@ -406,8 +662,10 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   const pcaSelected = pageKind === "post_processing" && selectedPostProcessingMode === "pca";
   const highResolutionFeaturesSelected =
     pageKind === "post_processing" && selectedPostProcessingMode === "high_resolution_features";
+  const featureStatisticsSelected =
+    pageKind === "post_processing" && selectedPostProcessingMode === "feature_statistics";
   const voronoiOtsuSelected = segmentationSelected && selectedSegmentationMode === "voronoi_otsu";
-  const probabilityMapSelected = segmentationSelected && selectedSegmentationMode === "probability_map";
+  const generalSegmentationSelected = segmentationSelected && selectedSegmentationMode === "general_segmentation";
   const legacyProbabilityMapSelected = segmentationSelected && selectedSegmentationMode === "legacy_probability_map";
   const densityControlsSelected = foregroundProbabilityMapSelected || legacyProbabilityMapSelected;
 
@@ -483,6 +741,8 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     pcaComponents,
     pcaSaveFormat,
     globalPca,
+    ignoreTrailingChannels,
+    trailingChannels,
     processFeaturesFileRange,
     gaussianBlurSigma,
     rollingBallRadius,
@@ -499,8 +759,18 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     probabilityMapHistSigmaBins,
     probabilityMapBgThreshold,
     probabilityMapFgThreshold,
-    simpleProbabilityMapThreshold,
-    runProbabilityMapCcl,
+    generalSegmentationSourceId,
+    generalSegmentationThresholdComponent,
+    generalSegmentationDisplaySource,
+    generalSegmentationProcessData,
+    generalSegmentationDataOperations,
+    generalSegmentationThreshold,
+    generalSegmentationInvertMask,
+    generalSegmentationProcessMask,
+    generalSegmentationMaskOperations,
+    generalSegmentationInstanceMethod,
+    generalSegmentationVoronoiSpotSigma,
+    generalSegmentationVoronoiOutlineSigma,
     probabilityMapSeed,
     trackingMaxDistanceXy,
     trackingMaxDistanceZ,
@@ -520,6 +790,12 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   const trackingSegmentationValidated = trackingSegmentationValidationResult?.valid === true;
   const parametersVisible = trackingSelected ? inputValidated && trackingSegmentationValidated : inputValidated;
   const validatedSubfolderNames = inputValidated ? validationResult.subfolderNames ?? [] : [];
+  const generalSegmentationSources = inputValidated ? validationResult.availableSources ?? [] : [];
+  const generalSegmentationSourceWarnings = inputValidated ? validationResult.sourceWarnings ?? [] : [];
+  const selectedGeneralSegmentationSource =
+    generalSegmentationSources.find((source) => source.id === generalSegmentationSourceId) ??
+    generalSegmentationSources[0] ??
+    null;
   const maxProcessFeaturesFileIndex = processFeaturesSelected && inputValidated ? validationResult.subfolderCount - 1 : undefined;
   const showDensityEstimationTimepoint = validatedSubfolderNames.length > 1;
   const probmapDensitiesPath = inputValidated ? validationResult.probmapDensitiesPath ?? null : null;
@@ -578,6 +854,19 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   }, [densityControlsSelected, densityEstimationTimepoint, validatedSubfolderNames]);
 
   useEffect(() => {
+    if (!generalSegmentationSelected || !generalSegmentationSources.length) return;
+    if (generalSegmentationSources.some((source) => source.id === generalSegmentationSourceId)) return;
+    const rawSource = generalSegmentationSources.find((source) => source.id === "raw");
+    setGeneralSegmentationSourceId((rawSource ?? generalSegmentationSources[0]).id);
+  }, [generalSegmentationSelected, generalSegmentationSourceId, generalSegmentationSources]);
+
+  useEffect(() => {
+    if (!selectedGeneralSegmentationSource) return;
+    const maxComponent = Math.max(0, selectedGeneralSegmentationSource.componentCount - 1);
+    setGeneralSegmentationThresholdComponent((current) => clampInteger(current, 0, maxComponent));
+  }, [selectedGeneralSegmentationSource]);
+
+  useEffect(() => {
     if (!densityControlsSelected || runDensityEstimation) return;
     if (legacyProbabilityMapSelected && !runProbabilityMapStage2) return;
     if (probmapDensitiesFilePath || !probmapDensitiesExists || !probmapDensitiesPath) return;
@@ -603,8 +892,8 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
       const validationUrl =
         selectedWorkflow === "tracking"
           ? "/api/post-processing/tracking/validate-input"
-          : probabilityMapSelected
-            ? "/api/post-processing/probability-map/validate-input"
+          : generalSegmentationSelected
+            ? "/api/post-processing/general-segmentation/validate-input"
             : selectedWorkflow === "segmentation" || selectedWorkflow === "foreground_probability_map"
               ? "/api/post-processing/segmentation/validate-input"
               : "/api/post-processing/process-features/validate-input";
@@ -689,6 +978,13 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     if (pcaSelected && (!Number.isFinite(parsedPcaComponents) || parsedPcaComponents < 1)) {
       return null;
     }
+    const parsedTrailingChannels = Number.parseInt(trailingChannels.trim(), 10);
+    if (
+      featureStatisticsSelected &&
+      (!Number.isFinite(parsedTrailingChannels) || parsedTrailingChannels < 0)
+    ) {
+      return null;
+    }
 
     return {
       input_path: inputPath,
@@ -704,6 +1000,10 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
       pca_components: Number.isFinite(parsedPcaComponents) && parsedPcaComponents > 0 ? parsedPcaComponents : 3,
       pca_save_format: pcaSaveFormat,
       global_pca: globalPca,
+      save_feature_statistics: featureStatisticsSelected,
+      ignore_trailing_channels: ignoreTrailingChannels,
+      trailing_channels:
+        Number.isFinite(parsedTrailingChannels) && parsedTrailingChannels >= 0 ? parsedTrailingChannels : 6,
     };
   }
 
@@ -759,7 +1059,12 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     }
     const request = buildProcessFeaturesRunRequest();
     if (!request) {
-      setRunFeedback({ tone: "error", message: "Enter a valid positive integer for the number of PCA components." });
+      setRunFeedback({
+        tone: "error",
+        message: featureStatisticsSelected
+          ? "Enter a valid nonnegative integer for trailing channels."
+          : "Enter a valid positive integer for the number of PCA components.",
+      });
       return;
     }
     if (selectedGpuIndex === null) {
@@ -886,19 +1191,65 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
       return;
     }
 
-    if (selectedSegmentationMode === "probability_map") {
-      const parsedThreshold = Number.parseFloat(simpleProbabilityMapThreshold.trim());
-      if (!Number.isFinite(parsedThreshold) || parsedThreshold < 0 || parsedThreshold > 1) {
-        setRunFeedback({ tone: "error", message: "Enter a valid foreground probability threshold between 0 and 1." });
+    if (selectedSegmentationMode === "general_segmentation") {
+      if (!selectedGeneralSegmentationSource) {
+        setRunFeedback({ tone: "error", message: "Choose a segmentation source." });
         return;
       }
+
+      const parsedThreshold = Number.parseFloat(generalSegmentationThreshold.trim());
+      if (!Number.isFinite(parsedThreshold)) {
+        setRunFeedback({ tone: "error", message: "Enter a valid threshold." });
+        return;
+      }
+
+      const dataOperationsResult = serializeGeneralDataOperations(
+        generalSegmentationProcessData,
+        generalSegmentationDataOperations,
+        true
+      );
+      if (dataOperationsResult.error) {
+        setRunFeedback({ tone: "error", message: dataOperationsResult.error });
+        return;
+      }
+      const maskOperationsResult = serializeGeneralMaskOperations(
+        generalSegmentationProcessMask,
+        generalSegmentationMaskOperations,
+        true
+      );
+      if (maskOperationsResult.error) {
+        setRunFeedback({ tone: "error", message: maskOperationsResult.error });
+        return;
+      }
+      const parsedVoronoiSpotSigma = parseNonnegativeNumber(generalSegmentationVoronoiSpotSigma);
+      if (parsedVoronoiSpotSigma === null) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative Voronoi-Otsu spot sigma." });
+        return;
+      }
+      const parsedVoronoiOutlineSigma = parseNonnegativeNumber(generalSegmentationVoronoiOutlineSigma);
+      if (parsedVoronoiOutlineSigma === null) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative Voronoi-Otsu outline sigma." });
+        return;
+      }
+
+      const maxComponent = Math.max(0, selectedGeneralSegmentationSource.componentCount - 1);
+      const thresholdComponent = clampInteger(generalSegmentationThresholdComponent, 0, maxComponent);
 
       await submitRun("/api/post-processing/segmentation/run", {
         input_path: inputPath,
         output_path: effectiveSegmentationOutputPath,
         densities_path: null,
-        gpu_index: null,
-        mode: "probability_map",
+        gpu_index: selectedGpuIndex,
+        mode: "general_segmentation",
+        source_id: selectedGeneralSegmentationSource.id,
+        threshold: parsedThreshold,
+        component_index: thresholdComponent,
+        invert_mask: generalSegmentationInvertMask,
+        data_operations: dataOperationsResult.operations,
+        mask_operations: maskOperationsResult.operations,
+        instance_method: generalSegmentationInstanceMethod,
+        voronoi_spot_sigma: parsedVoronoiSpotSigma,
+        voronoi_outline_sigma: parsedVoronoiOutlineSigma,
         gaussian_blur_sigma: 3,
         rolling_ball_radius: 10,
         run_density_estimation: false,
@@ -914,8 +1265,8 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
         hist_sigma_bins: 1.5,
         bg_prob_threshold: 0.4,
         fg_prob_threshold: 0.95,
-        probmap_threshold: parsedThreshold,
-        run_connected_components: runProbabilityMapCcl,
+        probmap_threshold: selectedGeneralSegmentationSource.kind === "probmap" ? parsedThreshold : 0.5,
+        run_connected_components: generalSegmentationInstanceMethod === "connected_components",
         seed: 1337,
       });
       return;
@@ -945,6 +1296,15 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
         densities_path: null,
         gpu_index: selectedGpuIndex,
         mode: "voronoi_otsu",
+        source_id: "raw",
+        threshold: null,
+        component_index: 0,
+        invert_mask: false,
+        data_operations: [],
+        mask_operations: [],
+        instance_method: "connected_components",
+        voronoi_spot_sigma: 2,
+        voronoi_outline_sigma: 2,
         gaussian_blur_sigma: parsedGaussianBlurSigma,
         rolling_ball_radius: parsedRollingBallRadius,
         run_density_estimation: false,
@@ -990,6 +1350,15 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     await submitRun("/api/post-processing/segmentation/run", {
       ...baseRequest,
       mode: "legacy_probability_map",
+      source_id: "raw",
+      threshold: null,
+      component_index: 0,
+      invert_mask: false,
+      data_operations: [],
+      mask_operations: [],
+      instance_method: "connected_components",
+      voronoi_spot_sigma: 2,
+      voronoi_outline_sigma: 2,
       gaussian_blur_sigma: 3,
       rolling_ball_radius: 10,
       run_stage_2: runProbabilityMapStage2,
@@ -1501,6 +1870,43 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
                 </label>
               </div>
             ) : null}
+
+            {featureStatisticsSelected ? (
+              <>
+                <div className="inferenceFormRow">
+                  <div className="inferenceFieldLabel">
+                    <ParameterHelpLabel
+                      label="Feature statistics"
+                      description={POST_PROCESSING_PARAMETER_HELP.featureStatistics}
+                    />
+                  </div>
+                  <label className="inferenceCheckboxLabel">
+                    <input
+                      type="checkbox"
+                      checked={ignoreTrailingChannels}
+                      onChange={(event) => setIgnoreTrailingChannels(event.target.checked)}
+                    />
+                    <span>
+                      <ParameterHelpLabel
+                        label="Ignore trailing channels"
+                        description={POST_PROCESSING_PARAMETER_HELP.ignoreTrailingChannels}
+                      />
+                    </span>
+                  </label>
+                  <div className="inferenceInlineLabel isStrong">
+                    <ParameterHelpLabel
+                      label="Trailing channels"
+                      description={POST_PROCESSING_PARAMETER_HELP.trailingChannels}
+                    />
+                  </div>
+                  <PostProcessingNumberInput value={trailingChannels} onChange={setTrailingChannels} min={0} step={1} />
+                </div>
+                <div className="sidebarHint">
+                  Writes mean, max, min, median, standard deviation, and L2 norm volumes under{" "}
+                  <code>feature_stats/</code>.
+                </div>
+              </>
+            ) : null}
           </div>
 
           <div className="validationActions">
@@ -1578,32 +1984,58 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
             </div>
           ) : null}
 
-          {probabilityMapSelected ? (
+          {generalSegmentationSelected ? (
             <div className="inferenceFormRows">
-              <ProbabilityMapPreview
-                inputPath={inputPath}
-                enabled={probabilityMapSelected && parametersVisible}
-                threshold={simpleProbabilityMapThreshold}
-                onThresholdChange={setSimpleProbabilityMapThreshold}
-                thresholdDescription={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
+              {generalSegmentationSourceWarnings.map((warning) => (
+                <div key={warning.folderName} className="sidebarError">
+                  {`${warning.folderName}/ was found but is not valid: ${warning.message}`}
+                </div>
+              ))}
+
+              <GpuSelectionRow
+                optionsLoading={optionsLoading}
+                availableGpus={availableGpus}
+                gpuError={gpuError}
+                selectedGpuIndex={selectedGpuIndex}
+                onSelectGpu={setSelectedGpuIndex}
+                helpDescription={POST_PROCESSING_PARAMETER_HELP.selectGpu}
               />
 
-              <div className="inferenceFormRow">
-                <div className="inferenceFieldLabel">
-                  <ParameterHelpLabel
-                    label="Run connected-component labeling"
-                    description={POST_PROCESSING_PARAMETER_HELP.runConnectedComponents}
-                  />
-                </div>
-                <label className="inferenceCheckboxLabel">
-                  <input
-                    type="checkbox"
-                    checked={runProbabilityMapCcl}
-                    onChange={(event) => setRunProbabilityMapCcl(event.target.checked)}
-                  />
-                  <span>Enabled</span>
-                </label>
-              </div>
+              <GeneralSegmentationPreview
+                inputPath={inputPath}
+                gpuIndex={selectedGpuIndex}
+                enabled={generalSegmentationSelected && parametersVisible && Boolean(selectedGeneralSegmentationSource)}
+                sources={generalSegmentationSources}
+                source={selectedGeneralSegmentationSource}
+                sourceId={generalSegmentationSourceId}
+                onSourceIdChange={(sourceId) => {
+                  setGeneralSegmentationSourceId(sourceId);
+                  setGeneralSegmentationThresholdComponent(0);
+                }}
+                thresholdComponent={generalSegmentationThresholdComponent}
+                onThresholdComponentChange={setGeneralSegmentationThresholdComponent}
+                displaySource={generalSegmentationDisplaySource}
+                onDisplaySourceChange={setGeneralSegmentationDisplaySource}
+                processData={generalSegmentationProcessData}
+                onProcessDataChange={setGeneralSegmentationProcessData}
+                dataOperations={generalSegmentationDataOperations}
+                onDataOperationsChange={setGeneralSegmentationDataOperations}
+                threshold={generalSegmentationThreshold}
+                onThresholdChange={setGeneralSegmentationThreshold}
+                invertMask={generalSegmentationInvertMask}
+                onInvertMaskChange={setGeneralSegmentationInvertMask}
+                processMask={generalSegmentationProcessMask}
+                onProcessMaskChange={setGeneralSegmentationProcessMask}
+                maskOperations={generalSegmentationMaskOperations}
+                onMaskOperationsChange={setGeneralSegmentationMaskOperations}
+                instanceMethod={generalSegmentationInstanceMethod}
+                onInstanceMethodChange={setGeneralSegmentationInstanceMethod}
+                voronoiSpotSigma={generalSegmentationVoronoiSpotSigma}
+                onVoronoiSpotSigmaChange={setGeneralSegmentationVoronoiSpotSigma}
+                voronoiOutlineSigma={generalSegmentationVoronoiOutlineSigma}
+                onVoronoiOutlineSigmaChange={setGeneralSegmentationVoronoiOutlineSigma}
+                thresholdDescription={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
+              />
             </div>
           ) : null}
 
@@ -2166,30 +2598,96 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
   );
 }
 
-function ProbabilityMapPreview({
+function GeneralSegmentationPreview({
   inputPath,
+  gpuIndex,
   enabled,
+  sources,
+  source,
+  sourceId,
+  onSourceIdChange,
+  thresholdComponent,
+  onThresholdComponentChange,
+  displaySource,
+  onDisplaySourceChange,
+  processData,
+  onProcessDataChange,
+  dataOperations,
+  onDataOperationsChange,
   threshold,
   onThresholdChange,
+  invertMask,
+  onInvertMaskChange,
+  processMask,
+  onProcessMaskChange,
+  maskOperations,
+  onMaskOperationsChange,
+  instanceMethod,
+  onInstanceMethodChange,
+  voronoiSpotSigma,
+  onVoronoiSpotSigmaChange,
+  voronoiOutlineSigma,
+  onVoronoiOutlineSigmaChange,
   thresholdDescription,
 }: {
   inputPath: string | null;
+  gpuIndex: number | null;
   enabled: boolean;
+  sources: GeneralSegmentationSource[];
+  source: GeneralSegmentationSource | null;
+  sourceId: string;
+  onSourceIdChange: (value: string) => void;
+  thresholdComponent: number;
+  onThresholdComponentChange: (value: number) => void;
+  displaySource: GeneralSegmentationDisplaySource;
+  onDisplaySourceChange: (value: GeneralSegmentationDisplaySource) => void;
+  processData: boolean;
+  onProcessDataChange: (value: boolean) => void;
+  dataOperations: GeneralSegmentationDataOperation[];
+  onDataOperationsChange: (value: GeneralSegmentationDataOperation[]) => void;
   threshold: string;
   onThresholdChange: (value: string) => void;
+  invertMask: boolean;
+  onInvertMaskChange: (value: boolean) => void;
+  processMask: boolean;
+  onProcessMaskChange: (value: boolean) => void;
+  maskOperations: GeneralSegmentationMaskOperation[];
+  onMaskOperationsChange: (value: GeneralSegmentationMaskOperation[]) => void;
+  instanceMethod: GeneralSegmentationInstanceMethod;
+  onInstanceMethodChange: (value: GeneralSegmentationInstanceMethod) => void;
+  voronoiSpotSigma: string;
+  onVoronoiSpotSigmaChange: (value: string) => void;
+  voronoiOutlineSigma: string;
+  onVoronoiOutlineSigmaChange: (value: string) => void;
   thresholdDescription: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [metadata, setMetadata] = useState<ProbabilityMapPreviewMetadataResponse | null>(null);
+  const lastDefaultKeyRef = useRef("");
+  const [metadata, setMetadata] = useState<GeneralSegmentationPreviewMetadataResponse | null>(null);
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [selectedTimepoint, setSelectedTimepoint] = useState("");
-  const [selectedView, setSelectedView] = useState<ProbabilityMapPreviewView>("slice");
+  const [selectedView, setSelectedView] = useState<GeneralSegmentationPreviewView>("slice");
+  const [displayContrast, setDisplayContrast] = useState<GeneralSegmentationDisplayContrast>("auto");
   const [zIndex, setZIndex] = useState(0);
   const [maskVisible, setMaskVisible] = useState(true);
-  const [frame, setFrame] = useState<ProbabilityMapPreviewFrame | null>(null);
+  const [frame, setFrame] = useState<GeneralSegmentationPreviewFrame | null>(null);
   const [frameLoading, setFrameLoading] = useState(false);
   const [frameError, setFrameError] = useState<string | null>(null);
+  const [thresholdRange, setThresholdRange] = useState<GeneralSegmentationThresholdRange | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const [computedDataKey, setComputedDataKey] = useState<string | null>(null);
+  const [dataComputeLoading, setDataComputeLoading] = useState(false);
+  const [dataComputeError, setDataComputeError] = useState<string | null>(null);
+  const [binaryMaskFrame, setBinaryMaskFrame] = useState<GeneralSegmentationPreviewMaskFrame | null>(null);
+  const [maskError, setMaskError] = useState<string | null>(null);
+  const [processedMaskFrame, setProcessedMaskFrame] = useState<GeneralSegmentationPreviewMaskFrame | null>(null);
+  const [maskComputeLoading, setMaskComputeLoading] = useState(false);
+  const [maskComputeError, setMaskComputeError] = useState<string | null>(null);
+  const [instanceMaskFrame, setInstanceMaskFrame] = useState<GeneralSegmentationPreviewMaskFrame | null>(null);
+  const [instanceLoading, setInstanceLoading] = useState(false);
+  const [instanceError, setInstanceError] = useState<string | null>(null);
   const [foregroundPixels, setForegroundPixels] = useState(0);
 
   const timepoints = metadata?.timepoints ?? [];
@@ -2197,9 +2695,114 @@ function ProbabilityMapPreview({
   const selectedTimepointMetadata =
     compatibleTimepoints.find((timepoint) => timepoint.name === selectedTimepoint) ?? null;
   const zMax = Math.max(0, (selectedTimepointMetadata?.zCount ?? 1) - 1);
-  const thresholdValue = normalizeProbabilityThreshold(threshold);
-  const totalPixels = frame ? frame.width * frame.height : 0;
+  const maxComponent = Math.max(0, (source?.componentCount ?? 1) - 1);
+  const clampedThresholdComponent = clampInteger(thresholdComponent, 0, maxComponent);
+  const hasSourceComponents = source !== null && source.kind !== "raw" && source.componentCount > 1;
+  const sourceComponentLabel = (index: number) =>
+    source?.componentNames?.[index] ?? (source?.kind === "pca" ? `PCA #${index + 1}` : `Component #${index + 1}`);
+  const previewDataOperations = useMemo(
+    () => serializeGeneralDataOperations(processData, dataOperations, false).operations,
+    [dataOperations, processData]
+  );
+  const previewMaskOperations = useMemo(
+    () => serializeGeneralMaskOperations(processMask, maskOperations, false).operations,
+    [maskOperations, processMask]
+  );
+  const previewDataOperationsKey = JSON.stringify(previewDataOperations);
+  const previewMaskOperationsKey = JSON.stringify(previewMaskOperations);
+  const previewVoronoiSpotSigma = parseNonnegativeNumber(voronoiSpotSigma) ?? 2;
+  const previewVoronoiOutlineSigma = parseNonnegativeNumber(voronoiOutlineSigma) ?? 2;
+  const currentZIndex = selectedView === "slice" ? clampInteger(zIndex, 0, zMax) : null;
+  const requestedDataProcessorKey = previewDataOperations.length > 0 && gpuIndex !== null ? `gpu:${gpuIndex}` : "cpu";
+  const dataBaseKey = JSON.stringify({
+    inputPath,
+    sourceId: source?.id ?? sourceId,
+    component: clampedThresholdComponent,
+    timepoint: selectedTimepoint,
+  });
+  const requestedDataKey = JSON.stringify({
+    dataBaseKey,
+    dataOperations: previewDataOperations,
+    processor: requestedDataProcessorKey,
+  });
+  const dataProcessingComputed = processData && computedDataKey === requestedDataKey;
+  const activeDataOperations = dataProcessingComputed ? previewDataOperations : [];
+  const activeDataProcessorKey = activeDataOperations.length > 0 && gpuIndex !== null ? `gpu:${gpuIndex}` : "cpu";
+  const activeDataOperationsKey = JSON.stringify(activeDataOperations);
+  const activeDataKey = JSON.stringify({
+    dataBaseKey,
+    dataOperations: activeDataOperations,
+    processor: activeDataProcessorKey,
+  });
+  const activeEvaluationKey = JSON.stringify({
+    activeDataKey,
+    view: selectedView,
+    zIndex: currentZIndex,
+  });
+  const activeSurfaceKey = JSON.stringify({
+    activeEvaluationKey,
+    displaySource,
+    displayContrast,
+  });
+  const thresholdMin = thresholdRange?.key === activeDataKey ? thresholdRange.min : source?.thresholdMin ?? 0;
+  const thresholdMax = thresholdRange?.key === activeDataKey ? thresholdRange.max : source?.thresholdMax ?? 1;
+  const thresholdStep = thresholdRange?.key === activeDataKey ? thresholdRange.step : source?.thresholdStep ?? 0.01;
+  const parsedThreshold = Number.parseFloat(threshold);
+  const thresholdValue = Number.isFinite(parsedThreshold) ? parsedThreshold : (Number(thresholdMin) + Number(thresholdMax)) / 2;
+  const effectiveThresholdValue = clampNumber(thresholdValue, Number(thresholdMin), Number(thresholdMax));
+  const sliderThresholdValue = effectiveThresholdValue;
+  const binaryMaskKey = JSON.stringify({
+    evaluationKey: activeEvaluationKey,
+    threshold: effectiveThresholdValue,
+    invertMask,
+  });
+  const processedMaskKey = JSON.stringify({
+    binaryMaskKey,
+    maskOperations: previewMaskOperations,
+  });
+  const instanceMaskKey = JSON.stringify({
+    processedMaskKey,
+    instanceMethod,
+    voronoiSpotSigma: previewVoronoiSpotSigma,
+    voronoiOutlineSigma: previewVoronoiOutlineSigma,
+  });
+  const validBinaryMaskFrame = binaryMaskFrame?.key === binaryMaskKey ? binaryMaskFrame : null;
+  const fallbackBinaryMaskFrame =
+    binaryMaskFrame?.evaluationKey === activeEvaluationKey &&
+    binaryMaskFrame.width === frame?.width &&
+    binaryMaskFrame.height === frame?.height
+      ? binaryMaskFrame
+      : null;
+  const activeMaskFrame =
+    instanceMethod !== "none" && instanceMaskFrame?.key === instanceMaskKey
+      ? instanceMaskFrame
+      : processMask && processedMaskFrame?.key === processedMaskKey
+        ? processedMaskFrame
+      : validBinaryMaskFrame ?? fallbackBinaryMaskFrame;
+  const totalPixels = activeMaskFrame ? activeMaskFrame.width * activeMaskFrame.height : frame ? frame.width * frame.height : 0;
   const foregroundPercent = totalPixels > 0 ? (foregroundPixels / totalPixels) * 100 : 0;
+  const instancePreviewState =
+    instanceMethod === "none"
+      ? null
+      : instanceLoading
+        ? "Computing..."
+        : instanceMaskFrame?.key === instanceMaskKey
+          ? "Computed"
+          : "Uncomputed";
+  const dataProcessState = !processData
+    ? null
+    : dataComputeLoading
+      ? "Computing..."
+      : dataProcessingComputed
+        ? "Computed"
+        : "Uncomputed";
+  const maskProcessState = !processMask
+    ? null
+    : maskComputeLoading
+      ? "Computing..."
+      : processedMaskFrame?.key === processedMaskKey
+        ? "Computed"
+        : "Uncomputed";
 
   useEffect(() => {
     if (!enabled || !inputPath) {
@@ -2208,6 +2811,17 @@ function ProbabilityMapPreview({
       setMetadataError(null);
       setSelectedTimepoint("");
       setFrame(null);
+      setThresholdRange(null);
+      setComputedDataKey(null);
+      setBinaryMaskFrame(null);
+      setProcessedMaskFrame(null);
+      setInstanceMaskFrame(null);
+      setRangeError(null);
+      setDataComputeError(null);
+      setMaskError(null);
+      setMaskComputeError(null);
+      setInstanceError(null);
+      lastDefaultKeyRef.current = "";
       return;
     }
 
@@ -2216,10 +2830,20 @@ function ProbabilityMapPreview({
     setMetadataError(null);
     setMetadata(null);
     setFrame(null);
+    setThresholdRange(null);
+    setComputedDataKey(null);
+    setBinaryMaskFrame(null);
+    setProcessedMaskFrame(null);
+    setInstanceMaskFrame(null);
+    setRangeError(null);
+    setDataComputeError(null);
+    setMaskError(null);
+    setMaskComputeError(null);
+    setInstanceError(null);
 
     async function loadMetadata() {
       try {
-        const resp = await fetch("/api/post-processing/probability-map/preview/metadata", {
+        const resp = await fetch("/api/post-processing/general-segmentation/preview/metadata", {
           method: "POST",
           headers: {
             Accept: "application/json",
@@ -2237,7 +2861,7 @@ function ProbabilityMapPreview({
           throw new Error(message);
         }
 
-        const json = (await resp.json()) as ProbabilityMapPreviewMetadataResponse;
+        const json = (await resp.json()) as GeneralSegmentationPreviewMetadataResponse;
         if (!json.valid) {
           throw new Error(json.message || "Preview metadata is not available.");
         }
@@ -2275,7 +2899,7 @@ function ProbabilityMapPreview({
   }, [selectedTimepointMetadata?.zCount]);
 
   useEffect(() => {
-    if (!enabled || !inputPath || !selectedTimepoint || !selectedTimepointMetadata) {
+    if (!enabled || !inputPath || !source || !selectedTimepoint || !selectedTimepointMetadata) {
       setFrame(null);
       setFrameLoading(false);
       setFrameError(null);
@@ -2283,6 +2907,9 @@ function ProbabilityMapPreview({
     }
 
     const controller = new AbortController();
+    const selectedSource = source;
+    const requestSurfaceKey = activeSurfaceKey;
+    const requestEvaluationKey = activeEvaluationKey;
     setFrameLoading(true);
     setFrameError(null);
 
@@ -2290,11 +2917,18 @@ function ProbabilityMapPreview({
       try {
         const requestBody = {
           input_path: inputPath,
+          gpu_index: gpuIndex,
+          source_id: selectedSource.id,
+          threshold_component_index: clampedThresholdComponent,
+          display_source: displaySource,
+          display_contrast: displayContrast,
+          data_operations: activeDataOperations,
+          require_cached_data: activeDataOperations.length > 0,
           timepoint: selectedTimepoint,
           view: selectedView,
-          z_index: selectedView === "slice" ? clampInteger(zIndex, 0, zMax) : null,
+          z_index: currentZIndex,
         };
-        const resp = await fetch("/api/post-processing/probability-map/preview/image", {
+        const resp = await fetch("/api/post-processing/general-segmentation/preview/surface", {
           method: "POST",
           headers: {
             Accept: "application/json",
@@ -2308,28 +2942,46 @@ function ProbabilityMapPreview({
           const message =
             detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
               ? detail.detail
-              : `Preview image failed: ${resp.status} ${resp.statusText}`;
+              : `Preview surface failed: ${resp.status} ${resp.statusText}`;
           throw new Error(message);
         }
 
-        const json = (await resp.json()) as ProbabilityMapPreviewImageResponse;
-        const raw = decodeBase64Bytes(json.raw.data);
-        const probability = decodeFloat32Base64(json.probability.data);
+        const json = (await resp.json()) as GeneralSegmentationPreviewSurfaceResponse;
+        const display = decodeBase64Bytes(json.display.data);
         const pixelCount = json.width * json.height;
-        if (raw.length !== pixelCount || probability.length !== pixelCount) {
+        if (display.length !== pixelCount) {
           throw new Error("Preview payload size does not match its dimensions.");
         }
+        const evaluationValues =
+          json.evaluation.kind === "slice" ? decodeFloat32Base64(json.evaluation.values.data) : null;
+        const evaluationMaxValues =
+          json.evaluation.kind === "projection" ? decodeFloat32Base64(json.evaluation.maxValues.data) : null;
+        const evaluationMinValues =
+          json.evaluation.kind === "projection" ? decodeFloat32Base64(json.evaluation.minValues.data) : null;
+        if (
+          (evaluationValues !== null && evaluationValues.length !== pixelCount) ||
+          (evaluationMaxValues !== null && evaluationMaxValues.length !== pixelCount) ||
+          (evaluationMinValues !== null && evaluationMinValues.length !== pixelCount)
+        ) {
+          throw new Error("Preview evaluation payload size does not match its dimensions.");
+        }
         setFrame({
+          key: requestSurfaceKey,
+          evaluationKey: requestEvaluationKey,
           timepoint: json.timepoint,
+          sourceId: json.sourceId,
           view: json.view,
           zIndex: json.zIndex,
           width: json.width,
           height: json.height,
           shape: json.shape,
-          raw,
-          probability,
-          rawDisplayLow: json.raw.displayLow,
-          rawDisplayHigh: json.raw.displayHigh,
+          display,
+          evaluationKind: json.evaluation.kind,
+          evaluationValues,
+          evaluationMaxValues,
+          evaluationMinValues,
+          displayLow: json.display.displayLow,
+          displayHigh: json.display.displayHigh,
         });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -2344,7 +2996,210 @@ function ProbabilityMapPreview({
 
     void loadFrame();
     return () => controller.abort();
-  }, [enabled, inputPath, selectedTimepoint, selectedTimepointMetadata, selectedView, zIndex, zMax]);
+  }, [
+    enabled,
+    inputPath,
+    source,
+    selectedTimepoint,
+    selectedTimepointMetadata,
+    selectedView,
+    currentZIndex,
+    clampedThresholdComponent,
+    displaySource,
+    displayContrast,
+    gpuIndex,
+    activeSurfaceKey,
+    activeEvaluationKey,
+    activeDataOperationsKey,
+  ]);
+
+  useEffect(() => {
+    if (!frame) {
+      setMaskError(null);
+      return;
+    }
+    if (frame.evaluationKey !== activeEvaluationKey) {
+      setMaskError(null);
+      return;
+    }
+
+    const pixelCount = frame.width * frame.height;
+    const mask = new Uint32Array(pixelCount);
+    setMaskError(null);
+
+    if (frame.evaluationKind === "slice") {
+      const values = frame.evaluationValues;
+      if (values === null || values.length !== pixelCount) {
+        setBinaryMaskFrame(null);
+        setMaskError("Preview evaluation plane is not available.");
+        return;
+      }
+      for (let index = 0; index < pixelCount; index += 1) {
+        const value = values[index];
+        const foreground = Number.isFinite(value) && (invertMask ? value < effectiveThresholdValue : value >= effectiveThresholdValue);
+        mask[index] = foreground ? 1 : 0;
+      }
+    } else {
+      const values = invertMask ? frame.evaluationMinValues : frame.evaluationMaxValues;
+      if (values === null || values.length !== pixelCount) {
+        setBinaryMaskFrame(null);
+        setMaskError("Preview evaluation projection is not available.");
+        return;
+      }
+      for (let index = 0; index < pixelCount; index += 1) {
+        const value = values[index];
+        const foreground = Number.isFinite(value) && (invertMask ? value < effectiveThresholdValue : value >= effectiveThresholdValue);
+        mask[index] = foreground ? 1 : 0;
+      }
+    }
+
+    setBinaryMaskFrame({
+      key: binaryMaskKey,
+      evaluationKey: frame.evaluationKey,
+      timepoint: frame.timepoint,
+      sourceId: frame.sourceId,
+      view: frame.view,
+      zIndex: frame.zIndex,
+      width: frame.width,
+      height: frame.height,
+      shape: frame.shape,
+      mask,
+      maskIsInstance: false,
+    });
+  }, [
+    binaryMaskKey,
+    activeEvaluationKey,
+    frame,
+    effectiveThresholdValue,
+    invertMask,
+  ]);
+
+  useEffect(() => {
+    if (!enabled || !inputPath || !source || !selectedTimepoint || !selectedTimepointMetadata) {
+      setThresholdRange(null);
+      setRangeLoading(false);
+      setRangeError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const requestKey = activeDataKey;
+    const selectedSource = source;
+    setRangeLoading(true);
+    setRangeError(null);
+
+    async function loadRange() {
+      try {
+        const requestBody = {
+          input_path: inputPath,
+          gpu_index: gpuIndex,
+          source_id: selectedSource.id,
+          threshold_component_index: clampedThresholdComponent,
+          data_operations: activeDataOperations,
+          require_cached_data: activeDataOperations.length > 0,
+          timepoint: selectedTimepoint,
+        };
+        const resp = await fetch("/api/post-processing/general-segmentation/preview/data", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const detail = await safeJson(resp);
+          const message =
+            detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+              ? detail.detail
+              : `Preview data failed: ${resp.status} ${resp.statusText}`;
+          throw new Error(message);
+        }
+
+        const json = (await resp.json()) as GeneralSegmentationPreviewDataResponse;
+        setThresholdRange({
+          key: requestKey,
+          min: json.rangeMin,
+          max: json.rangeMax,
+          step: json.step,
+        });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (activeDataOperations.length > 0) {
+          setComputedDataKey(null);
+        }
+        setRangeError(error instanceof Error ? error.message : "Unknown preview data error");
+      } finally {
+        if (!controller.signal.aborted) {
+          setRangeLoading(false);
+        }
+      }
+    }
+
+    void loadRange();
+    return () => controller.abort();
+  }, [
+    activeDataKey,
+    activeDataOperationsKey,
+    clampedThresholdComponent,
+    enabled,
+    gpuIndex,
+    inputPath,
+    selectedTimepoint,
+    selectedTimepointMetadata,
+    source,
+  ]);
+
+  useEffect(() => {
+    if (!source || !inputPath || thresholdRange?.key !== activeDataKey) return;
+    const defaultKey = activeDataKey;
+    if (lastDefaultKeyRef.current === defaultKey) return;
+    lastDefaultKeyRef.current = defaultKey;
+    const midpoint = (thresholdMin + thresholdMax) / 2;
+    const defaultValue =
+      activeDataOperations.length > 0 ? midpoint : source.kind === "probmap" ? 0.5 : source.kind === "pca" ? 128 : midpoint;
+    onThresholdChange(formatThresholdValue(defaultValue, thresholdStep));
+  }, [
+    activeDataOperations.length,
+    clampedThresholdComponent,
+    activeDataKey,
+    inputPath,
+    onThresholdChange,
+    source,
+    thresholdRange,
+    thresholdMax,
+    thresholdMin,
+    thresholdStep,
+  ]);
+
+  useEffect(() => {
+    if (!enabled || thresholdRange?.key !== activeDataKey || !Number.isFinite(parsedThreshold)) return;
+    if (parsedThreshold === effectiveThresholdValue) return;
+    onThresholdChange(formatThresholdValue(effectiveThresholdValue, thresholdStep));
+  }, [
+    activeDataKey,
+    effectiveThresholdValue,
+    enabled,
+    onThresholdChange,
+    parsedThreshold,
+    thresholdRange,
+    thresholdStep,
+  ]);
+
+  useEffect(() => {
+    if (processMask) return;
+    setProcessedMaskFrame(null);
+    setMaskComputeError(null);
+    setMaskComputeLoading(false);
+  }, [processMask]);
+
+  useEffect(() => {
+    if (instanceMethod !== "none") return;
+    setInstanceMaskFrame(null);
+    setInstanceError(null);
+    setInstanceLoading(false);
+  }, [instanceMethod]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2358,17 +3213,21 @@ function ProbabilityMapPreview({
     const imageData = context.createImageData(frame.width, frame.height);
     const output = imageData.data;
     let currentForegroundPixels = 0;
-    for (let index = 0; index < frame.raw.length; index += 1) {
-      const gray = frame.raw[index];
-      const masked = frame.probability[index] >= thresholdValue;
+    const mask = activeMaskFrame?.width === frame.width && activeMaskFrame.height === frame.height ? activeMaskFrame.mask : null;
+    const maskIsInstance = Boolean(activeMaskFrame?.maskIsInstance);
+    for (let index = 0; index < frame.display.length; index += 1) {
+      const gray = frame.display[index];
+      const label = mask?.[index] ?? 0;
+      const masked = label > 0;
       if (masked) {
         currentForegroundPixels += 1;
       }
       const outputIndex = index * 4;
       if (maskVisible && masked) {
-        output[outputIndex] = Math.round(gray * 0.35 + 255 * 0.65);
-        output[outputIndex + 1] = Math.round(gray * 0.35 + 132 * 0.65);
-        output[outputIndex + 2] = Math.round(gray * 0.35 + 32 * 0.65);
+        const color = maskIsInstance ? labelColor(label) : [255, 132, 32];
+        output[outputIndex] = Math.round(gray * 0.35 + color[0] * 0.65);
+        output[outputIndex + 1] = Math.round(gray * 0.35 + color[1] * 0.65);
+        output[outputIndex + 2] = Math.round(gray * 0.35 + color[2] * 0.65);
       } else {
         output[outputIndex] = gray;
         output[outputIndex + 1] = gray;
@@ -2379,18 +3238,243 @@ function ProbabilityMapPreview({
 
     context.putImageData(imageData, 0, 0);
     setForegroundPixels(currentForegroundPixels);
-  }, [frame, maskVisible, thresholdValue]);
+  }, [activeMaskFrame, frame, maskVisible]);
+
+  async function computeDataPreview() {
+    if (!enabled || !inputPath || !source || !selectedTimepoint || !selectedTimepointMetadata || !processData) {
+      return;
+    }
+
+    const selectedSource = source;
+    const requestKey = requestedDataKey;
+    setDataComputeLoading(true);
+    setDataComputeError(null);
+
+    try {
+      const requestBody = {
+        input_path: inputPath,
+        gpu_index: gpuIndex,
+        source_id: selectedSource.id,
+        threshold_component_index: clampedThresholdComponent,
+        data_operations: previewDataOperations,
+        require_cached_data: false,
+        timepoint: selectedTimepoint,
+      };
+      const resp = await fetch("/api/post-processing/general-segmentation/preview/data", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+      if (!resp.ok) {
+        const detail = await safeJson(resp);
+        const message =
+          detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+            ? detail.detail
+            : `Preview data processing failed: ${resp.status} ${resp.statusText}`;
+        throw new Error(message);
+      }
+
+      const json = (await resp.json()) as GeneralSegmentationPreviewDataResponse;
+      setComputedDataKey(requestKey);
+      setThresholdRange({
+        key: requestKey,
+        min: json.rangeMin,
+        max: json.rangeMax,
+        step: json.step,
+      });
+    } catch (error) {
+      setDataComputeError(error instanceof Error ? error.message : "Unknown preview data processing error");
+    } finally {
+      setDataComputeLoading(false);
+    }
+  }
+
+  async function computeProcessedMaskPreview() {
+    if (!enabled || !inputPath || !source || !selectedTimepoint || !selectedTimepointMetadata || !processMask) {
+      return;
+    }
+
+    const selectedSource = source;
+    const requestKey = processedMaskKey;
+    setMaskComputeLoading(true);
+    setMaskComputeError(null);
+
+    try {
+      const requestBody = {
+        input_path: inputPath,
+        gpu_index: gpuIndex,
+        source_id: selectedSource.id,
+        threshold_component_index: clampedThresholdComponent,
+        threshold: effectiveThresholdValue,
+        invert_mask: invertMask,
+        data_operations: activeDataOperations,
+        require_cached_data: activeDataOperations.length > 0,
+        mask_operations: previewMaskOperations,
+        instance_method: "none",
+        voronoi_spot_sigma: 0,
+        voronoi_outline_sigma: 0,
+        timepoint: selectedTimepoint,
+        view: selectedView,
+        z_index: currentZIndex,
+      };
+      const resp = await fetch("/api/post-processing/general-segmentation/preview/instance", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+      if (!resp.ok) {
+        const detail = await safeJson(resp);
+        const message =
+          detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+            ? detail.detail
+            : `Preview mask processing failed: ${resp.status} ${resp.statusText}`;
+        throw new Error(message);
+      }
+
+      const json = (await resp.json()) as GeneralSegmentationPreviewMaskResponse;
+      const mask = decodeUint32Base64(json.mask.data);
+      const pixelCount = json.width * json.height;
+      if (mask.length !== pixelCount) {
+        throw new Error("Preview processed mask payload size does not match its dimensions.");
+      }
+      setProcessedMaskFrame({
+        key: requestKey,
+        evaluationKey: activeEvaluationKey,
+        timepoint: json.timepoint,
+        sourceId: json.sourceId,
+        view: json.view,
+        zIndex: json.zIndex,
+        width: json.width,
+        height: json.height,
+        shape: json.shape,
+        mask,
+        maskIsInstance: json.mask.instance,
+      });
+    } catch (error) {
+      setMaskComputeError(error instanceof Error ? error.message : "Unknown preview mask processing error");
+    } finally {
+      setMaskComputeLoading(false);
+    }
+  }
+
+  async function computeInstancePreview() {
+    if (!enabled || !inputPath || !source || !selectedTimepoint || !selectedTimepointMetadata || instanceMethod === "none") {
+      return;
+    }
+
+    const selectedSource = source;
+    const requestKey = instanceMaskKey;
+    setInstanceLoading(true);
+    setInstanceError(null);
+
+    try {
+      const requestBody = {
+        input_path: inputPath,
+        gpu_index: gpuIndex,
+        source_id: selectedSource.id,
+        threshold_component_index: clampedThresholdComponent,
+        threshold: effectiveThresholdValue,
+        invert_mask: invertMask,
+        data_operations: activeDataOperations,
+        require_cached_data: activeDataOperations.length > 0,
+        mask_operations: previewMaskOperations,
+        instance_method: instanceMethod,
+        voronoi_spot_sigma: previewVoronoiSpotSigma,
+        voronoi_outline_sigma: previewVoronoiOutlineSigma,
+        timepoint: selectedTimepoint,
+        view: selectedView,
+        z_index: currentZIndex,
+      };
+      const resp = await fetch("/api/post-processing/general-segmentation/preview/instance", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+      if (!resp.ok) {
+        const detail = await safeJson(resp);
+        const message =
+          detail && typeof detail === "object" && "detail" in detail && typeof detail.detail === "string"
+            ? detail.detail
+            : `Preview instance segmentation failed: ${resp.status} ${resp.statusText}`;
+        throw new Error(message);
+      }
+
+      const json = (await resp.json()) as GeneralSegmentationPreviewMaskResponse;
+      const mask = decodeUint32Base64(json.mask.data);
+      const pixelCount = json.width * json.height;
+      if (mask.length !== pixelCount) {
+        throw new Error("Preview instance payload size does not match its dimensions.");
+      }
+      setInstanceMaskFrame({
+        key: requestKey,
+        evaluationKey: activeEvaluationKey,
+        timepoint: json.timepoint,
+        sourceId: json.sourceId,
+        view: json.view,
+        zIndex: json.zIndex,
+        width: json.width,
+        height: json.height,
+        shape: json.shape,
+        mask,
+        maskIsInstance: json.mask.instance,
+      });
+    } catch (error) {
+      setInstanceError(error instanceof Error ? error.message : "Unknown preview instance error");
+    } finally {
+      setInstanceLoading(false);
+    }
+  }
 
   if (!enabled) return null;
 
+  const rangeLabel =
+    thresholdRange?.key === activeDataKey
+      ? `Range ${formatThresholdValue(thresholdMin, thresholdStep)}..${formatThresholdValue(thresholdMax, thresholdStep)}`
+      : null;
+  const updateDataOperation = (operationId: string, patch: Partial<GeneralSegmentationDataOperation>) => {
+    onDataOperationsChange(
+      dataOperations.map((operation) => (operation.id === operationId ? { ...operation, ...patch } : operation))
+    );
+  };
+  const updateMaskOperation = (operationId: string, patch: Partial<GeneralSegmentationMaskOperation>) => {
+    onMaskOperationsChange(
+      maskOperations.map((operation) => (operation.id === operationId ? { ...operation, ...patch } : operation))
+    );
+  };
+  const moveDataOperation = (operationId: string, direction: -1 | 1) => {
+    const index = dataOperations.findIndex((operation) => operation.id === operationId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= dataOperations.length) return;
+    const next = [...dataOperations];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    onDataOperationsChange(next);
+  };
+  const moveMaskOperation = (operationId: string, direction: -1 | 1) => {
+    const index = maskOperations.findIndex((operation) => operation.id === operationId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= maskOperations.length) return;
+    const next = [...maskOperations];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    onMaskOperationsChange(next);
+  };
+
   return (
     <div className="probabilityMapPreview">
-      <div className="postProcessingStageTitle">Probability map preview</div>
+      <div className="postProcessingStageTitle">General segmentation preview</div>
 
       {metadataLoading ? <ValidationMessage tone="neutral">Loading preview metadata...</ValidationMessage> : null}
       {metadataError ? <ValidationMessage tone="error">{metadataError}</ValidationMessage> : null}
       {!metadataLoading && !metadataError && metadata && compatibleTimepoints.length === 0 ? (
-        <ValidationMessage tone="error">No previewable timepoints have matching raw and probability-map shapes.</ValidationMessage>
+        <ValidationMessage tone="error">No previewable timepoints are available.</ValidationMessage>
       ) : null}
 
       {compatibleTimepoints.length > 0 ? (
@@ -2417,14 +3501,61 @@ function ProbabilityMapPreview({
             </div>
 
             <div className="inferenceFormRow">
-              <div className="inferenceFieldLabel">View</div>
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel
+                  label="Evaluation data"
+                  description={POST_PROCESSING_PARAMETER_HELP.generalEvaluationData}
+                />
+              </div>
+              <select
+                className="inferenceSelect inferenceCompactSelect"
+                value={source?.id ?? sourceId}
+                onChange={(event) => onSourceIdChange(event.target.value)}
+              >
+                {sources.map((availableSource) => (
+                  <option key={availableSource.id} value={availableSource.id}>
+                    {availableSource.label}
+                  </option>
+                ))}
+              </select>
+              {hasSourceComponents ? (
+                <select
+                  className="inferenceSelect inferenceCompactSelect"
+                  value={clampedThresholdComponent}
+                  onChange={(event) =>
+                    onThresholdComponentChange(clampInteger(Number.parseInt(event.target.value, 10), 0, maxComponent))
+                  }
+                >
+                  {Array.from({ length: source.componentCount }, (_value, index) => (
+                    <option key={index} value={index}>
+                      {sourceComponentLabel(index)}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Shown data" description={POST_PROCESSING_PARAMETER_HELP.generalDisplaySource} />
+              </div>
+              <select
+                className="inferenceSelect inferenceCompactSelect"
+                value={displaySource}
+                onChange={(event) => onDisplaySourceChange(event.target.value as GeneralSegmentationDisplaySource)}
+              >
+                <option value="raw">Raw (unprocessed)</option>
+                <option value="evaluation">Evaluation data</option>
+              </select>
+              <div className="inferenceInlineLabel isStrong">View</div>
               <select
                 className="inferenceSelect inferenceCompactSelect"
                 value={selectedView}
-                onChange={(event) => setSelectedView(event.target.value as ProbabilityMapPreviewView)}
+                onChange={(event) => setSelectedView(event.target.value as GeneralSegmentationPreviewView)}
               >
                 <option value="slice">Z plane</option>
                 <option value="max_projection">Max projection</option>
+                <option value="min_projection">Min projection</option>
               </select>
               {selectedView === "slice" ? (
                 <>
@@ -2448,7 +3579,134 @@ function ProbabilityMapPreview({
                   />
                 </>
               ) : null}
+              <div className="inferenceInlineLabel isStrong">Contrast</div>
+              <select
+                className="inferenceSelect inferenceCompactSelect"
+                value={displayContrast}
+                onChange={(event) => setDisplayContrast(event.target.value as GeneralSegmentationDisplayContrast)}
+              >
+                <option value="auto">Auto</option>
+                <option value="full_range">Full range</option>
+              </select>
             </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Process the data" description={POST_PROCESSING_PARAMETER_HELP.dataProcessing} />
+              </div>
+              <label className="inferenceCheckboxLabel">
+                <input
+                  type="checkbox"
+                  checked={processData}
+                  onChange={(event) => onProcessDataChange(event.target.checked)}
+                />
+                <span>Enabled</span>
+              </label>
+              {processData ? (
+                <>
+                  <button
+                    type="button"
+                    className="pickerSecondaryButton"
+                    onClick={() => onDataOperationsChange([...dataOperations, createGeneralDataOperation()])}
+                  >
+                    Add operation
+                  </button>
+                  <button
+                    type="button"
+                    className="pickerSecondaryButton"
+                    disabled={dataComputeLoading}
+                    onClick={() => void computeDataPreview()}
+                  >
+                    {dataProcessingComputed ? "Recompute" : "Compute"}
+                  </button>
+                  {dataProcessState ? <div className="inferenceInlineLabel">{dataProcessState}</div> : null}
+                </>
+              ) : null}
+            </div>
+
+            {processData
+              ? dataOperations.map((operation, index) => (
+                  <div key={operation.id} className="inferenceFormRow">
+                    <div className="inferenceFieldLabel">{`Data op ${index + 1}`}</div>
+                    <select
+                      className="inferenceSelect inferenceCompactSelect"
+                      value={operation.type}
+                      onChange={(event) =>
+                        updateDataOperation(operation.id, {
+                          type: event.target.value as GeneralSegmentationDataOperationType,
+                        })
+                      }
+                    >
+                      <option value="invert_lut">Invert LUT</option>
+                      <option value="subtract_background">Subtract background</option>
+                      <option value="gaussian_smoothing">Gaussian smoothing</option>
+                      <option value="laplacian_of_gaussian">Laplacian of Gaussian</option>
+                    </select>
+                    {operation.type === "subtract_background" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Radius</div>
+                        <PostProcessingNumberInput
+                          value={operation.radius}
+                          onChange={(value) => updateDataOperation(operation.id, { radius: value })}
+                          min={0}
+                          step={0.1}
+                        />
+                      </>
+                    ) : null}
+                    {operation.type === "gaussian_smoothing" || operation.type === "laplacian_of_gaussian" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Sigma</div>
+                        <PostProcessingNumberInput
+                          value={operation.sigma}
+                          onChange={(value) => updateDataOperation(operation.id, { sigma: value })}
+                          min={0}
+                          step={0.1}
+                        />
+                      </>
+                    ) : null}
+                    {operation.type === "laplacian_of_gaussian" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Response</div>
+                        <select
+                          className="inferenceSelect inferenceCompactSelect"
+                          value={operation.response}
+                          onChange={(event) =>
+                            updateDataOperation(operation.id, {
+                              response: event.target.value as GeneralSegmentationLogResponse,
+                            })
+                          }
+                        >
+                          <option value="bright">Bright blobs</option>
+                          <option value="dark">Dark blobs</option>
+                        </select>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      disabled={index === 0}
+                      onClick={() => moveDataOperation(operation.id, -1)}
+                    >
+                      Up
+                    </button>
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      disabled={index === dataOperations.length - 1}
+                      onClick={() => moveDataOperation(operation.id, 1)}
+                    >
+                      Down
+                    </button>
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      onClick={() => onDataOperationsChange(dataOperations.filter((item) => item.id !== operation.id))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              : null}
 
             <div className="inferenceFormRow">
               <div className="inferenceFieldLabel">
@@ -2457,21 +3715,31 @@ function ProbabilityMapPreview({
               <input
                 type="range"
                 className="probabilityMapPreviewSlider"
-                min={0}
-                max={1}
-                step={0.01}
-                value={thresholdValue}
+                min={thresholdMin}
+                max={thresholdMax}
+                step={thresholdStep}
+                value={sliderThresholdValue}
                 onChange={(event) => onThresholdChange(event.target.value)}
-                aria-label="Foreground probability threshold"
+                aria-label="Segmentation threshold"
               />
               <PostProcessingNumberInput
                 value={threshold}
                 onChange={onThresholdChange}
-                min={0}
-                max={1}
-                step={0.01}
-                ariaLabel="Foreground probability threshold"
+                min={thresholdMin}
+                max={thresholdMax}
+                step={thresholdStep}
+                ariaLabel="Segmentation threshold"
               />
+              <label className="inferenceCheckboxLabel">
+                <input
+                  type="checkbox"
+                  checked={invertMask}
+                  onChange={(event) => onInvertMaskChange(event.target.checked)}
+                />
+                <span>
+                  <ParameterHelpLabel label="Invert mask" description={POST_PROCESSING_PARAMETER_HELP.invertMask} />
+                </span>
+              </label>
               <button
                 type="button"
                 className="pickerSecondaryButton"
@@ -2482,13 +3750,151 @@ function ProbabilityMapPreview({
               {frame ? (
                 <div className="inferenceInlineLabel">{`Foreground ${foregroundPercent.toFixed(1)}%`}</div>
               ) : null}
+              {rangeLoading ? <div className="inferenceInlineLabel">Updating range...</div> : null}
+              {rangeLabel ? <div className="inferenceInlineLabel">{rangeLabel}</div> : null}
+            </div>
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel label="Process the mask" description={POST_PROCESSING_PARAMETER_HELP.maskProcessing} />
+              </div>
+              <label className="inferenceCheckboxLabel">
+                <input
+                  type="checkbox"
+                  checked={processMask}
+                  onChange={(event) => onProcessMaskChange(event.target.checked)}
+                />
+                <span>Enabled</span>
+              </label>
+              {processMask ? (
+                <>
+                  <button
+                    type="button"
+                    className="pickerSecondaryButton"
+                    onClick={() => onMaskOperationsChange([...maskOperations, createGeneralMaskOperation()])}
+                  >
+                    Add operation
+                  </button>
+                  <button
+                    type="button"
+                    className="pickerSecondaryButton"
+                    disabled={maskComputeLoading || !frame}
+                    onClick={() => void computeProcessedMaskPreview()}
+                  >
+                    {processedMaskFrame?.key === processedMaskKey ? "Recompute" : "Compute"}
+                  </button>
+                  {maskProcessState ? <div className="inferenceInlineLabel">{maskProcessState}</div> : null}
+                </>
+              ) : null}
+            </div>
+
+            {processMask
+              ? maskOperations.map((operation, index) => (
+                  <div key={operation.id} className="inferenceFormRow">
+                    <div className="inferenceFieldLabel">{`Mask op ${index + 1}`}</div>
+                    <select className="inferenceSelect inferenceCompactSelect" value={operation.type} disabled>
+                      <option value="remove_small_objects">Remove small objects</option>
+                    </select>
+                    <div className="inferenceInlineLabel isStrong">Size</div>
+                    <PostProcessingNumberInput
+                      value={operation.size}
+                      onChange={(value) => updateMaskOperation(operation.id, { size: value })}
+                      min={0}
+                      step={1}
+                    />
+                    <div className="inferenceInlineLabel">voxels</div>
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      disabled={index === 0}
+                      onClick={() => moveMaskOperation(operation.id, -1)}
+                    >
+                      Up
+                    </button>
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      disabled={index === maskOperations.length - 1}
+                      onClick={() => moveMaskOperation(operation.id, 1)}
+                    >
+                      Down
+                    </button>
+                    <button
+                      type="button"
+                      className="pickerSecondaryButton"
+                      onClick={() => onMaskOperationsChange(maskOperations.filter((item) => item.id !== operation.id))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              : null}
+
+            <div className="inferenceFormRow">
+              <div className="inferenceFieldLabel">
+                <ParameterHelpLabel
+                  label="Instance segmentation"
+                  description={POST_PROCESSING_PARAMETER_HELP.instanceSegmentation}
+                />
+              </div>
+              <select
+                className="inferenceSelect inferenceCompactSelect"
+                value={instanceMethod}
+                onChange={(event) => onInstanceMethodChange(event.target.value as GeneralSegmentationInstanceMethod)}
+              >
+                <option value="none">None</option>
+                <option value="connected_components">Connected-component labelling</option>
+                <option value="voronoi_otsu">Voronoi-Otsu</option>
+              </select>
+              {instanceMethod === "voronoi_otsu" ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Spot sigma</div>
+                  <PostProcessingNumberInput
+                    value={voronoiSpotSigma}
+                    onChange={onVoronoiSpotSigmaChange}
+                    min={0}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Outline sigma</div>
+                  <PostProcessingNumberInput
+                    value={voronoiOutlineSigma}
+                    onChange={onVoronoiOutlineSigmaChange}
+                    min={0}
+                    step={0.1}
+                  />
+                </>
+              ) : null}
+              {instanceMethod !== "none" ? (
+                <>
+                  <button
+                    type="button"
+                    className="pickerSecondaryButton"
+                    disabled={instanceLoading || !frame}
+                    onClick={() => void computeInstancePreview()}
+                  >
+                    {instanceMaskFrame?.key === instanceMaskKey ? "Recompute" : "Compute"}
+                  </button>
+                  {instancePreviewState ? <div className="inferenceInlineLabel">{instancePreviewState}</div> : null}
+                </>
+              ) : null}
             </div>
           </div>
 
           <div className="probabilityMapPreviewCanvasFrame">
-            <canvas ref={canvasRef} className="probabilityMapPreviewCanvas" aria-label="Probability map preview" />
-            {frameLoading ? <div className="probabilityMapPreviewOverlay">Loading preview...</div> : null}
+            <canvas ref={canvasRef} className="probabilityMapPreviewCanvas" aria-label="General segmentation preview" />
+            {frameLoading && !frame ? <div className="probabilityMapPreviewOverlay">Loading preview...</div> : null}
             {frameError ? <div className="probabilityMapPreviewOverlay isError">{frameError}</div> : null}
+            {!frameError && rangeError ? <div className="probabilityMapPreviewOverlay isError">{rangeError}</div> : null}
+            {!frameError && !rangeError && dataComputeError ? (
+              <div className="probabilityMapPreviewOverlay isError">{dataComputeError}</div>
+            ) : null}
+            {!frameError && maskError ? <div className="probabilityMapPreviewOverlay isError">{maskError}</div> : null}
+            {!frameError && !maskError && maskComputeError ? (
+              <div className="probabilityMapPreviewOverlay isError">{maskComputeError}</div>
+            ) : null}
+            {!frameError && !maskError && !maskComputeError && instanceError ? (
+              <div className="probabilityMapPreviewOverlay isError">{instanceError}</div>
+            ) : null}
             {!frameLoading && !frameError && !frame ? (
               <div className="probabilityMapPreviewOverlay">No preview loaded.</div>
             ) : null}
@@ -2660,10 +4066,48 @@ function decodeFloat32Base64(value: string): Float32Array {
   return new Float32Array(buffer);
 }
 
-function normalizeProbabilityThreshold(value: string): number {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed)) return 0.5;
-  return Math.min(1, Math.max(0, parsed));
+function decodeUint32Base64(value: string): Uint32Array {
+  const bytes = decodeBase64Bytes(value);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return new Uint32Array(buffer);
+}
+
+function labelColor(label: number): [number, number, number] {
+  const hue = ((label * 137.508) % 360) / 360;
+  return hsvToRgb(hue, 0.78, 1);
+}
+
+function hsvToRgb(hue: number, saturation: number, value: number): [number, number, number] {
+  const sector = Math.floor(hue * 6);
+  const fraction = hue * 6 - sector;
+  const p = value * (1 - saturation);
+  const q = value * (1 - fraction * saturation);
+  const t = value * (1 - (1 - fraction) * saturation);
+  const channelSets: Array<[number, number, number]> = [
+    [value, t, p],
+    [q, value, p],
+    [p, value, t],
+    [p, q, value],
+    [t, p, value],
+    [value, p, q],
+  ];
+  const [red, green, blue] = channelSets[sector % 6];
+  return [Math.round(red * 255), Math.round(green * 255), Math.round(blue * 255)];
+}
+
+function formatThresholdValue(value: number, step: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (!Number.isFinite(step) || step >= 1) return String(Math.round(value));
+  const decimals = Math.min(15, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
+  return value.toFixed(decimals).replace(/\.?0+$/, "");
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return Number.isFinite(min) && Number.isFinite(max) ? (min + max) / 2 : 0;
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
+  const low = Math.min(min, max);
+  const high = Math.max(min, max);
+  return Math.min(high, Math.max(low, value));
 }
 
 function clampInteger(value: number, min: number, max: number): number {

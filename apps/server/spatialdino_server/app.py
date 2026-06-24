@@ -33,6 +33,7 @@ from spatialdino_server.jobs_api import router as jobs_router
 from spatialdino_server.status import get_cpu_activity, get_nvidia_gpu_memory
 from spatialdino.inference.input_files import list_tiff_paths
 from spatialdino.inference.output_layout import (
+    PCA_DIR_RE,
     TRACKS_FILENAME,
     discover_inference_timepoints,
     has_duplicate_timepoint_names,
@@ -41,8 +42,23 @@ from spatialdino.inference.output_layout import (
     inference_managed_output_paths,
     natural_sort_key,
     norm_per_vol_stats_path as inference_norm_per_vol_stats_path,
+    process_features_statistics_dir,
     probability_map_dir,
     probability_map_densities_path,
+)
+from spatialdino.segmentation.general import (
+    DATA_BACKEND_CPU,
+    DATA_BACKEND_GPU,
+    INSTANCE_METHOD_CONNECTED_COMPONENTS,
+    INSTANCE_METHOD_NONE,
+    apply_data_operations,
+    apply_mask_operations,
+    finite_min_max,
+    instance_segmentation,
+    normalize_data_operations,
+    normalize_instance_method,
+    normalize_mask_operations,
+    threshold_to_semantic,
 )
 
 
@@ -91,6 +107,13 @@ _default_inference_backbone_download_lock = threading.Lock()
 PROBABILITY_MAP_PREVIEW_CACHE_MAX_ITEMS = 16
 _probability_map_preview_cache_lock = threading.Lock()
 _probability_map_preview_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+GENERAL_SEGMENTATION_VOLUME_CACHE_MAX_ITEMS = 8
+_general_segmentation_volume_cache_lock = threading.Lock()
+_general_segmentation_volume_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+
+class GeneralSegmentationProcessedDataNotReadyError(RuntimeError):
+    pass
 
 
 def get_repo_root() -> Path:
@@ -372,6 +395,9 @@ class RunProcessFeaturesRequest(BaseModel):
     pca_components: int = Field(3, ge=1)
     pca_save_format: str = Field(".tif", min_length=1)
     global_pca: bool = True
+    save_feature_statistics: bool = False
+    ignore_trailing_channels: bool = True
+    trailing_channels: int = Field(6, ge=0)
 
 
 class RunSegmentationRequest(BaseModel):
@@ -380,6 +406,16 @@ class RunSegmentationRequest(BaseModel):
     densities_path: str | None = None
     gpu_index: int | None = None
     mode: str = Field("voronoi_otsu", min_length=1)
+    source_id: str = Field("probmap", min_length=1)
+    source_kind: str | None = None
+    threshold: float | None = None
+    component_index: int = Field(0, ge=0)
+    invert_mask: bool = False
+    data_operations: list[dict[str, Any]] = Field(default_factory=list)
+    mask_operations: list[dict[str, Any]] = Field(default_factory=list)
+    instance_method: str | None = None
+    voronoi_spot_sigma: float = Field(2.0, ge=0.0)
+    voronoi_outline_sigma: float = Field(2.0, ge=0.0)
     enable_voronoi_otsu: bool = True
     gaussian_blur_sigma: int = Field(3, ge=0)
     rolling_ball_radius: float = Field(10.0, ge=0.0)
@@ -410,6 +446,76 @@ class ProbabilityMapPreviewImageRequest(BaseModel):
     timepoint: str = Field(..., min_length=1)
     view: Literal["slice", "max_projection"] = "slice"
     z_index: int | None = Field(None, ge=0)
+
+
+class GeneralSegmentationPreviewMetadataRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+
+
+class GeneralSegmentationPreviewImageRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = Field(None, ge=0)
+    source_id: str = Field("raw", min_length=1)
+    threshold_component_index: int = Field(0, ge=0)
+    display_source: Literal["raw", "source", "evaluation"] = "raw"
+    display_component_index: int = Field(0, ge=0)
+    display_contrast: Literal["auto", "full_range"] = "auto"
+    threshold: float | None = None
+    invert_mask: bool = False
+    data_operations: list[dict[str, Any]] = Field(default_factory=list)
+    mask_operations: list[dict[str, Any]] = Field(default_factory=list)
+    instance_method: str | None = None
+    voronoi_spot_sigma: float = Field(2.0, ge=0.0)
+    voronoi_outline_sigma: float = Field(2.0, ge=0.0)
+    require_cached_data: bool = False
+    timepoint: str = Field(..., min_length=1)
+    view: Literal["slice", "max_projection", "min_projection"] = "slice"
+    z_index: int | None = Field(None, ge=0)
+
+
+class GeneralSegmentationPreviewSurfaceRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = Field(None, ge=0)
+    source_id: str = Field("raw", min_length=1)
+    threshold_component_index: int = Field(0, ge=0)
+    display_source: Literal["raw", "source", "evaluation"] = "raw"
+    display_contrast: Literal["auto", "full_range"] = "auto"
+    data_operations: list[dict[str, Any]] = Field(default_factory=list)
+    require_cached_data: bool = False
+    timepoint: str = Field(..., min_length=1)
+    view: Literal["slice", "max_projection", "min_projection"] = "slice"
+    z_index: int | None = Field(None, ge=0)
+
+
+class GeneralSegmentationPreviewDataRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = Field(None, ge=0)
+    source_id: str = Field("raw", min_length=1)
+    threshold_component_index: int = Field(0, ge=0)
+    data_operations: list[dict[str, Any]] = Field(default_factory=list)
+    require_cached_data: bool = False
+    timepoint: str = Field(..., min_length=1)
+
+
+class GeneralSegmentationPreviewMaskRequest(BaseModel):
+    input_path: str = Field(..., min_length=1)
+    gpu_index: int | None = Field(None, ge=0)
+    source_id: str = Field("raw", min_length=1)
+    threshold_component_index: int = Field(0, ge=0)
+    threshold: float | None = None
+    invert_mask: bool = False
+    data_operations: list[dict[str, Any]] = Field(default_factory=list)
+    require_cached_data: bool = False
+    timepoint: str = Field(..., min_length=1)
+    view: Literal["slice", "max_projection", "min_projection"] = "slice"
+    z_index: int | None = Field(None, ge=0)
+
+
+class GeneralSegmentationPreviewInstanceRequest(GeneralSegmentationPreviewMaskRequest):
+    mask_operations: list[dict[str, Any]] = Field(default_factory=list)
+    instance_method: str | None = None
+    voronoi_spot_sigma: float = Field(2.0, ge=0.0)
+    voronoi_outline_sigma: float = Field(2.0, ge=0.0)
 
 
 class RunForegroundProbabilityMapRequest(BaseModel):
@@ -643,6 +749,343 @@ def _named_tiff_file_map(directory: Path) -> dict[str, Path]:
     return names_to_paths
 
 
+def _named_source_file_map(directory: Path) -> dict[str, Path]:
+    names_to_paths: dict[str, Path] = {}
+    if not directory.is_dir():
+        return names_to_paths
+
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            lowered = entry.name.lower()
+            if not lowered.endswith((".tif", ".tiff", ".npy")):
+                continue
+            path = Path(entry.path)
+            name = path.stem
+            existing = names_to_paths.get(name)
+            if existing is not None:
+                raise ValueError(
+                    f"Duplicate files map to the same timepoint name {name!r}: "
+                    f"{existing.name} and {path.name}."
+                )
+            names_to_paths[name] = path
+    return names_to_paths
+
+
+def _read_array_shape(path: Path) -> tuple[int, ...]:
+    if path.suffix.lower() == ".npy":
+        array = np.load(path, mmap_mode="r")
+        return tuple(int(dim) for dim in array.shape)
+    with tifffile.TiffFile(path) as tif:
+        if not tif.series:
+            raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
+        return tuple(int(dim) for dim in tif.series[0].shape)
+
+
+def _source_shape_and_components(path: Path) -> tuple[tuple[int, int, int], int]:
+    shape = _read_array_shape(path)
+    if len(shape) == 3:
+        return (int(shape[0]), int(shape[1]), int(shape[2])), 1
+    if len(shape) == 4:
+        return (int(shape[0]), int(shape[1]), int(shape[2])), int(shape[3])
+    raise ValueError(f"{path.name} must be a 3D volume or a 4D component volume.")
+
+
+def _source_warning(folder_name: str, message: str) -> dict[str, str]:
+    return {"folderName": folder_name, "message": message}
+
+
+def _validate_optional_scalar_source(
+    *,
+    folder_name: str,
+    folder_path: Path,
+    raw_paths: dict[str, Path],
+    raw_shapes: dict[str, tuple[int, int, int]],
+    kind: str,
+    label: str,
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    try:
+        source_paths = _named_tiff_file_map(folder_path)
+    except ValueError as exc:
+        return None, _source_warning(folder_name, str(exc))
+    if not source_paths:
+        return None, _source_warning(folder_name, f"{folder_name}/ contains no TIFF files.")
+
+    missing_source = sorted(set(raw_paths) - set(source_paths), key=natural_sort_key)
+    if missing_source:
+        return None, _source_warning(folder_name, f"{folder_name}/ is missing {missing_source[0]}.tif.")
+
+    missing_raw = sorted(set(source_paths) - set(raw_paths), key=natural_sort_key)
+    if missing_raw:
+        return None, _source_warning(folder_name, f"raw/ is missing {missing_raw[0]}.tif.")
+
+    for name in sorted(raw_paths, key=natural_sort_key):
+        try:
+            source_shape = _read_tiff_zyx_shape(source_paths[name])
+        except Exception as exc:
+            return None, _source_warning(folder_name, f"{source_paths[name].name}: {exc}")
+        if source_shape != raw_shapes[name]:
+            return None, _source_warning(
+                folder_name,
+                f"{source_paths[name].name} shape {source_shape} does not match raw shape {raw_shapes[name]}.",
+            )
+
+    return (
+        {
+            "id": folder_name,
+            "kind": kind,
+            "label": label,
+            "folderName": folder_name,
+            "componentCount": 1,
+            "thresholdMin": 0.0 if kind == SEGMENTATION_SOURCE_PROBMAP else None,
+            "thresholdMax": 1.0 if kind == SEGMENTATION_SOURCE_PROBMAP else None,
+            "thresholdStep": 0.001 if kind == SEGMENTATION_SOURCE_PROBMAP else None,
+        },
+        None,
+    )
+
+
+def _validate_optional_pca_source(
+    *,
+    folder_path: Path,
+    component_count: int,
+    raw_paths: dict[str, Path],
+    raw_shapes: dict[str, tuple[int, int, int]],
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    folder_name = folder_path.name
+    try:
+        source_paths = _named_source_file_map(folder_path)
+    except ValueError as exc:
+        return None, _source_warning(folder_name, str(exc))
+    if not source_paths:
+        return None, _source_warning(folder_name, f"{folder_name}/ contains no TIFF or NumPy files.")
+
+    missing_source = sorted(set(raw_paths) - set(source_paths), key=natural_sort_key)
+    if missing_source:
+        return None, _source_warning(folder_name, f"{folder_name}/ is missing {missing_source[0]}.tif or .npy.")
+
+    missing_raw = sorted(set(source_paths) - set(raw_paths), key=natural_sort_key)
+    if missing_raw:
+        return None, _source_warning(folder_name, f"raw/ is missing {missing_raw[0]}.tif.")
+
+    for name in sorted(raw_paths, key=natural_sort_key):
+        try:
+            source_shape, found_components = _source_shape_and_components(source_paths[name])
+        except Exception as exc:
+            return None, _source_warning(folder_name, f"{source_paths[name].name}: {exc}")
+        if source_shape != raw_shapes[name]:
+            return None, _source_warning(
+                folder_name,
+                f"{source_paths[name].name} shape {source_shape} does not match raw shape {raw_shapes[name]}.",
+            )
+        if found_components != component_count:
+            return None, _source_warning(
+                folder_name,
+                f"{source_paths[name].name} has {found_components} component(s), expected {component_count}.",
+            )
+
+    component_label = "component" if component_count == 1 else "components"
+    return (
+        {
+            "id": folder_name,
+            "kind": SEGMENTATION_SOURCE_PCA,
+            "label": f"PCA {component_count} {component_label}",
+            "folderName": folder_name,
+            "componentCount": int(component_count),
+            "thresholdMin": 0.0,
+            "thresholdMax": 255.0,
+            "thresholdStep": 1.0,
+        },
+        None,
+    )
+
+
+def _load_feature_stats_metadata(folder_path: Path) -> tuple[list[str], dict[str, Any]]:
+    metadata_path = folder_path / FEATURE_STATS_METADATA_FILENAME
+    if not metadata_path.is_file():
+        raise ValueError(f"{FEATURE_STATS_METADATA_FILENAME} is missing.")
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Could not read {FEATURE_STATS_METADATA_FILENAME}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{FEATURE_STATS_METADATA_FILENAME} must contain a JSON object.")
+    raw_components = payload.get("components")
+    if not isinstance(raw_components, list) or not raw_components:
+        raise ValueError(f"{FEATURE_STATS_METADATA_FILENAME} must include a nonempty components list.")
+    components: list[str] = []
+    for item in raw_components:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{FEATURE_STATS_METADATA_FILENAME} contains an invalid component name.")
+        components.append(item.strip())
+    return components, payload
+
+
+def _validate_optional_feature_statistics_source(
+    *,
+    folder_path: Path,
+    raw_paths: dict[str, Path],
+    raw_shapes: dict[str, tuple[int, int, int]],
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    folder_name = folder_path.name
+    try:
+        component_names, metadata = _load_feature_stats_metadata(folder_path)
+        source_paths = _named_tiff_file_map(folder_path)
+    except ValueError as exc:
+        return None, _source_warning(folder_name, str(exc))
+    if not source_paths:
+        return None, _source_warning(folder_name, f"{folder_name}/ contains no TIFF files.")
+
+    missing_source = sorted(set(raw_paths) - set(source_paths), key=natural_sort_key)
+    if missing_source:
+        return None, _source_warning(folder_name, f"{folder_name}/ is missing {missing_source[0]}.tif.")
+
+    missing_raw = sorted(set(source_paths) - set(raw_paths), key=natural_sort_key)
+    if missing_raw:
+        return None, _source_warning(folder_name, f"raw/ is missing {missing_raw[0]}.tif.")
+
+    component_count = len(component_names)
+    for name in sorted(raw_paths, key=natural_sort_key):
+        try:
+            source_shape, found_components = _source_shape_and_components(source_paths[name])
+        except Exception as exc:
+            return None, _source_warning(folder_name, f"{source_paths[name].name}: {exc}")
+        if source_shape != raw_shapes[name]:
+            return None, _source_warning(
+                folder_name,
+                f"{source_paths[name].name} shape {source_shape} does not match raw shape {raw_shapes[name]}.",
+            )
+        if found_components != component_count:
+            return None, _source_warning(
+                folder_name,
+                f"{source_paths[name].name} has {found_components} component(s), expected {component_count}.",
+            )
+
+    return (
+        {
+            "id": folder_name,
+            "kind": SEGMENTATION_SOURCE_FEATURE_STATS,
+            "label": "Feature statistics",
+            "folderName": folder_name,
+            "componentCount": int(component_count),
+            "componentNames": component_names,
+            "metadata": metadata,
+            "thresholdMin": None,
+            "thresholdMax": None,
+            "thresholdStep": None,
+        },
+        None,
+    )
+
+
+def validate_general_segmentation_input_folder(raw_path: str) -> dict[str, Any]:
+    input_path = _resolve_allowed_inference_path(raw_path)
+    if not input_path.exists():
+        return _invalid_process_features_input("missing", "Input folder does not exist.")
+    if not input_path.is_dir():
+        return _invalid_process_features_input("not_directory", "Input path is not a folder.")
+
+    raw_path_root = inference_raw_dir(input_path)
+    if not raw_path_root.is_dir():
+        return _invalid_process_features_input(
+            "missing_raw_folder",
+            f"Input folder is missing {raw_path_root.name}/.",
+        )
+
+    try:
+        raw_paths = _named_tiff_file_map(raw_path_root)
+    except ValueError as exc:
+        return _invalid_process_features_input("duplicate_timepoint_names", str(exc))
+    if not raw_paths:
+        return _invalid_process_features_input("missing_required_files", f"{raw_path_root.name}/ contains no TIFF files.")
+
+    raw_shapes: dict[str, tuple[int, int, int]] = {}
+    for name in sorted(raw_paths, key=natural_sort_key):
+        try:
+            raw_shapes[name] = _read_tiff_zyx_shape(raw_paths[name])
+        except Exception as exc:
+            return _invalid_process_features_input("invalid_raw_volume", f"{raw_paths[name].name}: {exc}")
+
+    available_sources: list[dict[str, Any]] = [
+        {
+            "id": SEGMENTATION_SOURCE_RAW,
+            "kind": SEGMENTATION_SOURCE_RAW,
+            "label": "Raw",
+            "folderName": "raw",
+            "componentCount": 1,
+            "thresholdMin": None,
+            "thresholdMax": None,
+            "thresholdStep": None,
+        }
+    ]
+    source_warnings: list[dict[str, str]] = []
+
+    probmap_path = probability_map_dir(input_path)
+    if probmap_path.is_dir():
+        source, warning = _validate_optional_scalar_source(
+            folder_name=probmap_path.name,
+            folder_path=probmap_path,
+            raw_paths=raw_paths,
+            raw_shapes=raw_shapes,
+            kind=SEGMENTATION_SOURCE_PROBMAP,
+            label="Probability map",
+        )
+        if source is not None:
+            available_sources.append(source)
+        elif warning is not None:
+            source_warnings.append(warning)
+
+    feature_stats_path = process_features_statistics_dir(input_path)
+    if feature_stats_path.is_dir():
+        source, warning = _validate_optional_feature_statistics_source(
+            folder_path=feature_stats_path,
+            raw_paths=raw_paths,
+            raw_shapes=raw_shapes,
+        )
+        if source is not None:
+            available_sources.append(source)
+        elif warning is not None:
+            source_warnings.append(warning)
+
+    pca_dirs: list[tuple[int, Path]] = []
+    with os.scandir(input_path) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_dir():
+                continue
+            match = PCA_DIR_RE.fullmatch(entry.name.lower())
+            if match is None:
+                continue
+            pca_dirs.append((int(match.group(1)), Path(entry.path)))
+    pca_dirs.sort(key=lambda item: (item[0], natural_sort_key(item[1].name)))
+
+    for component_count, pca_dir in pca_dirs:
+        source, warning = _validate_optional_pca_source(
+            folder_path=pca_dir,
+            component_count=component_count,
+            raw_paths=raw_paths,
+            raw_shapes=raw_shapes,
+        )
+        if source is not None:
+            available_sources.append(source)
+        elif warning is not None:
+            source_warnings.append(warning)
+
+    subfolder_names = sorted(raw_paths, key=natural_sort_key)
+    subfolder_count = len(subfolder_names)
+    return {
+        "valid": True,
+        "message": f"Valid general segmentation folder. Found {subfolder_count} timepoint{'s' if subfolder_count != 1 else ''}.",
+        "subfolderCount": subfolder_count,
+        "subfolderNames": subfolder_names,
+        "rawPath": str(raw_path_root),
+        "availableSources": available_sources,
+        "sourceWarnings": source_warnings,
+        "probmapDensitiesPath": str(probability_map_densities_path(input_path)),
+        "probmapDensitiesExists": probability_map_densities_path(input_path).is_file(),
+    }
+
+
 def validate_probability_map_input_folder(raw_path: str) -> dict[str, Any]:
     input_path = _resolve_allowed_inference_path(raw_path)
     if not input_path.exists():
@@ -771,6 +1214,39 @@ def _read_tiff_max_projection(path: Path, *, ignore_nan: bool = False) -> np.nda
         return np.asarray(np.max(volume, axis=0))
 
 
+def _read_tiff_min_projection(path: Path, *, ignore_nan: bool = False) -> np.ndarray:
+    shape = _read_tiff_zyx_shape(path)
+
+    try:
+        mapped = tifffile.memmap(path)
+        if mapped.ndim == 3 and tuple(int(dim) for dim in mapped.shape) == shape:
+            if ignore_nan:
+                return np.asarray(np.fmin.reduce(mapped, axis=0))
+            return np.asarray(np.min(mapped, axis=0))
+    except Exception:
+        pass
+
+    with tifffile.TiffFile(path) as tif:
+        series = tif.series[0]
+        if len(series.pages) == shape[0]:
+            projection: np.ndarray | None = None
+            for page in series.pages:
+                plane = np.asarray(page.asarray())
+                if projection is None:
+                    projection = plane.copy()
+                else:
+                    if ignore_nan:
+                        np.fmin(projection, plane, out=projection)
+                    else:
+                        np.minimum(projection, plane, out=projection)
+            if projection is not None:
+                return projection
+        volume = series.asarray()
+        if ignore_nan:
+            return np.asarray(np.fmin.reduce(volume, axis=0))
+        return np.asarray(np.min(volume, axis=0))
+
+
 def _normalize_raw_preview(array: np.ndarray) -> tuple[np.ndarray, float, float]:
     values = np.asarray(array, dtype=np.float32)
     finite = np.isfinite(values)
@@ -817,6 +1293,24 @@ def _preview_cache_put(key: tuple[Any, ...], value: dict[str, Any]) -> None:
         while len(_probability_map_preview_cache) > PROBABILITY_MAP_PREVIEW_CACHE_MAX_ITEMS:
             oldest_key = next(iter(_probability_map_preview_cache))
             _probability_map_preview_cache.pop(oldest_key, None)
+
+
+def _general_segmentation_volume_cache_get(key: tuple[Any, ...]) -> dict[str, Any] | None:
+    with _general_segmentation_volume_cache_lock:
+        cached = _general_segmentation_volume_cache.get(key)
+        if cached is None:
+            return None
+        _general_segmentation_volume_cache.pop(key)
+        _general_segmentation_volume_cache[key] = cached
+        return dict(cached)
+
+
+def _general_segmentation_volume_cache_put(key: tuple[Any, ...], value: dict[str, Any]) -> None:
+    with _general_segmentation_volume_cache_lock:
+        _general_segmentation_volume_cache[key] = dict(value)
+        while len(_general_segmentation_volume_cache) > GENERAL_SEGMENTATION_VOLUME_CACHE_MAX_ITEMS:
+            oldest_key = next(iter(_general_segmentation_volume_cache))
+            _general_segmentation_volume_cache.pop(oldest_key, None)
 
 
 def _probability_map_timepoint_paths(input_path: Path, timepoint_name: str) -> tuple[Path, Path]:
@@ -894,7 +1388,8 @@ def probability_map_preview_image(payload: ProbabilityMapPreviewImageRequest) ->
     if raw_shape != probmap_shape:
         raise HTTPException(status_code=400, detail="Raw and probability-map TIFF shapes do not match.")
 
-    if payload.view == "slice":
+    view = getattr(payload, "view", None)
+    if view == "slice":
         z_index = 0 if payload.z_index is None else int(payload.z_index)
         if z_index < 0 or z_index >= raw_shape[0]:
             raise HTTPException(status_code=400, detail=f"Z plane must be between 0 and {raw_shape[0] - 1}.")
@@ -952,6 +1447,992 @@ def probability_map_preview_image(payload: ProbabilityMapPreviewImageRequest) ->
     }
     _preview_cache_put(cache_key, response)
     return response
+
+
+def _general_source_from_validation(validation: dict[str, Any], source_id: str) -> dict[str, Any] | None:
+    for source in validation.get("availableSources", []):
+        if isinstance(source, dict) and source.get("id") == source_id:
+            return source
+    return None
+
+
+def _general_source_file_map(input_path: Path, source: dict[str, Any]) -> dict[str, Path]:
+    kind = str(source["kind"])
+    if kind == SEGMENTATION_SOURCE_RAW:
+        return _named_tiff_file_map(inference_raw_dir(input_path))
+    if kind == SEGMENTATION_SOURCE_PROBMAP:
+        return _named_tiff_file_map(input_path / str(source["folderName"]))
+    if kind in {SEGMENTATION_SOURCE_PCA, SEGMENTATION_SOURCE_FEATURE_STATS}:
+        return _named_source_file_map(input_path / str(source["folderName"]))
+    raise ValueError(f"Unsupported source kind: {kind}.")
+
+
+def _read_source_array(path: Path) -> np.ndarray:
+    if path.suffix.lower() == ".npy":
+        return np.asarray(np.load(path, mmap_mode="r"))
+    with tifffile.TiffFile(path) as tif:
+        if not tif.series:
+            raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
+        return np.asarray(tif.asarray())
+
+
+def _extract_source_component(array: np.ndarray, *, source: dict[str, Any], component_index: int) -> np.ndarray:
+    kind = str(source["kind"])
+    if kind in {SEGMENTATION_SOURCE_PCA, SEGMENTATION_SOURCE_FEATURE_STATS}:
+        component_count = int(source.get("componentCount", 1))
+        if component_index < 0 or component_index >= component_count:
+            raise ValueError(f"Component must be between 1 and {component_count}.")
+        if array.ndim == 3:
+            if component_index != 0:
+                raise ValueError("This source has one component.")
+            return np.asarray(array, dtype=np.float32)
+        if array.ndim == 4:
+            return np.asarray(array[..., component_index], dtype=np.float32)
+        raise ValueError("Source must be a 3D or 4D volume.")
+
+    if array.ndim != 3:
+        raise ValueError(f"{kind} source must be a 3D volume.")
+    return np.asarray(array, dtype=np.float32)
+
+
+def _source_plane_or_projection(volume: np.ndarray, *, view: str, z_index: int | None) -> np.ndarray:
+    if view == "slice":
+        assert z_index is not None
+        return np.asarray(volume[z_index])
+    if view == "min_projection":
+        return np.asarray(np.fmin.reduce(volume, axis=0))
+    return np.asarray(np.fmax.reduce(volume, axis=0))
+
+
+def _mask_plane_or_projection(volume: np.ndarray, *, view: str, z_index: int | None) -> np.ndarray:
+    if view == "slice":
+        assert z_index is not None
+        return np.asarray(volume[z_index])
+    return np.asarray(np.max(volume, axis=0))
+
+
+def _binary_mask_plane_or_projection(mask_volume: np.ndarray, *, view: str, z_index: int | None) -> np.ndarray:
+    if view == "slice":
+        assert z_index is not None
+        return np.asarray(mask_volume[z_index] > 0, dtype=np.uint32)
+    return np.asarray(np.any(mask_volume > 0, axis=0), dtype=np.uint32)
+
+
+def _read_source_slice(path: Path, *, source: dict[str, Any], component_index: int, z_index: int) -> np.ndarray:
+    kind = str(source["kind"])
+    if kind in {SEGMENTATION_SOURCE_RAW, SEGMENTATION_SOURCE_PROBMAP} and path.suffix.lower() != ".npy":
+        return np.asarray(_read_tiff_z_slice(path, z_index=z_index), dtype=np.float32)
+
+    if path.suffix.lower() == ".npy":
+        array = np.load(path, mmap_mode="r")
+        if array.ndim == 3:
+            if component_index != 0 and kind in {SEGMENTATION_SOURCE_PCA, SEGMENTATION_SOURCE_FEATURE_STATS}:
+                raise ValueError("This source has one component.")
+            return np.asarray(array[z_index], dtype=np.float32)
+        if array.ndim == 4:
+            return np.asarray(array[z_index, ..., component_index], dtype=np.float32)
+        raise ValueError("Source must be a 3D or 4D volume.")
+
+    with tifffile.TiffFile(path) as tif:
+        if not tif.series:
+            raise ValueError(f"{path.name} does not contain a readable TIFF volume.")
+        series = tif.series[0]
+        shape = tuple(int(dim) for dim in series.shape)
+        if len(shape) == 3 and len(series.pages) == shape[0]:
+            if component_index != 0 and kind in {SEGMENTATION_SOURCE_PCA, SEGMENTATION_SOURCE_FEATURE_STATS}:
+                raise ValueError("This source has one component.")
+            return np.asarray(series.pages[z_index].asarray(), dtype=np.float32)
+
+        try:
+            mapped = tifffile.memmap(path)
+            if mapped.ndim == 3:
+                return np.asarray(mapped[z_index], dtype=np.float32)
+            if mapped.ndim == 4:
+                return np.asarray(mapped[z_index, ..., component_index], dtype=np.float32)
+        except Exception:
+            pass
+
+        array = np.asarray(series.asarray())
+        if array.ndim == 3:
+            if component_index != 0 and kind in {SEGMENTATION_SOURCE_PCA, SEGMENTATION_SOURCE_FEATURE_STATS}:
+                raise ValueError("This source has one component.")
+            return np.asarray(array[z_index], dtype=np.float32)
+        if array.ndim == 4:
+            return np.asarray(array[z_index, ..., component_index], dtype=np.float32)
+        raise ValueError("Source must be a 3D or 4D volume.")
+
+
+def _source_image_without_data_operations(
+    *,
+    source_path: Path,
+    source: dict[str, Any],
+    component_index: int,
+    view: str,
+    z_index: int | None,
+) -> np.ndarray:
+    if view == "slice":
+        assert z_index is not None
+        return _read_source_slice(source_path, source=source, component_index=component_index, z_index=z_index)
+
+    source_array = _read_source_array(source_path)
+    source_volume = _extract_source_component(source_array, source=source, component_index=component_index)
+    return _source_plane_or_projection(source_volume, view=view, z_index=z_index)
+
+
+def _general_preview_context(
+    payload: GeneralSegmentationPreviewImageRequest
+    | GeneralSegmentationPreviewSurfaceRequest
+    | GeneralSegmentationPreviewDataRequest
+    | GeneralSegmentationPreviewMaskRequest
+    | GeneralSegmentationPreviewInstanceRequest,
+) -> dict[str, Any]:
+    validation = validate_general_segmentation_input_folder(payload.input_path)
+    if not validation["valid"]:
+        raise HTTPException(status_code=400, detail=validation["message"])
+
+    source = _general_source_from_validation(validation, payload.source_id)
+    if source is None:
+        raise HTTPException(status_code=400, detail=f"Unknown segmentation source: {payload.source_id}.")
+
+    input_path = _resolve_allowed_inference_path(payload.input_path)
+    try:
+        raw_paths = _named_tiff_file_map(inference_raw_dir(input_path))
+        source_paths = _general_source_file_map(input_path, source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    raw_path = raw_paths.get(payload.timepoint)
+    source_path = source_paths.get(payload.timepoint)
+    if raw_path is None or source_path is None:
+        raise HTTPException(status_code=404, detail=f"Unknown timepoint: {payload.timepoint}.")
+
+    raw_shape = tuple(int(dim) for dim in _read_tiff_zyx_shape(raw_path))
+    view = getattr(payload, "view", None)
+    if view == "slice":
+        z_index = 0 if getattr(payload, "z_index", None) is None else int(payload.z_index)
+        if z_index < 0 or z_index >= raw_shape[0]:
+            raise HTTPException(status_code=400, detail=f"Z plane must be between 0 and {raw_shape[0] - 1}.")
+    else:
+        z_index = None
+
+    try:
+        data_operations = normalize_data_operations(payload.data_operations)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    requested_gpu: int | None = None
+    data_backend = DATA_BACKEND_CPU
+    if data_operations and getattr(payload, "gpu_index", None) is not None:
+        gpu_error, requested_gpu = _validate_optional_requested_gpu(getattr(payload, "gpu_index", None))
+        if gpu_error is not None:
+            raise HTTPException(status_code=400, detail=gpu_error["message"])
+        data_backend = DATA_BACKEND_GPU
+
+    return {
+        "validation": validation,
+        "source": source,
+        "input_path": input_path,
+        "raw_path": raw_path,
+        "source_path": source_path,
+        "raw_shape": raw_shape,
+        "z_index": z_index,
+        "data_operations": data_operations,
+        "data_backend": data_backend,
+        "gpu_index": requested_gpu,
+    }
+
+
+def _subprocess_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part and part.strip())
+    if not output:
+        return f"Process exited with code {completed.returncode}."
+    return output[-2000:]
+
+
+def _run_general_preview_gpu_processing(
+    values: np.ndarray,
+    *,
+    source_kind: str,
+    data_operations: list[dict[str, Any]],
+    gpu_index: int,
+) -> np.ndarray:
+    with tempfile.TemporaryDirectory(prefix="spatialdino-general-preview-") as tmp:
+        tmp_path = Path(tmp)
+        input_npy = tmp_path / "input.npy"
+        output_npy = tmp_path / "output.npy"
+        np.save(input_npy, np.asarray(values, dtype=np.float32), allow_pickle=False)
+        command = [
+            sys.executable,
+            "scripts/post_processing/general_preview_processing.py",
+            "--input-npy",
+            str(input_npy),
+            "--output-npy",
+            str(output_npy),
+            "--source-kind",
+            source_kind,
+            "--data-operations-json",
+            json.dumps(data_operations, sort_keys=True),
+            "--gpu-index",
+            "0",
+        ]
+        env = {
+            **os.environ,
+            "CUDA_VISIBLE_DEVICES": str(int(gpu_index)),
+            "OMP_NUM_THREADS": _resolve_omp_num_threads(),
+            "PYTHONUNBUFFERED": "1",
+        }
+        completed = subprocess.run(
+            command,
+            cwd=get_repo_root(),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"GPU preview processing failed. {_subprocess_failure_detail(completed)}")
+        if not output_npy.is_file():
+            raise RuntimeError("GPU preview processing did not produce an output volume.")
+        return np.asarray(np.load(output_npy), dtype=np.float32)
+
+
+def _apply_general_preview_data_operations(
+    values: np.ndarray,
+    *,
+    source_kind: str,
+    data_operations: list[dict[str, Any]],
+    data_backend: str,
+    gpu_index: int | None,
+) -> np.ndarray:
+    if data_backend == DATA_BACKEND_GPU:
+        if gpu_index is None:
+            raise ValueError("GPU preview processing requires a selected GPU.")
+        return _run_general_preview_gpu_processing(
+            values,
+            source_kind=source_kind,
+            data_operations=data_operations,
+            gpu_index=int(gpu_index),
+        )
+    return apply_data_operations(
+        values,
+        data_operations,
+        source_kind=source_kind,
+        backend=DATA_BACKEND_CPU,
+        gpu_index=None,
+    )
+
+
+def _general_processed_volume(
+    *,
+    source: dict[str, Any],
+    source_path: Path,
+    raw_path: Path,
+    raw_shape: tuple[int, int, int],
+    component_index: int,
+    data_operations: list[dict[str, Any]],
+    data_backend: str,
+    gpu_index: int | None,
+    require_cached: bool = False,
+) -> tuple[np.ndarray, dict[str, float]]:
+    cache_key = (
+        "general-segmentation-processed-volume-v2",
+        str(source.get("id", "")),
+        str(source.get("kind", "")),
+        int(component_index),
+        json.dumps(data_operations, sort_keys=True),
+        data_backend,
+        int(gpu_index) if data_backend == DATA_BACKEND_GPU and gpu_index is not None else None,
+        _file_cache_stamp(raw_path),
+        _file_cache_stamp(source_path),
+    )
+    cached = _general_segmentation_volume_cache_get(cache_key)
+    if cached is not None:
+        return cached["processed_volume"], cached["threshold_range"]
+    if require_cached:
+        raise GeneralSegmentationProcessedDataNotReadyError(
+            "Processed data has not been computed for these settings."
+        )
+
+    source_array = _read_source_array(source_path)
+    source_volume = _extract_source_component(
+        source_array,
+        source=source,
+        component_index=int(component_index),
+    )
+    source_shape = tuple(int(dim) for dim in source_volume.shape)
+    if source_shape != raw_shape:
+        raise ValueError("Raw and selected segmentation source shapes do not match.")
+
+    processed_volume = _apply_general_preview_data_operations(
+        source_volume,
+        source_kind=str(source["kind"]),
+        data_operations=data_operations,
+        data_backend=data_backend,
+        gpu_index=gpu_index,
+    )
+    threshold_range = _threshold_range_for_processed_source(
+        source,
+        processed_volume,
+        has_data_operations=bool(data_operations),
+        source_array=source_array,
+    )
+    _general_segmentation_volume_cache_put(
+        cache_key,
+        {
+            "processed_volume": processed_volume,
+            "threshold_range": threshold_range,
+        },
+    )
+    return processed_volume, threshold_range
+
+
+def _general_evaluation_surfaces(
+    *,
+    source: dict[str, Any],
+    source_path: Path,
+    raw_path: Path,
+    raw_shape: tuple[int, int, int],
+    component_index: int,
+    data_operations: list[dict[str, Any]],
+    data_backend: str,
+    gpu_index: int | None,
+    require_cached: bool,
+    view: str,
+    z_index: int | None,
+) -> dict[str, Any]:
+    volume: np.ndarray | None = None
+    if data_operations:
+        volume, _threshold_range = _general_processed_volume(
+            source=source,
+            source_path=source_path,
+            raw_path=raw_path,
+            raw_shape=raw_shape,
+            component_index=component_index,
+            data_operations=data_operations,
+            data_backend=data_backend,
+            gpu_index=gpu_index,
+            require_cached=require_cached,
+        )
+
+    if view == "slice":
+        assert z_index is not None
+        values = (
+            np.asarray(volume[z_index], dtype=np.float32)
+            if volume is not None
+            else _source_image_without_data_operations(
+                source_path=source_path,
+                source=source,
+                component_index=component_index,
+                view=view,
+                z_index=z_index,
+            )
+        )
+        return {
+            "kind": "slice",
+            "values": np.asarray(values, dtype=np.float32),
+            "display_max": None,
+            "display_min": None,
+            "volume": volume,
+        }
+
+    if volume is None:
+        source_array = _read_source_array(source_path)
+        volume = _extract_source_component(source_array, source=source, component_index=component_index)
+        source_shape = tuple(int(dim) for dim in volume.shape)
+        if source_shape != raw_shape:
+            raise ValueError("Raw and selected segmentation source shapes do not match.")
+
+    max_values = np.asarray(np.fmax.reduce(volume, axis=0), dtype=np.float32)
+    min_values = np.asarray(np.fmin.reduce(volume, axis=0), dtype=np.float32)
+    return {
+        "kind": "projection",
+        "max_values": max_values,
+        "min_values": min_values,
+        "display_max": max_values,
+        "display_min": min_values,
+        "volume": volume if data_operations else None,
+    }
+
+
+def _resolved_preview_threshold(threshold: float | None, threshold_range: dict[str, float]) -> float:
+    if threshold is not None and np.isfinite(float(threshold)):
+        return float(threshold)
+    return float((threshold_range["min"] + threshold_range["max"]) / 2.0)
+
+
+def _finite_min_max(values: np.ndarray) -> tuple[float, float]:
+    finite = np.isfinite(values)
+    if not bool(finite.any()):
+        return 0.0, 0.0
+    finite_values = np.asarray(values[finite], dtype=np.float32)
+    return float(np.min(finite_values)), float(np.max(finite_values))
+
+
+def _threshold_range_for_source(source: dict[str, Any], source_array: np.ndarray, source_volume: np.ndarray) -> dict[str, float]:
+    kind = str(source["kind"])
+    if kind == SEGMENTATION_SOURCE_PROBMAP:
+        return {"min": 0.0, "max": 1.0, "step": 0.001}
+    if kind == SEGMENTATION_SOURCE_PCA:
+        return {"min": 0.0, "max": 255.0, "step": 1.0}
+
+    min_value, max_value = _finite_min_max(source_volume)
+    if np.issubdtype(source_array.dtype, np.integer):
+        step = 1.0
+    else:
+        span = max_value - min_value
+        step = float(max(span / 1000.0, np.finfo(np.float32).eps))
+    return {"min": min_value, "max": max_value, "step": step}
+
+
+def _normalize_full_range_preview(array: np.ndarray, *, low: float, high: float) -> tuple[np.ndarray, float, float]:
+    values = np.asarray(array, dtype=np.float32)
+    if high <= low:
+        return np.zeros(values.shape, dtype=np.uint8), low, high
+    safe_values = np.nan_to_num(values, nan=low, neginf=low, posinf=high)
+    scaled = np.clip((safe_values - low) / (high - low), 0.0, 1.0)
+    return np.asarray(np.rint(scaled * 255.0), dtype=np.uint8), low, high
+
+
+def _threshold_range_for_processed_source(
+    source: dict[str, Any],
+    processed_volume: np.ndarray,
+    *,
+    has_data_operations: bool,
+    source_array: np.ndarray | None = None,
+) -> dict[str, float]:
+    kind = str(source["kind"])
+    if not has_data_operations and kind == SEGMENTATION_SOURCE_PROBMAP:
+        return {"min": 0.0, "max": 1.0, "step": 0.001}
+    if not has_data_operations and kind == SEGMENTATION_SOURCE_PCA:
+        return {"min": 0.0, "max": 255.0, "step": 1.0}
+
+    min_value, max_value = finite_min_max(processed_volume)
+    span = max_value - min_value
+    original_dtype = source_array.dtype if source_array is not None else processed_volume.dtype
+    step = (
+        1.0
+        if not has_data_operations and np.issubdtype(original_dtype, np.integer)
+        else float(max(span / 1000.0, np.finfo(np.float32).eps))
+    )
+    return {"min": min_value, "max": max_value, "step": step}
+
+
+def _normalize_source_display(
+    array: np.ndarray,
+    *,
+    source: dict[str, Any],
+    contrast: str,
+    display_volume: np.ndarray | None = None,
+    display_array: np.ndarray | None = None,
+) -> tuple[np.ndarray, float, float]:
+    kind = str(source["kind"])
+    values = np.asarray(array, dtype=np.float32)
+    if contrast == "auto":
+        return _normalize_raw_preview(values)
+
+    if kind == SEGMENTATION_SOURCE_PROBMAP:
+        return _normalize_full_range_preview(values, low=0.0, high=1.0)
+    if kind == SEGMENTATION_SOURCE_PCA:
+        return _normalize_full_range_preview(values, low=0.0, high=255.0)
+    if display_volume is not None:
+        low, high = _finite_min_max(display_volume)
+    elif display_array is not None:
+        low, high = _finite_min_max(display_array)
+    else:
+        low, high = _finite_min_max(values)
+    return _normalize_full_range_preview(values, low=low, high=high)
+
+
+def general_segmentation_preview_metadata(raw_path: str) -> dict[str, Any]:
+    validation = validate_general_segmentation_input_folder(raw_path)
+    if not validation["valid"]:
+        return validation
+
+    input_path = _resolve_allowed_inference_path(raw_path)
+    try:
+        raw_paths = _named_tiff_file_map(inference_raw_dir(input_path))
+    except ValueError as exc:
+        return _invalid_process_features_input("duplicate_timepoint_names", str(exc))
+
+    preview_timepoints: list[dict[str, Any]] = []
+    default_timepoint: str | None = None
+    subfolder_names = [str(name) for name in validation.get("subfolderNames", [])]
+    for timepoint_name in subfolder_names:
+        raw_timepoint_path = raw_paths[timepoint_name]
+        entry: dict[str, Any] = {"name": timepoint_name, "compatible": False}
+        try:
+            raw_shape = _read_tiff_zyx_shape(raw_timepoint_path)
+            entry.update(
+                {
+                    "rawShape": _shape_zyx_dict(raw_shape),
+                    "shape": _shape_zyx_dict(raw_shape),
+                    "zCount": int(raw_shape[0]),
+                    "height": int(raw_shape[1]),
+                    "width": int(raw_shape[2]),
+                    "compatible": True,
+                    "message": "Ready",
+                }
+            )
+            if default_timepoint is None:
+                default_timepoint = timepoint_name
+        except Exception as exc:
+            entry["message"] = str(exc)
+        preview_timepoints.append(entry)
+
+    return {
+        **validation,
+        "timepoints": preview_timepoints,
+        "defaultTimepoint": default_timepoint or (preview_timepoints[0]["name"] if preview_timepoints else None),
+    }
+
+
+def general_segmentation_preview_data(payload: GeneralSegmentationPreviewDataRequest) -> dict[str, Any]:
+    context = _general_preview_context(payload)
+    source = context["source"]
+    raw_path = context["raw_path"]
+    source_path = context["source_path"]
+    raw_shape = context["raw_shape"]
+    data_operations = context["data_operations"]
+    data_backend = context["data_backend"]
+    gpu_index = context["gpu_index"]
+    try:
+        _processed_volume, threshold_range = _general_processed_volume(
+            source=source,
+            source_path=source_path,
+            raw_path=raw_path,
+            raw_shape=raw_shape,
+            component_index=int(payload.threshold_component_index),
+            data_operations=data_operations,
+            data_backend=data_backend,
+            gpu_index=gpu_index,
+            require_cached=bool(payload.require_cached_data),
+        )
+    except GeneralSegmentationProcessedDataNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not compute preview data: {exc}") from exc
+
+    return {
+        "timepoint": payload.timepoint,
+        "sourceId": payload.source_id,
+        "shape": _shape_zyx_dict(raw_shape),
+        "rangeMin": threshold_range["min"],
+        "rangeMax": threshold_range["max"],
+        "step": threshold_range["step"],
+    }
+
+
+def general_segmentation_preview_image(payload: GeneralSegmentationPreviewImageRequest) -> dict[str, Any]:
+    context = _general_preview_context(payload)
+    source = context["source"]
+    raw_path = context["raw_path"]
+    source_path = context["source_path"]
+    raw_shape = context["raw_shape"]
+    z_index = context["z_index"]
+    data_operations = context["data_operations"]
+    data_backend = context["data_backend"]
+    gpu_index = context["gpu_index"]
+    cache_key = (
+        "general-segmentation-preview-image-v2",
+        payload.source_id,
+        int(payload.threshold_component_index),
+        payload.display_source,
+        payload.display_contrast,
+        json.dumps(data_operations, sort_keys=True) if payload.display_source != "raw" else "raw-display",
+        data_backend,
+        int(gpu_index) if data_backend == DATA_BACKEND_GPU and gpu_index is not None else None,
+        bool(payload.require_cached_data),
+        _file_cache_stamp(raw_path),
+        _file_cache_stamp(source_path),
+        payload.view,
+        z_index,
+    )
+    cached = _preview_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        if payload.display_source == "raw":
+            if payload.view == "slice":
+                assert z_index is not None
+                display_image = _read_tiff_z_slice(raw_path, z_index=z_index)
+            elif payload.view == "min_projection":
+                display_image = _read_tiff_min_projection(raw_path)
+            else:
+                display_image = _read_tiff_max_projection(raw_path)
+            raw_display_array = _read_source_array(raw_path) if payload.display_contrast == "full_range" else None
+            raw_display_volume = (
+                _extract_source_component(
+                    raw_display_array,
+                    source={"kind": SEGMENTATION_SOURCE_RAW},
+                    component_index=0,
+                )
+                if raw_display_array is not None
+                else None
+            )
+            display_uint8, display_low, display_high = _normalize_source_display(
+                display_image,
+                source={"kind": SEGMENTATION_SOURCE_RAW},
+                contrast=payload.display_contrast,
+                display_volume=raw_display_volume,
+                display_array=raw_display_array,
+            )
+        else:
+            if data_operations:
+                processed_volume, _threshold_range = _general_processed_volume(
+                    source=source,
+                    source_path=source_path,
+                    raw_path=raw_path,
+                    raw_shape=raw_shape,
+                    component_index=int(payload.threshold_component_index),
+                    data_operations=data_operations,
+                    data_backend=data_backend,
+                    gpu_index=gpu_index,
+                    require_cached=bool(payload.require_cached_data),
+                )
+                display_image = _source_plane_or_projection(processed_volume, view=payload.view, z_index=z_index)
+                display_volume = processed_volume
+            else:
+                display_image = _source_image_without_data_operations(
+                    source_path=source_path,
+                    source=source,
+                    component_index=int(payload.threshold_component_index),
+                    view=payload.view,
+                    z_index=z_index,
+                )
+                display_volume = None
+            display_uint8, display_low, display_high = _normalize_source_display(
+                display_image,
+                source=source,
+                contrast=payload.display_contrast,
+                display_volume=display_volume,
+                display_array=display_volume,
+            )
+    except GeneralSegmentationProcessedDataNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read preview data: {exc}") from exc
+
+    if display_uint8.ndim != 2:
+        raise HTTPException(status_code=400, detail="Preview data must be 2D.")
+
+    height, width = (int(dim) for dim in display_uint8.shape)
+    response = {
+        "timepoint": payload.timepoint,
+        "sourceId": payload.source_id,
+        "view": payload.view,
+        "zIndex": z_index,
+        "width": width,
+        "height": height,
+        "shape": _shape_zyx_dict(raw_shape),
+        "display": {
+            "dtype": "uint8",
+            "data": _preview_array_base64(display_uint8),
+            "displayLow": display_low,
+            "displayHigh": display_high,
+        },
+    }
+    _preview_cache_put(cache_key, response)
+    return response
+
+
+def general_segmentation_preview_surface(payload: GeneralSegmentationPreviewSurfaceRequest) -> dict[str, Any]:
+    context = _general_preview_context(payload)
+    source = context["source"]
+    raw_path = context["raw_path"]
+    source_path = context["source_path"]
+    raw_shape = context["raw_shape"]
+    z_index = context["z_index"]
+    data_operations = context["data_operations"]
+    data_backend = context["data_backend"]
+    gpu_index = context["gpu_index"]
+    component_index = int(payload.threshold_component_index)
+    cache_key = (
+        "general-segmentation-preview-surface-v2",
+        payload.source_id,
+        component_index,
+        payload.display_source,
+        payload.display_contrast,
+        json.dumps(data_operations, sort_keys=True),
+        data_backend,
+        int(gpu_index) if data_backend == DATA_BACKEND_GPU and gpu_index is not None else None,
+        bool(payload.require_cached_data),
+        _file_cache_stamp(raw_path),
+        _file_cache_stamp(source_path),
+        payload.view,
+        z_index,
+    )
+    cached = _preview_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        evaluation = _general_evaluation_surfaces(
+            source=source,
+            source_path=source_path,
+            raw_path=raw_path,
+            raw_shape=raw_shape,
+            component_index=component_index,
+            data_operations=data_operations,
+            data_backend=data_backend,
+            gpu_index=gpu_index,
+            require_cached=bool(payload.require_cached_data),
+            view=payload.view,
+            z_index=z_index,
+        )
+
+        if payload.display_source == "raw":
+            if str(source["kind"]) == SEGMENTATION_SOURCE_RAW and not data_operations:
+                if evaluation["kind"] == "slice":
+                    display_image = evaluation["values"]
+                elif payload.view == "min_projection":
+                    display_image = evaluation["display_min"]
+                else:
+                    display_image = evaluation["display_max"]
+            elif payload.view == "slice":
+                assert z_index is not None
+                display_image = _read_tiff_z_slice(raw_path, z_index=z_index)
+            elif payload.view == "min_projection":
+                display_image = _read_tiff_min_projection(raw_path)
+            else:
+                display_image = _read_tiff_max_projection(raw_path)
+            raw_display_array = _read_source_array(raw_path) if payload.display_contrast == "full_range" else None
+            raw_display_volume = (
+                _extract_source_component(
+                    raw_display_array,
+                    source={"kind": SEGMENTATION_SOURCE_RAW},
+                    component_index=0,
+                )
+                if raw_display_array is not None
+                else None
+            )
+            display_uint8, display_low, display_high = _normalize_source_display(
+                display_image,
+                source={"kind": SEGMENTATION_SOURCE_RAW},
+                contrast=payload.display_contrast,
+                display_volume=raw_display_volume,
+                display_array=raw_display_array,
+            )
+        else:
+            if evaluation["kind"] == "slice":
+                display_image = evaluation["values"]
+            elif payload.view == "min_projection":
+                display_image = evaluation["display_min"]
+            else:
+                display_image = evaluation["display_max"]
+            display_volume = evaluation.get("volume")
+            display_uint8, display_low, display_high = _normalize_source_display(
+                display_image,
+                source=source,
+                contrast=payload.display_contrast,
+                display_volume=display_volume,
+                display_array=display_volume,
+            )
+    except GeneralSegmentationProcessedDataNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read preview surface data: {exc}") from exc
+
+    if display_uint8.ndim != 2:
+        raise HTTPException(status_code=400, detail="Preview display surface must be 2D.")
+
+    height, width = (int(dim) for dim in display_uint8.shape)
+    evaluation_payload: dict[str, Any]
+    if evaluation["kind"] == "slice":
+        values = np.asarray(evaluation["values"], dtype=np.float32)
+        if values.shape != display_uint8.shape:
+            raise HTTPException(status_code=400, detail="Display and evaluation preview shapes do not match.")
+        evaluation_payload = {
+            "kind": "slice",
+            "values": {
+                "dtype": "float32",
+                "data": _preview_array_base64(values),
+            },
+        }
+    else:
+        max_values = np.asarray(evaluation["max_values"], dtype=np.float32)
+        min_values = np.asarray(evaluation["min_values"], dtype=np.float32)
+        if max_values.shape != display_uint8.shape or min_values.shape != display_uint8.shape:
+            raise HTTPException(status_code=400, detail="Display and evaluation preview shapes do not match.")
+        evaluation_payload = {
+            "kind": "projection",
+            "maxValues": {
+                "dtype": "float32",
+                "data": _preview_array_base64(max_values),
+            },
+            "minValues": {
+                "dtype": "float32",
+                "data": _preview_array_base64(min_values),
+            },
+        }
+
+    response = {
+        "timepoint": payload.timepoint,
+        "sourceId": payload.source_id,
+        "view": payload.view,
+        "zIndex": z_index,
+        "width": width,
+        "height": height,
+        "shape": _shape_zyx_dict(raw_shape),
+        "display": {
+            "dtype": "uint8",
+            "data": _preview_array_base64(display_uint8),
+            "displayLow": display_low,
+            "displayHigh": display_high,
+        },
+        "evaluation": evaluation_payload,
+    }
+    _preview_cache_put(cache_key, response)
+    return response
+
+
+def general_segmentation_preview_mask(payload: GeneralSegmentationPreviewMaskRequest) -> dict[str, Any]:
+    context = _general_preview_context(payload)
+    source = context["source"]
+    raw_path = context["raw_path"]
+    source_path = context["source_path"]
+    raw_shape = context["raw_shape"]
+    z_index = context["z_index"]
+    data_operations = context["data_operations"]
+    data_backend = context["data_backend"]
+    gpu_index = context["gpu_index"]
+    try:
+        if payload.view == "slice" and not data_operations:
+            assert z_index is not None
+            source_image = _source_image_without_data_operations(
+                source_path=source_path,
+                source=source,
+                component_index=int(payload.threshold_component_index),
+                view=payload.view,
+                z_index=z_index,
+            )
+            resolved_threshold = float(payload.threshold) if payload.threshold is not None else 0.0
+            mask_image = threshold_to_semantic(
+                source_image,
+                threshold=resolved_threshold,
+                invert_mask=bool(payload.invert_mask),
+            ).astype(np.uint32, copy=False)
+        else:
+            processed_volume, threshold_range = _general_processed_volume(
+                source=source,
+                source_path=source_path,
+                raw_path=raw_path,
+                raw_shape=raw_shape,
+                component_index=int(payload.threshold_component_index),
+                data_operations=data_operations,
+                data_backend=data_backend,
+                gpu_index=gpu_index,
+                require_cached=bool(payload.require_cached_data),
+            )
+            resolved_threshold = _resolved_preview_threshold(payload.threshold, threshold_range)
+            if payload.view == "slice":
+                assert z_index is not None
+                semantic_image = threshold_to_semantic(
+                    processed_volume[z_index],
+                    threshold=resolved_threshold,
+                    invert_mask=bool(payload.invert_mask),
+                )
+                mask_image = np.asarray(semantic_image > 0, dtype=np.uint32)
+            else:
+                semantic_volume = threshold_to_semantic(
+                    processed_volume,
+                    threshold=resolved_threshold,
+                    invert_mask=bool(payload.invert_mask),
+                )
+                mask_image = _binary_mask_plane_or_projection(semantic_volume, view=payload.view, z_index=None)
+    except GeneralSegmentationProcessedDataNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read preview mask data: {exc}") from exc
+
+    if mask_image.ndim != 2:
+        raise HTTPException(status_code=400, detail="Preview mask must be 2D.")
+    height, width = (int(dim) for dim in mask_image.shape)
+    return {
+        "timepoint": payload.timepoint,
+        "sourceId": payload.source_id,
+        "view": payload.view,
+        "zIndex": z_index,
+        "width": width,
+        "height": height,
+        "shape": _shape_zyx_dict(raw_shape),
+        "mask": {
+            "dtype": "uint32",
+            "data": _preview_array_base64(np.asarray(mask_image, dtype=np.uint32)),
+            "instance": False,
+        },
+    }
+
+
+def general_segmentation_preview_instance(payload: GeneralSegmentationPreviewInstanceRequest) -> dict[str, Any]:
+    context = _general_preview_context(payload)
+    source = context["source"]
+    raw_path = context["raw_path"]
+    source_path = context["source_path"]
+    raw_shape = context["raw_shape"]
+    z_index = context["z_index"]
+    data_operations = context["data_operations"]
+    data_backend = context["data_backend"]
+    gpu_index = context["gpu_index"]
+    try:
+        mask_operations = normalize_mask_operations(payload.mask_operations)
+        instance_method = (
+            normalize_instance_method(payload.instance_method)
+            if payload.instance_method is not None
+            else INSTANCE_METHOD_CONNECTED_COMPONENTS
+        )
+        processed_volume, threshold_range = _general_processed_volume(
+            source=source,
+            source_path=source_path,
+            raw_path=raw_path,
+            raw_shape=raw_shape,
+            component_index=int(payload.threshold_component_index),
+            data_operations=data_operations,
+            data_backend=data_backend,
+            gpu_index=gpu_index,
+            require_cached=bool(payload.require_cached_data),
+        )
+        resolved_threshold = _resolved_preview_threshold(payload.threshold, threshold_range)
+        semantic_volume = threshold_to_semantic(
+            processed_volume,
+            threshold=resolved_threshold,
+            invert_mask=bool(payload.invert_mask),
+        )
+        semantic_volume = apply_mask_operations(semantic_volume, mask_operations)
+        if instance_method == INSTANCE_METHOD_NONE:
+            mask_image = _binary_mask_plane_or_projection(semantic_volume, view=payload.view, z_index=z_index)
+        else:
+            mask_volume = instance_segmentation(
+                processed_volume,
+                semantic_volume,
+                method=instance_method,
+                voronoi_spot_sigma=float(payload.voronoi_spot_sigma),
+                voronoi_outline_sigma=float(payload.voronoi_outline_sigma),
+            )
+            mask_image = _mask_plane_or_projection(mask_volume, view=payload.view, z_index=z_index)
+    except GeneralSegmentationProcessedDataNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read preview instance data: {exc}") from exc
+
+    if mask_image.ndim != 2:
+        raise HTTPException(status_code=400, detail="Preview instance mask must be 2D.")
+    height, width = (int(dim) for dim in mask_image.shape)
+    return {
+        "timepoint": payload.timepoint,
+        "sourceId": payload.source_id,
+        "view": payload.view,
+        "zIndex": z_index,
+        "width": width,
+        "height": height,
+        "shape": _shape_zyx_dict(raw_shape),
+        "mask": {
+            "dtype": "uint32",
+            "data": _preview_array_base64(np.asarray(mask_image, dtype=np.uint32)),
+            "instance": instance_method != INSTANCE_METHOD_NONE,
+        },
+    }
 
 
 def validate_tracking_input_folder(raw_path: str) -> dict[str, Any]:
@@ -1085,14 +2566,21 @@ NORMALIZATION_MODE_GLOBAL_AUTO = "global_auto"
 NORMALIZATION_MODE_GLOBAL_MANUAL = "global_manual"
 PROCESS_FEATURES_SAVE_FORMATS = {".npy", ".tif"}
 SEGMENTATION_MODE_VORONOI_OTSU = "voronoi_otsu"
+SEGMENTATION_MODE_GENERAL = "general_segmentation"
 SEGMENTATION_MODE_PROBABILITY_MAP = "probability_map"
 SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP = "legacy_probability_map"
 SEGMENTATION_MODE_OPTIONS = {
     SEGMENTATION_MODE_VORONOI_OTSU,
+    SEGMENTATION_MODE_GENERAL,
     SEGMENTATION_MODE_PROBABILITY_MAP,
     SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
 }
+SEGMENTATION_SOURCE_RAW = "raw"
+SEGMENTATION_SOURCE_PROBMAP = "probmap"
+SEGMENTATION_SOURCE_PCA = "pca"
+SEGMENTATION_SOURCE_FEATURE_STATS = "feature_stats"
 PROBABILITY_MAP_DENSITY_METHODS = {"kde", "gpu-hist"}
+FEATURE_STATS_METADATA_FILENAME = "feature_stats_metadata.json"
 NORMALIZATION_MODE_OPTIONS = {
     NORMALIZATION_MODE_PER_VOLUME,
     NORMALIZATION_MODE_GLOBAL_AUTO,
@@ -1127,6 +2615,12 @@ def _validate_requested_gpu(gpu_index: int | None) -> tuple[dict[str, Any] | Non
     if requested_gpu not in available_gpus:
         return _invalid_process_features_run("invalid_gpu_selection", "Selected GPU is not available on this server."), None
     return None, requested_gpu
+
+
+def _validate_optional_requested_gpu(gpu_index: int | None) -> tuple[dict[str, Any] | None, int | None]:
+    if gpu_index is None:
+        return None, None
+    return _validate_requested_gpu(gpu_index)
 
 
 def _validate_post_processing_output_path(
@@ -1206,10 +2700,10 @@ def _build_process_features_launch_config(
     if not input_validation["valid"]:
         return _invalid_process_features_run(input_validation["reasonCode"], input_validation["message"]), None
 
-    if not payload.save_pca and not payload.save_high_resolution_features:
+    if not payload.save_pca and not payload.save_high_resolution_features and not payload.save_feature_statistics:
         return _invalid_process_features_run(
             "no_outputs_selected",
-            "Choose at least one output: Save PCA and/or Save high-resolution features.",
+            "Choose at least one output: PCA, high-resolution features, and/or feature statistics.",
         ), None
 
     if payload.gpu_index is None:
@@ -1261,6 +2755,54 @@ def _build_process_features_launch_config(
 
     selected_timepoint_names = timepoint_names[file_start:effective_file_end]
     selected_subfolder_count = len(selected_timepoint_names)
+    if payload.save_feature_statistics:
+        input_channel_count: int | None = None
+        for timepoint_name in selected_timepoint_names:
+            lr_path = inference_lr_feats_path(input_path, str(timepoint_name))
+            try:
+                lr_shape = tuple(int(dim) for dim in np.load(lr_path, mmap_mode="r").shape)
+            except Exception as exc:
+                return (
+                    _invalid_process_features_run(
+                        "invalid_feature_statistics_source",
+                        f"Could not read feature array for {timepoint_name}: {exc}",
+                    ),
+                    None,
+                )
+            if len(lr_shape) != 4:
+                return (
+                    _invalid_process_features_run(
+                        "invalid_feature_statistics_source",
+                        "Feature statistics require lr_feats arrays with shape [Z, Y, X, C].",
+                    ),
+                    None,
+                )
+            channel_count = int(lr_shape[-1])
+            if input_channel_count is not None and channel_count != input_channel_count:
+                return (
+                    _invalid_process_features_run(
+                        "invalid_feature_statistics_source",
+                        "All selected timepoints must have the same feature channel count.",
+                    ),
+                    None,
+                )
+            input_channel_count = channel_count
+
+        if (
+            bool(payload.ignore_trailing_channels)
+            and input_channel_count is not None
+            and int(payload.trailing_channels) >= input_channel_count
+        ):
+            return (
+                _invalid_process_features_run(
+                    "invalid_trailing_channels",
+                    (
+                        f"Cannot ignore {int(payload.trailing_channels)} trailing channels from feature arrays with "
+                        f"{input_channel_count} channels."
+                    ),
+                ),
+                None,
+            )
     return (
         {
             "valid": True,
@@ -1278,6 +2820,9 @@ def _build_process_features_launch_config(
             "global_pca": bool(payload.global_pca),
             "save_high_resolution_features": bool(payload.save_high_resolution_features),
             "high_resolution_save_format": payload.high_resolution_save_format,
+            "save_feature_statistics": bool(payload.save_feature_statistics),
+            "ignore_trailing_channels": bool(payload.ignore_trailing_channels),
+            "trailing_channels": int(payload.trailing_channels),
             "subfolder_count": selected_subfolder_count,
             "input_subfolder_count": subfolder_count,
             "file_start": file_start,
@@ -1361,12 +2906,14 @@ def _build_segmentation_launch_config(
     segmentation_mode = (payload.mode or "").strip() or (
         SEGMENTATION_MODE_VORONOI_OTSU if payload.enable_voronoi_otsu else ""
     )
+    if segmentation_mode == SEGMENTATION_MODE_PROBABILITY_MAP:
+        segmentation_mode = SEGMENTATION_MODE_GENERAL
     if segmentation_mode not in SEGMENTATION_MODE_OPTIONS:
         return _invalid_process_features_run("invalid_segmentation_mode", "Segmentation mode is invalid."), None
 
     input_validation = (
-        validate_probability_map_input_folder(payload.input_path)
-        if segmentation_mode == SEGMENTATION_MODE_PROBABILITY_MAP
+        validate_general_segmentation_input_folder(payload.input_path)
+        if segmentation_mode == SEGMENTATION_MODE_GENERAL
         else validate_segmentation_input_folder(payload.input_path)
     )
     if not input_validation["valid"]:
@@ -1406,14 +2953,70 @@ def _build_segmentation_launch_config(
             launch_config,
         )
 
-    if segmentation_mode == SEGMENTATION_MODE_PROBABILITY_MAP:
+    if segmentation_mode == SEGMENTATION_MODE_GENERAL:
+        source_id = (payload.source_id or "").strip() or SEGMENTATION_SOURCE_RAW
+        source = _general_source_from_validation(input_validation, source_id)
+        if source is None:
+            return _invalid_process_features_run("invalid_segmentation_source", "Segmentation source is invalid."), None
+        source_kind = str(source["kind"])
+        component_count = int(source.get("componentCount", 1))
+        component_index = int(payload.component_index)
+        if component_index < 0 or component_index >= component_count:
+            return (
+                _invalid_process_features_run(
+                    "invalid_component_index",
+                    f"Component index must be between 0 and {component_count - 1}.",
+                ),
+                None,
+            )
+        threshold = float(payload.threshold if payload.threshold is not None else payload.probmap_threshold)
+        if not np.isfinite(threshold):
+            return _invalid_process_features_run("invalid_threshold", "Threshold must be finite."), None
+        try:
+            data_operations = normalize_data_operations(payload.data_operations)
+            mask_operations = normalize_mask_operations(payload.mask_operations)
+            instance_method = (
+                normalize_instance_method(payload.instance_method)
+                if payload.instance_method is not None
+                else (
+                    INSTANCE_METHOD_CONNECTED_COMPONENTS
+                    if bool(payload.run_connected_components)
+                    else INSTANCE_METHOD_NONE
+                )
+            )
+        except ValueError as exc:
+            return _invalid_process_features_run("invalid_general_segmentation_pipeline", str(exc)), None
+        gpu_error, requested_gpu = _validate_optional_requested_gpu(payload.gpu_index)
+        if gpu_error is not None:
+            return gpu_error, None
+        data_backend = DATA_BACKEND_GPU if data_operations and requested_gpu is not None else DATA_BACKEND_CPU
+        if not np.isfinite(float(payload.voronoi_spot_sigma)):
+            return _invalid_process_features_run("invalid_voronoi_spot_sigma", "Voronoi-Otsu spot sigma must be finite."), None
+        if not np.isfinite(float(payload.voronoi_outline_sigma)):
+            return _invalid_process_features_run(
+                "invalid_voronoi_outline_sigma",
+                "Voronoi-Otsu outline sigma must be finite.",
+            ), None
+
         launch_config = {
             "input_path": input_path,
             "output_path": output_path,
+            "gpu_index": requested_gpu,
             "mode": segmentation_mode,
             "subfolder_count": subfolder_count,
-            "probmap_threshold": float(payload.probmap_threshold),
-            "run_connected_components": bool(payload.run_connected_components),
+            "source_id": source_id,
+            "source_kind": source_kind,
+            "source_folder": source.get("folderName"),
+            "component_index": component_index,
+            "threshold": threshold,
+            "invert_mask": bool(payload.invert_mask),
+            "data_operations": data_operations,
+            "data_backend": data_backend,
+            "mask_operations": mask_operations,
+            "instance_method": instance_method,
+            "voronoi_spot_sigma": float(payload.voronoi_spot_sigma),
+            "voronoi_outline_sigma": float(payload.voronoi_outline_sigma),
+            "run_connected_components": instance_method == INSTANCE_METHOD_CONNECTED_COMPONENTS,
             "progress_total": subfolder_count,
         }
         return (
@@ -1421,8 +3024,8 @@ def _build_segmentation_launch_config(
                 "valid": True,
                 "message": "Validation passed.",
                 "subfolderCount": subfolder_count,
-                "probmapPath": input_validation.get("probmapPath"),
-                "probmapExists": bool(input_validation.get("probmapExists")),
+                "availableSources": input_validation.get("availableSources", []),
+                "sourceWarnings": input_validation.get("sourceWarnings", []),
             },
             launch_config,
         )
@@ -2137,6 +3740,8 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         "true" if launch_config.get("global_pca", True) else "false",
         "--high-resolution-format",
         launch_config["high_resolution_save_format"],
+        "--trailing-channels",
+        str(launch_config["trailing_channels"]),
         "--file-start",
         str(launch_config["file_start"]),
     ]
@@ -2146,6 +3751,13 @@ def _build_process_features_command(launch_config: dict[str, Any]) -> list[str]:
         command.append("--save-pca")
     if launch_config["save_high_resolution_features"]:
         command.append("--save-high-resolution-features")
+    if launch_config["save_feature_statistics"]:
+        command.append("--save-feature-statistics")
+        command.append(
+            "--ignore-trailing-channels"
+            if launch_config.get("ignore_trailing_channels", True)
+            else "--include-trailing-channels"
+        )
     return command
 
 
@@ -2199,17 +3811,39 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
     if launch_config["mode"] == SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP:
         return _build_probability_map_command(launch_config)
 
-    if launch_config["mode"] == SEGMENTATION_MODE_PROBABILITY_MAP:
+    if launch_config["mode"] == SEGMENTATION_MODE_GENERAL:
         command = [
             sys.executable,
-            "scripts/post_processing/probmap_segmentation.py",
+            "scripts/post_processing/general_segmentation.py",
             "--input-path",
             str(launch_config["input_path"]),
             "--output-path",
             str(launch_config["output_path"]),
+            "--source-kind",
+            str(launch_config["source_kind"]),
+            "--source-folder",
+            str(launch_config["source_folder"]),
             "--threshold",
-            str(launch_config["probmap_threshold"]),
+            str(launch_config["threshold"]),
+            "--component-index",
+            str(launch_config["component_index"]),
+            "--data-operations-json",
+            json.dumps(launch_config.get("data_operations", []), sort_keys=True),
+            "--data-backend",
+            str(launch_config.get("data_backend", DATA_BACKEND_CPU)),
+            "--mask-operations-json",
+            json.dumps(launch_config.get("mask_operations", []), sort_keys=True),
+            "--instance-method",
+            str(launch_config.get("instance_method", INSTANCE_METHOD_CONNECTED_COMPONENTS)),
+            "--voronoi-spot-sigma",
+            str(launch_config.get("voronoi_spot_sigma", 2.0)),
+            "--voronoi-outline-sigma",
+            str(launch_config.get("voronoi_outline_sigma", 2.0)),
         ]
+        if launch_config.get("invert_mask", False):
+            command.append("--invert-mask")
+        if launch_config.get("data_backend") == DATA_BACKEND_GPU and launch_config.get("gpu_index") is not None:
+            command.extend(["--gpu-index", "0"])
         command.append("--run-ccl" if launch_config.get("run_connected_components", True) else "--skip-ccl")
         return command
 
@@ -2317,6 +3951,16 @@ def _build_tracking_command_env() -> dict[str, str]:
         "OMP_NUM_THREADS": _resolve_omp_num_threads(),
         "PYTHONUNBUFFERED": "1",
     }
+
+
+def _build_general_segmentation_command_env(launch_config: dict[str, Any]) -> dict[str, str]:
+    env = {
+        "OMP_NUM_THREADS": _resolve_omp_num_threads(),
+        "PYTHONUNBUFFERED": "1",
+    }
+    if launch_config.get("data_backend") == DATA_BACKEND_GPU and launch_config.get("gpu_index") is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(launch_config["gpu_index"])
+    return env
 
 
 def _build_norm_per_vol_command_env() -> dict[str, str]:
@@ -2826,8 +4470,8 @@ def _run_segmentation_job(job: jobs_api.JobState, launch_config: dict[str, Any])
         launch_config,
         command=_build_segmentation_command(launch_config),
         command_env=(
-            _build_tracking_command_env()
-            if launch_config.get("mode") == SEGMENTATION_MODE_PROBABILITY_MAP
+            _build_general_segmentation_command_env(launch_config)
+            if launch_config.get("mode") == SEGMENTATION_MODE_GENERAL
             else _build_process_features_command_env(launch_config)
         ),
         launch_log_line="[server] Launching segmentation job.",
@@ -3327,6 +4971,11 @@ def validate_segmentation_input(payload: ValidateProcessFeaturesInputRequest) ->
     return validate_segmentation_input_folder(payload.path)
 
 
+@api.post("/post-processing/general-segmentation/validate-input")
+def validate_general_segmentation_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
+    return validate_general_segmentation_input_folder(payload.path)
+
+
 @api.post("/post-processing/probability-map/validate-input")
 def validate_probability_map_input(payload: ValidateProcessFeaturesInputRequest) -> dict[str, Any]:
     return validate_probability_map_input_folder(payload.path)
@@ -3340,6 +4989,36 @@ def probability_map_preview_metadata_endpoint(payload: ProbabilityMapPreviewMeta
 @api.post("/post-processing/probability-map/preview/image")
 def probability_map_preview_image_endpoint(payload: ProbabilityMapPreviewImageRequest) -> dict[str, Any]:
     return probability_map_preview_image(payload)
+
+
+@api.post("/post-processing/general-segmentation/preview/metadata")
+def general_segmentation_preview_metadata_endpoint(payload: GeneralSegmentationPreviewMetadataRequest) -> dict[str, Any]:
+    return general_segmentation_preview_metadata(payload.input_path)
+
+
+@api.post("/post-processing/general-segmentation/preview/image")
+def general_segmentation_preview_image_endpoint(payload: GeneralSegmentationPreviewImageRequest) -> dict[str, Any]:
+    return general_segmentation_preview_image(payload)
+
+
+@api.post("/post-processing/general-segmentation/preview/surface")
+def general_segmentation_preview_surface_endpoint(payload: GeneralSegmentationPreviewSurfaceRequest) -> dict[str, Any]:
+    return general_segmentation_preview_surface(payload)
+
+
+@api.post("/post-processing/general-segmentation/preview/data")
+def general_segmentation_preview_data_endpoint(payload: GeneralSegmentationPreviewDataRequest) -> dict[str, Any]:
+    return general_segmentation_preview_data(payload)
+
+
+@api.post("/post-processing/general-segmentation/preview/mask")
+def general_segmentation_preview_mask_endpoint(payload: GeneralSegmentationPreviewMaskRequest) -> dict[str, Any]:
+    return general_segmentation_preview_mask(payload)
+
+
+@api.post("/post-processing/general-segmentation/preview/instance")
+def general_segmentation_preview_instance_endpoint(payload: GeneralSegmentationPreviewInstanceRequest) -> dict[str, Any]:
+    return general_segmentation_preview_instance(payload)
 
 
 @api.post("/post-processing/tracking/validate-input")

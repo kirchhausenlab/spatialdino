@@ -4,6 +4,7 @@ import argparse
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path
@@ -14,8 +15,10 @@ import tifffile
 import torch
 import torch.nn.functional as F
 from spatialdino.inference.output_layout import (
+    FEATURE_STATS_DIRNAME,
     HR_FEATS_DIRNAME,
     discover_inference_timepoints,
+    process_features_statistics_dir,
     process_features_hr_timepoint_dir,
     process_features_pca_dir,
 )
@@ -28,6 +31,8 @@ torch.backends.cudnn.enabled = True
 ALLOWED_SAVE_FORMATS = {".npy", ".tif"}
 DEFAULT_MAX_UPSAMPLE_BYTES = 512 * 1024 * 1024
 DEFAULT_PCA_BATCH_BYTES = 256 * 1024 * 1024
+FEATURE_STAT_NAMES = ("mean", "max", "min", "median", "std", "l2_norm")
+FEATURE_STATS_METADATA_FILENAME = "feature_stats_metadata.json"
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,29 @@ def parse_args() -> argparse.Namespace:
         help="Upsample all low-resolution features and save them inside hr_feats/."
     )
     parser.add_argument("--high-resolution-format", choices=sorted(ALLOWED_SAVE_FORMATS), default=".tif")
+    parser.add_argument(
+        "--save-feature-statistics",
+        action="store_true",
+        help="Save compact high-resolution feature statistics inside feature_stats/.",
+    )
+    parser.add_argument(
+        "--ignore-trailing-channels",
+        action="store_true",
+        help="Ignore the last N feature channels before computing feature statistics.",
+    )
+    parser.add_argument(
+        "--include-trailing-channels",
+        dest="ignore_trailing_channels",
+        action="store_false",
+        help="Use all feature channels when computing feature statistics.",
+    )
+    parser.set_defaults(ignore_trailing_channels=True)
+    parser.add_argument(
+        "--trailing-channels",
+        type=int,
+        default=6,
+        help="Number of trailing feature channels to ignore when --ignore-trailing-channels is enabled.",
+    )
     parser.add_argument(
         "--io-workers",
         type=int,
@@ -387,7 +415,17 @@ def save_volume(path: Path, array: np.ndarray, save_format: str) -> None:
             planarconfig="contig",
         )
         return
-    tifffile.imwrite(path, array, bigtiff=True, metadata=None)
+    if array.ndim == 4:
+        tifffile.imwrite(
+            path,
+            array,
+            bigtiff=True,
+            metadata=None,
+            photometric="minisblack",
+            planarconfig="contig",
+        )
+        return
+    tifffile.imwrite(path, array, bigtiff=True, metadata=None, photometric="minisblack")
 
 
 def wait_for_futures(futures: deque[Future[None]]) -> None:
@@ -481,6 +519,96 @@ def export_high_resolution_features(
         wait_for_futures(futures)
 
 
+def feature_statistics_channel_slice(
+    channel_count: int,
+    *,
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
+) -> tuple[slice, int]:
+    if trailing_channels < 0:
+        raise ValueError("Trailing channels must be nonnegative.")
+    if not ignore_trailing_channels or trailing_channels == 0:
+        return slice(None), channel_count
+    if trailing_channels >= channel_count:
+        raise ValueError(
+            f"Cannot ignore {trailing_channels} trailing channels from a feature array with {channel_count} channels."
+        )
+    return slice(0, channel_count - trailing_channels), channel_count - trailing_channels
+
+
+def compute_feature_statistics_lr(
+    lr_feats: np.ndarray,
+    *,
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
+) -> tuple[np.ndarray, int, int]:
+    channel_count = int(lr_feats.shape[-1])
+    channel_slice, computed_channel_count = feature_statistics_channel_slice(
+        channel_count,
+        ignore_trailing_channels=ignore_trailing_channels,
+        trailing_channels=trailing_channels,
+    )
+    features = np.asarray(lr_feats[..., channel_slice], dtype=np.float32)
+    mean = np.mean(features, axis=-1, dtype=np.float32)
+    max_values = np.max(features, axis=-1)
+    min_values = np.min(features, axis=-1)
+    median = np.median(features, axis=-1).astype(np.float32, copy=False)
+    std = np.std(features, axis=-1, dtype=np.float32)
+    l2_norm = np.sqrt(np.einsum("...c,...c->...", features, features, dtype=np.float32))
+    stats = np.stack((mean, max_values, min_values, median, std, l2_norm), axis=0).astype(np.float32, copy=False)
+    return stats, channel_count, computed_channel_count
+
+
+def write_feature_statistics_metadata(
+    output_root: Path,
+    *,
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
+    input_channel_count: int,
+    computed_channel_count: int,
+) -> None:
+    metadata = {
+        "components": list(FEATURE_STAT_NAMES),
+        "dtype": "float32",
+        "source": "lr_feats",
+        "ignored_trailing_channels": bool(ignore_trailing_channels),
+        "trailing_channels": int(trailing_channels),
+        "input_channel_count": int(input_channel_count),
+        "computed_channel_count": int(computed_channel_count),
+        "computed_before_upsampling": True,
+    }
+    output_path = process_features_statistics_dir(output_root)
+    output_path.mkdir(parents=True, exist_ok=True)
+    (output_path / FEATURE_STATS_METADATA_FILENAME).write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def export_feature_statistics(
+    output_root: Path,
+    timepoint_name: str,
+    lr_feats: np.ndarray,
+    *,
+    target_shape: tuple[int, int, int],
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
+    device: torch.device,
+) -> tuple[int, int]:
+    stats_lr_channels, input_channel_count, computed_channel_count = compute_feature_statistics_lr(
+        lr_feats,
+        ignore_trailing_channels=ignore_trailing_channels,
+        trailing_channels=trailing_channels,
+    )
+    stats_hr_channels = upsample_channels(stats_lr_channels, target_shape=target_shape, device=device).astype(
+        np.float32,
+        copy=False,
+    )
+    save_path = process_features_statistics_dir(output_root) / f"{timepoint_name}.tif"
+    save_volume(save_path, np.moveaxis(stats_hr_channels, 0, -1), ".tif")
+    return input_channel_count, computed_channel_count
+
+
 def remove_output_path(path: Path) -> None:
     if path.is_dir():
         shutil.rmtree(path)
@@ -495,12 +623,15 @@ def list_requested_output_paths(
     save_pca: bool,
     pca_components: int,
     save_high_resolution_features: bool,
+    save_feature_statistics: bool = False,
 ) -> list[Path]:
     paths: list[Path] = []
     if save_high_resolution_features:
         paths.append(output_path / HR_FEATS_DIRNAME)
     if save_pca:
         paths.append(process_features_pca_dir(output_path, pca_components))
+    if save_feature_statistics:
+        paths.append(output_path / FEATURE_STATS_DIRNAME)
     return paths
 
 
@@ -510,6 +641,7 @@ def cleanup_output_root(
     save_pca: bool,
     pca_components: int,
     save_high_resolution_features: bool,
+    save_feature_statistics: bool = False,
 ) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     for path in list_requested_output_paths(
@@ -517,6 +649,7 @@ def cleanup_output_root(
         save_pca=save_pca,
         pca_components=pca_components,
         save_high_resolution_features=save_high_resolution_features,
+        save_feature_statistics=save_feature_statistics,
     ):
         remove_output_path(path)
 
@@ -546,6 +679,9 @@ def process_timepoint(
     pca_format: str,
     save_high_resolution_features: bool,
     high_resolution_format: str,
+    save_feature_statistics: bool,
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
     device: torch.device,
     io_workers: int,
     pca_model: PcaModel | None = None,
@@ -579,6 +715,16 @@ def process_timepoint(
             device=device,
             io_workers=io_workers,
         )
+    if save_feature_statistics:
+        export_feature_statistics(
+            output_root,
+            timepoint_name,
+            lr_feats,
+            target_shape=target_shape,
+            ignore_trailing_channels=ignore_trailing_channels,
+            trailing_channels=trailing_channels,
+            device=device,
+        )
 
 
 def lr_feature_sources_for_timepoints(timepoints):
@@ -586,10 +732,43 @@ def lr_feature_sources_for_timepoints(timepoints):
         yield timepoint.name, np.load(timepoint.lr_path, mmap_mode="r")
 
 
+def validate_feature_statistics_sources(
+    timepoints,
+    *,
+    ignore_trailing_channels: bool,
+    trailing_channels: int,
+) -> tuple[int, int]:
+    input_channel_count: int | None = None
+    computed_channel_count: int | None = None
+    for timepoint in timepoints:
+        lr_feats = np.load(timepoint.lr_path, mmap_mode="r")
+        channel_count = validate_lr_features(lr_feats, source_name=str(timepoint.lr_path))
+        if input_channel_count is not None and channel_count != input_channel_count:
+            raise ValueError(
+                (
+                    "All selected timepoints must have the same feature channel count for feature statistics. "
+                    f"Expected {input_channel_count}, got {channel_count} for {timepoint.lr_path}."
+                )
+            )
+        _channel_slice, current_computed_count = feature_statistics_channel_slice(
+            channel_count,
+            ignore_trailing_channels=ignore_trailing_channels,
+            trailing_channels=trailing_channels,
+        )
+        input_channel_count = channel_count
+        computed_channel_count = current_computed_count
+
+    if input_channel_count is None or computed_channel_count is None:
+        raise ValueError("Feature statistics require at least one feature volume.")
+    return input_channel_count, computed_channel_count
+
+
 def main() -> None:
     args = parse_args()
-    if not args.save_pca and not args.save_high_resolution_features:
-        raise ValueError("Choose at least one output: PCA and/or high-resolution features.")
+    if not args.save_pca and not args.save_high_resolution_features and not args.save_feature_statistics:
+        raise ValueError("Choose at least one output: PCA, high-resolution features, and/or feature statistics.")
+    if int(args.trailing_channels) < 0:
+        raise ValueError("Trailing channels must be nonnegative.")
 
     input_path = Path(args.input_path).expanduser().resolve()
     if not input_path.is_dir():
@@ -615,6 +794,7 @@ def main() -> None:
         save_pca=bool(args.save_pca),
         pca_components=int(args.pca_components),
         save_high_resolution_features=bool(args.save_high_resolution_features),
+        save_feature_statistics=bool(args.save_feature_statistics),
     )
 
     print(f"[process-features] Using device {device}", flush=True)
@@ -637,6 +817,20 @@ def main() -> None:
             device=device,
         )
 
+    if bool(args.save_feature_statistics):
+        input_channel_count, computed_channel_count = validate_feature_statistics_sources(
+            timepoints,
+            ignore_trailing_channels=bool(args.ignore_trailing_channels),
+            trailing_channels=int(args.trailing_channels),
+        )
+        write_feature_statistics_metadata(
+            output_path,
+            ignore_trailing_channels=bool(args.ignore_trailing_channels),
+            trailing_channels=int(args.trailing_channels),
+            input_channel_count=input_channel_count,
+            computed_channel_count=computed_channel_count,
+        )
+
     for index, timepoint in enumerate(timepoints, start=1):
         print(f"[process-features] Processing {timepoint.name} ({index}/{len(timepoints)})", flush=True)
         process_timepoint(
@@ -649,6 +843,9 @@ def main() -> None:
             pca_format=args.pca_format,
             save_high_resolution_features=bool(args.save_high_resolution_features),
             high_resolution_format=args.high_resolution_format,
+            save_feature_statistics=bool(args.save_feature_statistics),
+            ignore_trailing_channels=bool(args.ignore_trailing_channels),
+            trailing_channels=int(args.trailing_channels),
             device=device,
             io_workers=max(1, int(args.io_workers)),
             pca_model=pca_model,

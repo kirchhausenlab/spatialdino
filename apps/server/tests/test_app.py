@@ -691,6 +691,75 @@ class AppTests(unittest.TestCase):
         self.assertIn("--file-end", command)
         self.assertEqual(command[command.index("--file-end") + 1], "3")
 
+    def test_build_process_features_launch_config_accepts_feature_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "processed-output"
+            input_dir.mkdir()
+            write_inference_output_timepoint(input_dir, "sample_a", lr_shape=(2, 2, 2, 390))
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                save_feature_statistics=True,
+                ignore_trailing_channels=True,
+                trailing_channels=6,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertTrue(launch_config["save_feature_statistics"])
+        self.assertTrue(launch_config["ignore_trailing_channels"])
+        self.assertEqual(launch_config["trailing_channels"], 6)
+
+        command = app_module._build_process_features_command(launch_config)
+        self.assertIn("--save-feature-statistics", command)
+        self.assertIn("--ignore-trailing-channels", command)
+        self.assertIn("--trailing-channels", command)
+        self.assertEqual(command[command.index("--trailing-channels") + 1], "6")
+
+    def test_build_process_features_launch_config_rejects_feature_statistics_trailing_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "processed-output"
+            input_dir.mkdir()
+            write_inference_output_timepoint(input_dir, "sample_a", lr_shape=(2, 2, 2, 4))
+
+            payload = app_module.RunProcessFeaturesRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=0,
+                save_feature_statistics=True,
+                ignore_trailing_channels=True,
+                trailing_channels=4,
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_process_features_launch_config(payload)
+
+        self.assertEqual(validation["valid"], False)
+        self.assertEqual(validation["reasonCode"], "invalid_trailing_channels")
+        self.assertIsNone(launch_config)
+
     def test_build_process_features_launch_config_rejects_empty_file_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -814,6 +883,60 @@ class AppTests(unittest.TestCase):
         self.assertTrue(validation["probmapDensitiesExists"])
         self.assertEqual(validation["probmapDensitiesPath"], str(input_dir / "probmap_densities.npz"))
 
+    def test_validate_general_segmentation_input_discovers_optional_sources_and_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            probmap_dir = input_dir / "probmap"
+            feature_stats_dir = input_dir / "feature_stats"
+            pca_dir = input_dir / "pca_3"
+            raw_dir.mkdir(parents=True)
+            probmap_dir.mkdir()
+            feature_stats_dir.mkdir()
+            pca_dir.mkdir()
+            (feature_stats_dir / "feature_stats_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "components": ["mean", "max", "min", "median", "std", "l2_norm"],
+                        "dtype": "float32",
+                        "source": "lr_feats",
+                        "computed_before_upsampling": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for name in ("sample_a", "sample_b"):
+                tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros((2, 3, 4), dtype=np.uint16), photometric="minisblack")
+                tifffile.imwrite(
+                    probmap_dir / f"{name}.tif",
+                    np.zeros((2, 3, 4), dtype=np.float32),
+                    photometric="minisblack",
+                )
+                tifffile.imwrite(feature_stats_dir / f"{name}.tif", np.zeros((2, 3, 4, 6), dtype=np.float32))
+                tifffile.imwrite(pca_dir / f"{name}.tif", np.zeros((2, 3, 4, 3), dtype=np.uint8))
+            bad_pca_dir = input_dir / "pca_2"
+            bad_pca_dir.mkdir()
+            tifffile.imwrite(bad_pca_dir / "sample_a.tif", np.zeros((2, 3, 4, 2), dtype=np.uint8))
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation = app_module.validate_general_segmentation_input_folder(str(input_dir))
+
+        self.assertEqual(validation["valid"], True)
+        self.assertEqual(validation["subfolderNames"], ["sample_a", "sample_b"])
+        self.assertEqual(
+            [source["id"] for source in validation["availableSources"]],
+            ["raw", "probmap", "feature_stats", "pca_3"],
+        )
+        self.assertEqual(validation["availableSources"][2]["componentCount"], 6)
+        self.assertEqual(
+            validation["availableSources"][2]["componentNames"],
+            ["mean", "max", "min", "median", "std", "l2_norm"],
+        )
+        self.assertEqual(validation["availableSources"][3]["componentCount"], 3)
+        self.assertEqual(validation["sourceWarnings"][0]["folderName"], "pca_2")
+        self.assertIn("missing sample_b", validation["sourceWarnings"][0]["message"])
+
     def test_build_segmentation_launch_config_accepts_legacy_probability_map_request_with_density_estimation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -830,7 +953,7 @@ class AppTests(unittest.TestCase):
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
                 output_path=str(output_dir),
-                gpu_index=0,
+                gpu_index=2,
                 mode=app_module.SEGMENTATION_MODE_LEGACY_PROBABILITY_MAP,
                 run_density_estimation=True,
                 training_timepoint="sample_b",
@@ -850,7 +973,7 @@ class AppTests(unittest.TestCase):
                 patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
                 patch(
                     "spatialdino_server.app.get_nvidia_gpu_memory",
-                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 2, "name": "GPU-2"}]},
                 ),
             ):
                 validation, launch_config = app_module._build_segmentation_launch_config(payload)
@@ -916,7 +1039,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(validation["reasonCode"], "missing_probmap_densities")
         self.assertIsNone(launch_config)
 
-    def test_build_segmentation_launch_config_accepts_saved_probability_map_thresholding(self) -> None:
+    def test_build_segmentation_launch_config_accepts_general_probability_map_thresholding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
@@ -936,8 +1059,10 @@ class AppTests(unittest.TestCase):
                 input_path=str(input_dir),
                 output_path=str(output_dir),
                 gpu_index=None,
-                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
-                probmap_threshold=0.6,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="probmap",
+                threshold=0.6,
+                invert_mask=True,
                 run_connected_components=False,
             )
 
@@ -947,54 +1072,147 @@ class AppTests(unittest.TestCase):
         self.assertEqual(validation["valid"], True)
         self.assertIsNotNone(launch_config)
         assert launch_config is not None
-        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_PROBABILITY_MAP)
-        self.assertEqual(launch_config["probmap_threshold"], 0.6)
+        self.assertEqual(launch_config["mode"], app_module.SEGMENTATION_MODE_GENERAL)
+        self.assertEqual(launch_config["source_id"], "probmap")
+        self.assertEqual(launch_config["source_kind"], "probmap")
+        self.assertEqual(launch_config["threshold"], 0.6)
+        self.assertEqual(launch_config["component_index"], 0)
+        self.assertTrue(launch_config["invert_mask"])
         self.assertFalse(launch_config["run_connected_components"])
         self.assertEqual(launch_config["progress_total"], 2)
 
         command = app_module._build_segmentation_command(launch_config)
-        self.assertIn("scripts/post_processing/probmap_segmentation.py", command)
+        self.assertIn("scripts/post_processing/general_segmentation.py", command)
+        self.assertIn("--source-kind", command)
+        self.assertIn("probmap", command)
         self.assertIn("--threshold", command)
         self.assertIn("0.6", command)
+        self.assertIn("--invert-mask", command)
         self.assertIn("--skip-ccl", command)
 
-    def test_build_segmentation_launch_config_accepts_probability_map_without_lr_feats(self) -> None:
+    def test_build_segmentation_launch_config_serializes_general_processing_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "features"
             output_dir = root / "segmentation-output"
             raw_dir = input_dir / "raw"
-            probmap_dir = input_dir / "probmap"
             raw_dir.mkdir(parents=True)
-            probmap_dir.mkdir(parents=True)
-            for name in ("sample_a", "sample_b"):
-                tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint8), photometric="minisblack")
-                tifffile.imwrite(
-                    probmap_dir / f"{name}.tif",
-                    np.zeros((4, 4, 4), dtype=np.float32),
-                    photometric="minisblack",
-                )
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 2), dtype=np.uint8), photometric="minisblack")
 
             payload = app_module.RunSegmentationRequest(
                 input_path=str(input_dir),
                 output_path=str(output_dir),
                 gpu_index=None,
-                mode=app_module.SEGMENTATION_MODE_PROBABILITY_MAP,
-                probmap_threshold=0.6,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="raw",
+                threshold=12.0,
+                data_operations=[
+                    {"type": "invert_lut"},
+                    {"type": "gaussian_smoothing", "sigma": 1.5},
+                ],
+                mask_operations=[{"type": "remove_small_objects", "size": 8}],
+                instance_method="voronoi_otsu",
+                voronoi_spot_sigma=2.5,
+                voronoi_outline_sigma=3.0,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(
+            launch_config["data_operations"],
+            [{"type": "invert_lut"}, {"type": "gaussian_smoothing", "sigma": 1.5}],
+        )
+        self.assertEqual(launch_config["mask_operations"], [{"type": "remove_small_objects", "size": 8}])
+        self.assertEqual(launch_config["instance_method"], "voronoi_otsu")
+        self.assertEqual(launch_config["data_backend"], "cpu")
+
+        command = app_module._build_segmentation_command(launch_config)
+        data_operations = json.loads(command[command.index("--data-operations-json") + 1])
+        mask_operations = json.loads(command[command.index("--mask-operations-json") + 1])
+        self.assertEqual(data_operations, [{"type": "invert_lut"}, {"type": "gaussian_smoothing", "sigma": 1.5}])
+        self.assertEqual(mask_operations, [{"type": "remove_small_objects", "size": 8}])
+        self.assertEqual(command[command.index("--data-backend") + 1], "cpu")
+        self.assertEqual(command[command.index("--instance-method") + 1], "voronoi_otsu")
+        self.assertEqual(command[command.index("--voronoi-spot-sigma") + 1], "2.5")
+        self.assertEqual(command[command.index("--voronoi-outline-sigma") + 1], "3.0")
+
+    def test_build_segmentation_launch_config_uses_selected_gpu_for_general_data_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 2), dtype=np.uint8), photometric="minisblack")
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=2,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="raw",
+                threshold=12.0,
+                data_operations=[{"type": "subtract_background", "radius": 10.0}],
+            )
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 2, "name": "GPU-2"}]},
+                ),
+            ):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["gpu_index"], 2)
+        self.assertEqual(launch_config["data_backend"], "gpu")
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertEqual(command[command.index("--data-backend") + 1], "gpu")
+        self.assertEqual(command[command.index("--gpu-index") + 1], "0")
+        command_env = app_module._build_general_segmentation_command_env(launch_config)
+        self.assertEqual(command_env["CUDA_VISIBLE_DEVICES"], "2")
+
+    def test_build_segmentation_launch_config_accepts_general_raw_without_lr_feats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            for name in ("sample_a", "sample_b"):
+                tifffile.imwrite(raw_dir / f"{name}.tif", np.zeros((4, 4, 4), dtype=np.uint8), photometric="minisblack")
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=None,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="raw",
+                threshold=12.0,
                 run_connected_components=False,
             )
 
             with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
-                folder_validation = app_module.validate_probability_map_input_folder(str(input_dir))
+                folder_validation = app_module.validate_general_segmentation_input_folder(str(input_dir))
                 validation, launch_config = app_module._build_segmentation_launch_config(payload)
 
         self.assertEqual(folder_validation["valid"], True)
         self.assertEqual(folder_validation["subfolderNames"], ["sample_a", "sample_b"])
+        self.assertEqual([source["id"] for source in folder_validation["availableSources"]], ["raw"])
         self.assertEqual(validation["valid"], True)
         self.assertIsNotNone(launch_config)
         assert launch_config is not None
         self.assertEqual(launch_config["subfolder_count"], 2)
-        self.assertEqual(launch_config["probmap_threshold"], 0.6)
+        self.assertEqual(launch_config["source_kind"], "raw")
+        self.assertEqual(launch_config["threshold"], 12.0)
 
     def test_probability_map_preview_metadata_reports_timepoint_shapes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1086,6 +1304,325 @@ class AppTests(unittest.TestCase):
         expected_mask = probmap.max(axis=0) >= 0.5
         preview_mask = projection_probability >= 0.5
         np.testing.assert_array_equal(preview_mask, expected_mask)
+
+    def test_general_segmentation_preview_surface_raw_slice_does_not_compute_processed_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.array(
+                [
+                    [[0, 10, 20], [30, 40, 50]],
+                    [[60, 70, 80], [90, 100, 110]],
+                ],
+                dtype=np.uint16,
+            )
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                with patch(
+                    "spatialdino_server.app._general_processed_volume",
+                    side_effect=AssertionError("processed data should not be read for raw display slices"),
+                ):
+                    payload = app_module.general_segmentation_preview_surface(
+                        app_module.GeneralSegmentationPreviewSurfaceRequest(
+                            input_path=str(input_dir),
+                            source_id="raw",
+                            display_contrast="full_range",
+                            timepoint="sample_a",
+                            view="slice",
+                            z_index=1,
+                        )
+                    )
+
+        display = np.frombuffer(base64.b64decode(payload["display"]["data"]), dtype=np.uint8).reshape(2, 3)
+        expected_display = np.rint((raw[1] / 110.0) * 255.0).astype(np.uint8)
+        np.testing.assert_array_equal(display, expected_display)
+        values = np.frombuffer(base64.b64decode(payload["evaluation"]["values"]["data"]), dtype=np.float32).reshape(2, 3)
+        np.testing.assert_allclose(values, raw[1].astype(np.float32), rtol=1e-6, atol=1e-6)
+        self.assertNotIn("values", payload)
+
+    def test_general_segmentation_preview_surface_projection_returns_exact_threshold_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.array(
+                [
+                    [[0, 10, 20], [30, 40, 50]],
+                    [[60, 70, 80], [90, 100, 110]],
+                ],
+                dtype=np.uint16,
+            )
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.general_segmentation_preview_surface(
+                    app_module.GeneralSegmentationPreviewSurfaceRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        display_source="raw",
+                        timepoint="sample_a",
+                        view="max_projection",
+                    )
+                )
+
+        max_values = np.frombuffer(base64.b64decode(payload["evaluation"]["maxValues"]["data"]), dtype=np.float32).reshape(2, 3)
+        min_values = np.frombuffer(base64.b64decode(payload["evaluation"]["minValues"]["data"]), dtype=np.float32).reshape(2, 3)
+        np.testing.assert_allclose(max_values, raw.max(axis=0).astype(np.float32), rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(min_values, raw.min(axis=0).astype(np.float32), rtol=1e-6, atol=1e-6)
+
+    def test_general_segmentation_preview_data_returns_raw_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.array(
+                [
+                    [[0, 10, 20], [30, 40, 50]],
+                    [[60, 70, 80], [90, 100, 110]],
+                ],
+                dtype=np.uint16,
+            )
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.general_segmentation_preview_data(
+                    app_module.GeneralSegmentationPreviewDataRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        timepoint="sample_a",
+                    )
+                )
+
+        self.assertEqual(payload["rangeMin"], 0.0)
+        self.assertEqual(payload["rangeMax"], 110.0)
+        self.assertEqual(payload["step"], 1.0)
+
+    def test_general_segmentation_preview_data_runs_selected_gpu_processing_out_of_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.arange(8, dtype=np.uint16).reshape(2, 2, 2)
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            def fake_gpu_processing(values, *, source_kind, data_operations, gpu_index):
+                self.assertEqual(data_operations, [{"type": "gaussian_smoothing", "sigma": 0.0}])
+                self.assertEqual(source_kind, "raw")
+                self.assertEqual(gpu_index, 0)
+                return np.asarray(values, dtype=np.float32)
+
+            with (
+                patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False),
+                patch(
+                    "spatialdino_server.app.get_nvidia_gpu_memory",
+                    return_value={"nvidiaSmiAvailable": True, "gpus": [{"index": 0, "name": "GPU-0"}]},
+                ),
+                patch(
+                    "spatialdino_server.app._run_general_preview_gpu_processing",
+                    side_effect=fake_gpu_processing,
+                ) as gpu_processing_mock,
+                patch(
+                    "spatialdino_server.app.apply_data_operations",
+                    side_effect=AssertionError("GPU preview processing must not run in the server process."),
+                ),
+            ):
+                payload = app_module.general_segmentation_preview_data(
+                    app_module.GeneralSegmentationPreviewDataRequest(
+                        input_path=str(input_dir),
+                        gpu_index=0,
+                        source_id="raw",
+                        data_operations=[{"type": "gaussian_smoothing", "sigma": 0}],
+                        timepoint="sample_a",
+                    )
+                )
+
+        self.assertEqual(gpu_processing_mock.call_count, 1)
+        self.assertEqual(payload["rangeMin"], 0.0)
+        self.assertEqual(payload["rangeMax"], 7.0)
+
+    def test_general_preview_gpu_processing_limits_visible_gpu_in_subprocess(self) -> None:
+        values = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+        captured: dict[str, object] = {}
+
+        def fake_run(command, *, cwd, env, text, capture_output, check):
+            captured["command"] = command
+            captured["cwd"] = cwd
+            captured["env"] = env
+            captured["text"] = text
+            captured["capture_output"] = capture_output
+            captured["check"] = check
+            output_npy = Path(command[command.index("--output-npy") + 1])
+            np.save(output_npy, values + 1, allow_pickle=False)
+            return app_module.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch("spatialdino_server.app.subprocess.run", side_effect=fake_run):
+            processed = app_module._run_general_preview_gpu_processing(
+                values,
+                source_kind="raw",
+                data_operations=[{"type": "gaussian_smoothing", "sigma": 0.0}],
+                gpu_index=3,
+            )
+
+        command = captured["command"]
+        env = captured["env"]
+        assert isinstance(command, list)
+        assert isinstance(env, dict)
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "3")
+        self.assertEqual(command[command.index("--gpu-index") + 1], "0")
+        np.testing.assert_array_equal(processed, values + 1)
+
+    def test_general_segmentation_preview_splits_image_and_binary_mask_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.array(
+                [
+                    [[0, 10, 20], [30, 40, 50]],
+                    [[60, 70, 80], [90, 100, 110]],
+                ],
+                dtype=np.uint16,
+            )
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                data_payload = app_module.general_segmentation_preview_data(
+                    app_module.GeneralSegmentationPreviewDataRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        data_operations=[{"type": "invert_lut"}],
+                        timepoint="sample_a",
+                    )
+                )
+                payload = app_module.general_segmentation_preview_image(
+                    app_module.GeneralSegmentationPreviewImageRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        display_source="evaluation",
+                        data_operations=[{"type": "invert_lut"}],
+                        require_cached_data=True,
+                        timepoint="sample_a",
+                        view="min_projection",
+                    )
+                )
+                mask_payload = app_module.general_segmentation_preview_mask(
+                    app_module.GeneralSegmentationPreviewMaskRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        threshold=80.0,
+                        data_operations=[{"type": "invert_lut"}],
+                        require_cached_data=True,
+                        timepoint="sample_a",
+                        view="min_projection",
+                    )
+                )
+
+        self.assertNotIn("values", payload)
+        self.assertNotIn("mask", payload)
+        mask = np.frombuffer(base64.b64decode(mask_payload["mask"]["data"]), dtype=np.uint32).reshape(2, 3)
+        expected_mask = ((110.0 - raw.astype(np.float32)) >= 80.0).max(axis=0).astype(np.uint32)
+        np.testing.assert_array_equal(mask, expected_mask)
+        self.assertFalse(mask_payload["mask"]["instance"])
+        self.assertEqual(data_payload["rangeMin"], 0.0)
+        self.assertEqual(data_payload["rangeMax"], 110.0)
+        self.assertAlmostEqual(data_payload["step"], 0.11)
+
+    def test_general_segmentation_preview_instance_uses_explicit_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            raw = np.array(
+                [
+                    [[0, 0, 0], [0, 90, 90]],
+                    [[0, 0, 0], [0, 90, 90]],
+                ],
+                dtype=np.uint16,
+            )
+            tifffile.imwrite(raw_dir / "sample_a.tif", raw, photometric="minisblack")
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.general_segmentation_preview_instance(
+                    app_module.GeneralSegmentationPreviewInstanceRequest(
+                        input_path=str(input_dir),
+                        source_id="raw",
+                        threshold=50.0,
+                        instance_method="connected_components",
+                        timepoint="sample_a",
+                        view="max_projection",
+                    )
+                )
+
+        mask = np.frombuffer(base64.b64decode(payload["mask"]["data"]), dtype=np.uint32).reshape(2, 3)
+        self.assertTrue(payload["mask"]["instance"])
+        self.assertGreater(int(mask.max()), 0)
+
+    def test_general_segmentation_preview_data_returns_pca_component_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            pca_dir = input_dir / "pca_2"
+            raw_dir.mkdir(parents=True)
+            pca_dir.mkdir()
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 3), dtype=np.uint8), photometric="minisblack")
+            pca = np.zeros((2, 2, 3, 2), dtype=np.uint8)
+            pca[..., 0] = 10
+            pca[..., 1] = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+            tifffile.imwrite(pca_dir / "sample_a.tif", pca)
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.general_segmentation_preview_data(
+                    app_module.GeneralSegmentationPreviewDataRequest(
+                        input_path=str(input_dir),
+                        source_id="pca_2",
+                        threshold_component_index=1,
+                        timepoint="sample_a",
+                    )
+                )
+
+        self.assertEqual(payload["rangeMin"], 0.0)
+        self.assertEqual(payload["rangeMax"], 255.0)
+
+    def test_general_segmentation_preview_data_returns_feature_statistics_component_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            raw_dir = input_dir / "raw"
+            feature_stats_dir = input_dir / "feature_stats"
+            raw_dir.mkdir(parents=True)
+            feature_stats_dir.mkdir()
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 3), dtype=np.uint8), photometric="minisblack")
+            (feature_stats_dir / "feature_stats_metadata.json").write_text(
+                json.dumps({"components": ["mean", "max", "min", "median", "std", "l2_norm"]}),
+                encoding="utf-8",
+            )
+            feature_stats = np.zeros((2, 2, 3, 6), dtype=np.float32)
+            feature_stats[..., 0] = 10.0
+            feature_stats[..., 4] = np.arange(12, dtype=np.float32).reshape(2, 2, 3)
+            tifffile.imwrite(feature_stats_dir / "sample_a.tif", feature_stats)
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                payload = app_module.general_segmentation_preview_data(
+                    app_module.GeneralSegmentationPreviewDataRequest(
+                        input_path=str(input_dir),
+                        source_id="feature_stats",
+                        threshold_component_index=4,
+                        timepoint="sample_a",
+                    )
+                )
+
+        self.assertEqual(payload["rangeMin"], 0.0)
+        self.assertEqual(payload["rangeMax"], 11.0)
+        self.assertAlmostEqual(payload["step"], 0.011)
 
     def test_probability_map_preview_metadata_marks_shape_mismatch_incompatible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
