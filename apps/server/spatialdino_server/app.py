@@ -56,8 +56,15 @@ from spatialdino.segmentation.general import (
     finite_min_max,
     instance_segmentation,
     normalize_data_operations,
+    normalize_distance_transform_connectivity,
+    normalize_distance_transform_dynamic,
+    normalize_distance_transform_spacing,
+    normalize_intensity_normalization_percentiles,
+    normalize_intensity_prominence,
+    normalize_intensity_smoothing_sigma,
     normalize_instance_method,
     normalize_mask_operations,
+    normalize_watershed_connectivity,
     threshold_to_semantic,
 )
 
@@ -416,6 +423,16 @@ class RunSegmentationRequest(BaseModel):
     instance_method: str | None = None
     voronoi_spot_sigma: float = Field(2.0, ge=0.0)
     voronoi_outline_sigma: float = Field(2.0, ge=0.0)
+    distance_transform_dynamic: float = Field(1.0, ge=0.0)
+    distance_transform_connectivity: int = Field(6)
+    distance_transform_spacing_z: float = Field(1.0, gt=0.0)
+    distance_transform_spacing_y: float = Field(1.0, gt=0.0)
+    distance_transform_spacing_x: float = Field(1.0, gt=0.0)
+    intensity_prominence: float = Field(0.15, ge=0.0, le=1.0)
+    intensity_smoothing_sigma: float = Field(0.0, ge=0.0)
+    intensity_low_percentile: float = Field(1.0, ge=0.0, le=100.0)
+    intensity_high_percentile: float = Field(99.0, ge=0.0, le=100.0)
+    intensity_connectivity: int = Field(6)
     enable_voronoi_otsu: bool = True
     gaussian_blur_sigma: int = Field(3, ge=0)
     rolling_ball_radius: float = Field(10.0, ge=0.0)
@@ -516,6 +533,16 @@ class GeneralSegmentationPreviewInstanceRequest(GeneralSegmentationPreviewMaskRe
     instance_method: str | None = None
     voronoi_spot_sigma: float = Field(2.0, ge=0.0)
     voronoi_outline_sigma: float = Field(2.0, ge=0.0)
+    distance_transform_dynamic: float = Field(1.0, ge=0.0)
+    distance_transform_connectivity: int = Field(6)
+    distance_transform_spacing_z: float = Field(1.0, gt=0.0)
+    distance_transform_spacing_y: float = Field(1.0, gt=0.0)
+    distance_transform_spacing_x: float = Field(1.0, gt=0.0)
+    intensity_prominence: float = Field(0.15, ge=0.0, le=1.0)
+    intensity_smoothing_sigma: float = Field(0.0, ge=0.0)
+    intensity_low_percentile: float = Field(1.0, ge=0.0, le=100.0)
+    intensity_high_percentile: float = Field(99.0, ge=0.0, le=100.0)
+    intensity_connectivity: int = Field(6)
 
 
 class RunForegroundProbabilityMapRequest(BaseModel):
@@ -2380,6 +2407,23 @@ def general_segmentation_preview_instance(payload: GeneralSegmentationPreviewIns
             if payload.instance_method is not None
             else INSTANCE_METHOD_CONNECTED_COMPONENTS
         )
+        distance_dynamic = normalize_distance_transform_dynamic(payload.distance_transform_dynamic)
+        distance_connectivity = normalize_distance_transform_connectivity(payload.distance_transform_connectivity)
+        distance_spacing = normalize_distance_transform_spacing(
+            payload.distance_transform_spacing_z,
+            payload.distance_transform_spacing_y,
+            payload.distance_transform_spacing_x,
+        )
+        intensity_prominence = normalize_intensity_prominence(payload.intensity_prominence)
+        intensity_smoothing_sigma = normalize_intensity_smoothing_sigma(payload.intensity_smoothing_sigma)
+        intensity_percentiles = normalize_intensity_normalization_percentiles(
+            payload.intensity_low_percentile,
+            payload.intensity_high_percentile,
+        )
+        intensity_connectivity = normalize_watershed_connectivity(
+            payload.intensity_connectivity,
+            label="Intensity-prominence watershed connectivity",
+        )
         processed_volume, threshold_range = _general_processed_volume(
             source=source,
             source_path=source_path,
@@ -2407,6 +2451,14 @@ def general_segmentation_preview_instance(payload: GeneralSegmentationPreviewIns
                 method=instance_method,
                 voronoi_spot_sigma=float(payload.voronoi_spot_sigma),
                 voronoi_outline_sigma=float(payload.voronoi_outline_sigma),
+                distance_dynamic=distance_dynamic,
+                distance_connectivity=distance_connectivity,
+                distance_spacing_zyx=distance_spacing,
+                intensity_prominence=intensity_prominence,
+                intensity_smoothing_sigma=intensity_smoothing_sigma,
+                intensity_low_percentile=intensity_percentiles[0],
+                intensity_high_percentile=intensity_percentiles[1],
+                intensity_connectivity=intensity_connectivity,
             )
             mask_image = _mask_plane_or_projection(mask_volume, view=payload.view, z_index=z_index)
     except GeneralSegmentationProcessedDataNotReadyError as exc:
@@ -2997,6 +3049,29 @@ def _build_segmentation_launch_config(
                 "invalid_voronoi_outline_sigma",
                 "Voronoi-Otsu outline sigma must be finite.",
             ), None
+        try:
+            distance_dynamic = normalize_distance_transform_dynamic(payload.distance_transform_dynamic)
+            distance_connectivity = normalize_distance_transform_connectivity(payload.distance_transform_connectivity)
+            distance_spacing = normalize_distance_transform_spacing(
+                payload.distance_transform_spacing_z,
+                payload.distance_transform_spacing_y,
+                payload.distance_transform_spacing_x,
+            )
+        except ValueError as exc:
+            return _invalid_process_features_run("invalid_distance_transform_watershed", str(exc)), None
+        try:
+            intensity_prominence = normalize_intensity_prominence(payload.intensity_prominence)
+            intensity_smoothing_sigma = normalize_intensity_smoothing_sigma(payload.intensity_smoothing_sigma)
+            intensity_percentiles = normalize_intensity_normalization_percentiles(
+                payload.intensity_low_percentile,
+                payload.intensity_high_percentile,
+            )
+            intensity_connectivity = normalize_watershed_connectivity(
+                payload.intensity_connectivity,
+                label="Intensity-prominence watershed connectivity",
+            )
+        except ValueError as exc:
+            return _invalid_process_features_run("invalid_intensity_prominence_watershed", str(exc)), None
 
         launch_config = {
             "input_path": input_path,
@@ -3016,6 +3091,13 @@ def _build_segmentation_launch_config(
             "instance_method": instance_method,
             "voronoi_spot_sigma": float(payload.voronoi_spot_sigma),
             "voronoi_outline_sigma": float(payload.voronoi_outline_sigma),
+            "distance_transform_dynamic": distance_dynamic,
+            "distance_transform_connectivity": distance_connectivity,
+            "distance_transform_spacing": distance_spacing,
+            "intensity_prominence": intensity_prominence,
+            "intensity_smoothing_sigma": intensity_smoothing_sigma,
+            "intensity_percentiles": intensity_percentiles,
+            "intensity_connectivity": intensity_connectivity,
             "run_connected_components": instance_method == INSTANCE_METHOD_CONNECTED_COMPONENTS,
             "progress_total": subfolder_count,
         }
@@ -3839,6 +3921,26 @@ def _build_segmentation_command(launch_config: dict[str, Any]) -> list[str]:
             str(launch_config.get("voronoi_spot_sigma", 2.0)),
             "--voronoi-outline-sigma",
             str(launch_config.get("voronoi_outline_sigma", 2.0)),
+            "--distance-transform-dynamic",
+            str(launch_config.get("distance_transform_dynamic", 1.0)),
+            "--distance-transform-connectivity",
+            str(launch_config.get("distance_transform_connectivity", 6)),
+            "--distance-transform-spacing-z",
+            str(launch_config.get("distance_transform_spacing", (1.0, 1.0, 1.0))[0]),
+            "--distance-transform-spacing-y",
+            str(launch_config.get("distance_transform_spacing", (1.0, 1.0, 1.0))[1]),
+            "--distance-transform-spacing-x",
+            str(launch_config.get("distance_transform_spacing", (1.0, 1.0, 1.0))[2]),
+            "--intensity-prominence",
+            str(launch_config.get("intensity_prominence", 0.15)),
+            "--intensity-smoothing-sigma",
+            str(launch_config.get("intensity_smoothing_sigma", 0.0)),
+            "--intensity-low-percentile",
+            str(launch_config.get("intensity_percentiles", (1.0, 99.0))[0]),
+            "--intensity-high-percentile",
+            str(launch_config.get("intensity_percentiles", (1.0, 99.0))[1]),
+            "--intensity-connectivity",
+            str(launch_config.get("intensity_connectivity", 6)),
         ]
         if launch_config.get("invert_mask", False):
             command.append("--invert-mask")

@@ -1140,6 +1140,93 @@ class AppTests(unittest.TestCase):
         self.assertEqual(command[command.index("--voronoi-spot-sigma") + 1], "2.5")
         self.assertEqual(command[command.index("--voronoi-outline-sigma") + 1], "3.0")
 
+    def test_build_segmentation_launch_config_for_distance_transform_watershed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 2), dtype=np.uint8), photometric="minisblack")
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=None,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="raw",
+                threshold=1.0,
+                instance_method="distance_transform_watershed",
+                distance_transform_dynamic=1.5,
+                distance_transform_connectivity=26,
+                distance_transform_spacing_z=2.0,
+                distance_transform_spacing_y=1.0,
+                distance_transform_spacing_x=1.0,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["instance_method"], "distance_transform_watershed")
+        self.assertEqual(launch_config["distance_transform_dynamic"], 1.5)
+        self.assertEqual(launch_config["distance_transform_connectivity"], 26)
+        self.assertEqual(launch_config["distance_transform_spacing"], (2.0, 1.0, 1.0))
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertEqual(command[command.index("--instance-method") + 1], "distance_transform_watershed")
+        self.assertEqual(command[command.index("--distance-transform-dynamic") + 1], "1.5")
+        self.assertEqual(command[command.index("--distance-transform-connectivity") + 1], "26")
+        self.assertEqual(command[command.index("--distance-transform-spacing-z") + 1], "2.0")
+        self.assertEqual(command[command.index("--distance-transform-spacing-y") + 1], "1.0")
+        self.assertEqual(command[command.index("--distance-transform-spacing-x") + 1], "1.0")
+
+    def test_build_segmentation_launch_config_for_intensity_prominence_watershed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "features"
+            output_dir = root / "segmentation-output"
+            raw_dir = input_dir / "raw"
+            raw_dir.mkdir(parents=True)
+            tifffile.imwrite(raw_dir / "sample_a.tif", np.zeros((2, 2, 2), dtype=np.uint8), photometric="minisblack")
+
+            payload = app_module.RunSegmentationRequest(
+                input_path=str(input_dir),
+                output_path=str(output_dir),
+                gpu_index=None,
+                mode=app_module.SEGMENTATION_MODE_GENERAL,
+                source_id="raw",
+                threshold=1.0,
+                instance_method="intensity_prominence_watershed",
+                intensity_prominence=0.2,
+                intensity_smoothing_sigma=0.5,
+                intensity_low_percentile=2.0,
+                intensity_high_percentile=98.0,
+                intensity_connectivity=26,
+            )
+
+            with patch.dict(os.environ, {"SPATIALDINO_FS_ROOTS": str(root)}, clear=False):
+                validation, launch_config = app_module._build_segmentation_launch_config(payload)
+
+        self.assertEqual(validation["valid"], True)
+        self.assertIsNotNone(launch_config)
+        assert launch_config is not None
+        self.assertEqual(launch_config["instance_method"], "intensity_prominence_watershed")
+        self.assertEqual(launch_config["intensity_prominence"], 0.2)
+        self.assertEqual(launch_config["intensity_smoothing_sigma"], 0.5)
+        self.assertEqual(launch_config["intensity_percentiles"], (2.0, 98.0))
+        self.assertEqual(launch_config["intensity_connectivity"], 26)
+
+        command = app_module._build_segmentation_command(launch_config)
+        self.assertEqual(command[command.index("--instance-method") + 1], "intensity_prominence_watershed")
+        self.assertEqual(command[command.index("--intensity-prominence") + 1], "0.2")
+        self.assertEqual(command[command.index("--intensity-smoothing-sigma") + 1], "0.5")
+        self.assertEqual(command[command.index("--intensity-low-percentile") + 1], "2.0")
+        self.assertEqual(command[command.index("--intensity-high-percentile") + 1], "98.0")
+        self.assertEqual(command[command.index("--intensity-connectivity") + 1], "26")
+
     def test_build_segmentation_launch_config_uses_selected_gpu_for_general_data_processing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

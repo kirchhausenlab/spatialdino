@@ -17,32 +17,111 @@ type GeneralSegmentationDataOperationType =
   | "invert_lut"
   | "subtract_background"
   | "gaussian_smoothing"
-  | "laplacian_of_gaussian";
-type GeneralSegmentationMaskOperationType = "remove_small_objects";
-type GeneralSegmentationInstanceMethod = "none" | "connected_components" | "voronoi_otsu";
+  | "laplacian_of_gaussian"
+  | "percentile_clipping"
+  | "median_filter"
+  | "difference_of_gaussians"
+  | "top_hat"
+  | "black_hat";
+type GeneralSegmentationMaskOperationType =
+  | "remove_small_objects"
+  | "fill_small_holes"
+  | "binary_closing"
+  | "binary_opening"
+  | "dilate"
+  | "erode"
+  | "remove_border_objects"
+  | "size_range";
+type GeneralSegmentationInstanceMethod =
+  | "none"
+  | "connected_components"
+  | "voronoi_otsu"
+  | "distance_transform_watershed"
+  | "intensity_prominence_watershed";
 type GeneralSegmentationLogResponse = "bright" | "dark";
 
 type GeneralSegmentationDataOperation = {
   id: string;
   type: GeneralSegmentationDataOperationType;
   radius: string;
+  radiusZ: string;
+  radiusY: string;
+  radiusX: string;
   sigma: string;
+  sigmaZ: string;
+  sigmaY: string;
+  sigmaX: string;
+  sigma2: string;
+  sigma2Z: string;
+  sigma2Y: string;
+  sigma2X: string;
   response: GeneralSegmentationLogResponse;
+  lowPercentile: string;
+  highPercentile: string;
+  rescale: boolean;
+  outputMin: string;
+  outputMax: string;
+  anisotropic: boolean;
 };
 
 type GeneralSegmentationMaskOperation = {
   id: string;
   type: GeneralSegmentationMaskOperationType;
   size: string;
+  minSize: string;
+  maxSize: string;
+  radius: string;
 };
 
 type SerializedGeneralSegmentationDataOperation =
   | { type: "invert_lut" }
   | { type: "subtract_background"; radius: number }
+  | { type: "subtract_background"; radius_z: number; radius_y: number; radius_x: number }
   | { type: "gaussian_smoothing"; sigma: number }
-  | { type: "laplacian_of_gaussian"; sigma: number; response: GeneralSegmentationLogResponse };
+  | { type: "gaussian_smoothing"; sigma_z: number; sigma_y: number; sigma_x: number }
+  | { type: "laplacian_of_gaussian"; sigma: number; response: GeneralSegmentationLogResponse }
+  | {
+      type: "laplacian_of_gaussian";
+      sigma_z: number;
+      sigma_y: number;
+      sigma_x: number;
+      response: GeneralSegmentationLogResponse;
+    }
+  | {
+      type: "percentile_clipping";
+      low_percentile: number;
+      high_percentile: number;
+      rescale: boolean;
+      output_min: number;
+      output_max: number;
+    }
+  | { type: "median_filter"; radius: number }
+  | { type: "median_filter"; radius_z: number; radius_y: number; radius_x: number }
+  | { type: "difference_of_gaussians"; sigma: number; sigma2: number; response: GeneralSegmentationLogResponse }
+  | {
+      type: "difference_of_gaussians";
+      sigma_z: number;
+      sigma_y: number;
+      sigma_x: number;
+      sigma2_z: number;
+      sigma2_y: number;
+      sigma2_x: number;
+      response: GeneralSegmentationLogResponse;
+    }
+  | { type: "top_hat"; radius: number }
+  | { type: "top_hat"; radius_z: number; radius_y: number; radius_x: number }
+  | { type: "black_hat"; radius: number }
+  | { type: "black_hat"; radius_z: number; radius_y: number; radius_x: number };
 
-type SerializedGeneralSegmentationMaskOperation = { type: "remove_small_objects"; size: number };
+type SerializedGeneralSegmentationMaskOperation =
+  | { type: "remove_small_objects"; size: number }
+  | { type: "fill_small_holes"; size: number }
+  | { type: "binary_closing"; radius: number }
+  | { type: "binary_opening"; radius: number }
+  | { type: "dilate"; radius: number }
+  | { type: "erode"; radius: number }
+  | { type: "remove_border_objects" }
+  | { type: "size_range"; min_size: number; max_size: number };
 
 type GpuOption = {
   index: number;
@@ -107,6 +186,16 @@ type SegmentationRunRequest = {
   instance_method: GeneralSegmentationInstanceMethod;
   voronoi_spot_sigma: number;
   voronoi_outline_sigma: number;
+  distance_transform_dynamic: number;
+  distance_transform_connectivity: number;
+  distance_transform_spacing_z: number;
+  distance_transform_spacing_y: number;
+  distance_transform_spacing_x: number;
+  intensity_prominence: number;
+  intensity_smoothing_sigma: number;
+  intensity_low_percentile: number;
+  intensity_high_percentile: number;
+  intensity_connectivity: number;
   gaussian_blur_sigma: number;
   rolling_ball_radius: number;
   run_density_estimation: boolean;
@@ -461,8 +550,24 @@ function createGeneralDataOperation(
     id: `data-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     type,
     radius: "10",
+    radiusZ: "10",
+    radiusY: "10",
+    radiusX: "10",
     sigma: "1",
+    sigmaZ: "1",
+    sigmaY: "1",
+    sigmaX: "1",
+    sigma2: "2",
+    sigma2Z: "2",
+    sigma2Y: "2",
+    sigma2X: "2",
     response: "bright",
+    lowPercentile: "1",
+    highPercentile: "99",
+    rescale: false,
+    outputMin: "0",
+    outputMax: "1",
+    anisotropic: false,
   };
 }
 
@@ -473,7 +578,15 @@ function createGeneralMaskOperation(
     id: `mask-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     type,
     size: "64",
+    minSize: "0",
+    maxSize: "0",
+    radius: "1",
   };
+}
+
+function parseFiniteNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseNonnegativeNumber(value: string): number | null {
@@ -481,9 +594,80 @@ function parseNonnegativeNumber(value: string): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function parsePositiveNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function parseNonnegativeInteger(value: string): number | null {
   const parsed = Number.parseInt(value.trim(), 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function dataScaleValue(operation: GeneralSegmentationDataOperation, key: "radius" | "sigma" | "sigma2"): string {
+  if (key === "radius") return operation.radius;
+  if (key === "sigma") return operation.sigma;
+  return operation.sigma2;
+}
+
+function dataScaleAxisValue(
+  operation: GeneralSegmentationDataOperation,
+  key: "radius" | "sigma" | "sigma2",
+  axis: "Z" | "Y" | "X"
+): string {
+  if (key === "radius") {
+    if (axis === "Z") return operation.radiusZ;
+    if (axis === "Y") return operation.radiusY;
+    return operation.radiusX;
+  }
+  if (key === "sigma") {
+    if (axis === "Z") return operation.sigmaZ;
+    if (axis === "Y") return operation.sigmaY;
+    return operation.sigmaX;
+  }
+  if (axis === "Z") return operation.sigma2Z;
+  if (axis === "Y") return operation.sigma2Y;
+  return operation.sigma2X;
+}
+
+function serializeDataScaleFields(
+  operation: GeneralSegmentationDataOperation,
+  key: "radius" | "sigma" | "sigma2",
+  strict: boolean,
+  label: string,
+  fallback: number
+): { fields: Record<string, number>; error: string | null } {
+  if (!operation.anisotropic) {
+    const value = parseNonnegativeNumber(dataScaleValue(operation, key));
+    if (value === null) {
+      if (strict) return { fields: {}, error: `Enter a valid nonnegative ${label}.` };
+      return { fields: { [key]: fallback }, error: null };
+    }
+    return { fields: { [key]: value }, error: null };
+  }
+
+  const zValue = parseNonnegativeNumber(dataScaleAxisValue(operation, key, "Z"));
+  const yValue = parseNonnegativeNumber(dataScaleAxisValue(operation, key, "Y"));
+  const xValue = parseNonnegativeNumber(dataScaleAxisValue(operation, key, "X"));
+  if (zValue === null || yValue === null || xValue === null) {
+    if (strict) return { fields: {}, error: `Enter valid nonnegative ${label} Z/Y/X values.` };
+    return {
+      fields: {
+        [`${key}_z`]: fallback,
+        [`${key}_y`]: fallback,
+        [`${key}_x`]: fallback,
+      },
+      error: null,
+    };
+  }
+  return {
+    fields: {
+      [`${key}_z`]: zValue,
+      [`${key}_y`]: yValue,
+      [`${key}_x`]: xValue,
+    },
+    error: null,
+  };
 }
 
 function serializeGeneralDataOperations(
@@ -497,29 +681,83 @@ function serializeGeneralDataOperations(
     if (operation.type === "invert_lut") {
       serialized.push({ type: "invert_lut" });
     } else if (operation.type === "subtract_background") {
-      const radius = parseNonnegativeNumber(operation.radius);
-      if (radius === null) {
-        if (strict) return { operations: [], error: "Enter a valid nonnegative rolling-ball radius." };
-        serialized.push({ type: "subtract_background", radius: 10 });
-      } else {
-        serialized.push({ type: "subtract_background", radius });
-      }
+      const scale = serializeDataScaleFields(operation, "radius", strict, "rolling-ball radius", 10);
+      if (scale.error) return { operations: [], error: scale.error };
+      serialized.push({ type: "subtract_background", ...scale.fields } as SerializedGeneralSegmentationDataOperation);
     } else if (operation.type === "gaussian_smoothing") {
-      const sigma = parseNonnegativeNumber(operation.sigma);
-      if (sigma === null) {
-        if (strict) return { operations: [], error: "Enter a valid nonnegative Gaussian sigma." };
-        serialized.push({ type: "gaussian_smoothing", sigma: 1 });
-      } else {
-        serialized.push({ type: "gaussian_smoothing", sigma });
-      }
+      const scale = serializeDataScaleFields(operation, "sigma", strict, "Gaussian sigma", 1);
+      if (scale.error) return { operations: [], error: scale.error };
+      serialized.push({ type: "gaussian_smoothing", ...scale.fields } as SerializedGeneralSegmentationDataOperation);
     } else if (operation.type === "laplacian_of_gaussian") {
-      const sigma = parseNonnegativeNumber(operation.sigma);
-      if (sigma === null) {
-        if (strict) return { operations: [], error: "Enter a valid nonnegative LoG sigma." };
-        serialized.push({ type: "laplacian_of_gaussian", sigma: 1, response: operation.response });
+      const scale = serializeDataScaleFields(operation, "sigma", strict, "LoG sigma", 1);
+      if (scale.error) return { operations: [], error: scale.error };
+      serialized.push({
+        type: "laplacian_of_gaussian",
+        ...scale.fields,
+        response: operation.response,
+      } as SerializedGeneralSegmentationDataOperation);
+    } else if (operation.type === "percentile_clipping") {
+      const lowPercentile = parseNonnegativeNumber(operation.lowPercentile);
+      const highPercentile = parseNonnegativeNumber(operation.highPercentile);
+      if (
+        lowPercentile === null ||
+        highPercentile === null ||
+        lowPercentile > 100 ||
+        highPercentile > 100 ||
+        lowPercentile >= highPercentile
+      ) {
+        if (strict) return { operations: [], error: "Enter ordered percentile values between 0 and 100." };
+        serialized.push({
+          type: "percentile_clipping",
+          low_percentile: 1,
+          high_percentile: 99,
+          rescale: operation.rescale,
+          output_min: 0,
+          output_max: 1,
+        });
       } else {
-        serialized.push({ type: "laplacian_of_gaussian", sigma, response: operation.response });
+        const outputMin = parseFiniteNumber(operation.outputMin);
+        const outputMax = parseFiniteNumber(operation.outputMax);
+        if (operation.rescale && (outputMin === null || outputMax === null || outputMin >= outputMax)) {
+          if (strict) return { operations: [], error: "Enter ordered finite output range values." };
+          serialized.push({
+            type: "percentile_clipping",
+            low_percentile: lowPercentile,
+            high_percentile: highPercentile,
+            rescale: true,
+            output_min: 0,
+            output_max: 1,
+          });
+        } else {
+          serialized.push({
+            type: "percentile_clipping",
+            low_percentile: lowPercentile,
+            high_percentile: highPercentile,
+            rescale: operation.rescale,
+            output_min: outputMin ?? 0,
+            output_max: outputMax ?? 1,
+          });
+        }
       }
+    } else if (operation.type === "median_filter") {
+      const scale = serializeDataScaleFields(operation, "radius", strict, "median radius", 1);
+      if (scale.error) return { operations: [], error: scale.error };
+      serialized.push({ type: "median_filter", ...scale.fields } as SerializedGeneralSegmentationDataOperation);
+    } else if (operation.type === "difference_of_gaussians") {
+      const sigma = serializeDataScaleFields(operation, "sigma", strict, "DoG small sigma", 1);
+      if (sigma.error) return { operations: [], error: sigma.error };
+      const sigma2 = serializeDataScaleFields(operation, "sigma2", strict, "DoG large sigma", 2);
+      if (sigma2.error) return { operations: [], error: sigma2.error };
+      serialized.push({
+        type: "difference_of_gaussians",
+        ...sigma.fields,
+        ...sigma2.fields,
+        response: operation.response,
+      } as SerializedGeneralSegmentationDataOperation);
+    } else if (operation.type === "top_hat" || operation.type === "black_hat") {
+      const scale = serializeDataScaleFields(operation, "radius", strict, "hat radius", 10);
+      if (scale.error) return { operations: [], error: scale.error };
+      serialized.push({ type: operation.type, ...scale.fields } as SerializedGeneralSegmentationDataOperation);
     }
   }
   return { operations: serialized, error: null };
@@ -533,12 +771,38 @@ function serializeGeneralMaskOperations(
   if (!enabled) return { operations: [], error: null };
   const serialized: SerializedGeneralSegmentationMaskOperation[] = [];
   for (const operation of operations) {
-    const size = parseNonnegativeInteger(operation.size);
-    if (size === null) {
-      if (strict) return { operations: [], error: "Enter a valid nonnegative small-object size." };
-      serialized.push({ type: "remove_small_objects", size: 64 });
-    } else {
-      serialized.push({ type: "remove_small_objects", size });
+    if (operation.type === "remove_small_objects" || operation.type === "fill_small_holes") {
+      const size = parseNonnegativeInteger(operation.size);
+      if (size === null) {
+        if (strict) return { operations: [], error: "Enter a valid nonnegative mask operation size." };
+        serialized.push({ type: operation.type, size: 64 });
+      } else {
+        serialized.push({ type: operation.type, size });
+      }
+    } else if (
+      operation.type === "binary_closing" ||
+      operation.type === "binary_opening" ||
+      operation.type === "dilate" ||
+      operation.type === "erode"
+    ) {
+      const radius = parseNonnegativeNumber(operation.radius);
+      if (radius === null) {
+        if (strict) return { operations: [], error: "Enter a valid nonnegative mask operation radius." };
+        serialized.push({ type: operation.type, radius: 1 });
+      } else {
+        serialized.push({ type: operation.type, radius });
+      }
+    } else if (operation.type === "remove_border_objects") {
+      serialized.push({ type: "remove_border_objects" });
+    } else if (operation.type === "size_range") {
+      const minSize = parseNonnegativeInteger(operation.minSize);
+      const maxSize = parseNonnegativeInteger(operation.maxSize);
+      if (minSize === null || maxSize === null || (maxSize > 0 && minSize > maxSize)) {
+        if (strict) return { operations: [], error: "Enter a valid mask size range." };
+        serialized.push({ type: "size_range", min_size: 0, max_size: 0 });
+      } else {
+        serialized.push({ type: "size_range", min_size: minSize, max_size: maxSize });
+      }
     }
   }
   return { operations: serialized, error: null };
@@ -626,6 +890,16 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
     useState<GeneralSegmentationInstanceMethod>("connected_components");
   const [generalSegmentationVoronoiSpotSigma, setGeneralSegmentationVoronoiSpotSigma] = useState("2");
   const [generalSegmentationVoronoiOutlineSigma, setGeneralSegmentationVoronoiOutlineSigma] = useState("2");
+  const [generalSegmentationDistanceDynamic, setGeneralSegmentationDistanceDynamic] = useState("1");
+  const [generalSegmentationDistanceConnectivity, setGeneralSegmentationDistanceConnectivity] = useState<6 | 26>(6);
+  const [generalSegmentationDistanceSpacingZ, setGeneralSegmentationDistanceSpacingZ] = useState("1");
+  const [generalSegmentationDistanceSpacingY, setGeneralSegmentationDistanceSpacingY] = useState("1");
+  const [generalSegmentationDistanceSpacingX, setGeneralSegmentationDistanceSpacingX] = useState("1");
+  const [generalSegmentationIntensityProminence, setGeneralSegmentationIntensityProminence] = useState("0.15");
+  const [generalSegmentationIntensitySmoothingSigma, setGeneralSegmentationIntensitySmoothingSigma] = useState("0");
+  const [generalSegmentationIntensityLowPercentile, setGeneralSegmentationIntensityLowPercentile] = useState("1");
+  const [generalSegmentationIntensityHighPercentile, setGeneralSegmentationIntensityHighPercentile] = useState("99");
+  const [generalSegmentationIntensityConnectivity, setGeneralSegmentationIntensityConnectivity] = useState<6 | 26>(6);
   const [probabilityMapSeed, setProbabilityMapSeed] = useState("1337");
   const [trackingMaxDistanceXy, setTrackingMaxDistanceXy] = useState("35");
   const [trackingMaxDistanceZ, setTrackingMaxDistanceZ] = useState("15");
@@ -1231,6 +1505,40 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
         setRunFeedback({ tone: "error", message: "Enter a valid nonnegative Voronoi-Otsu outline sigma." });
         return;
       }
+      const parsedDistanceDynamic = parseNonnegativeNumber(generalSegmentationDistanceDynamic);
+      if (parsedDistanceDynamic === null) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative distance-transform dynamic value." });
+        return;
+      }
+      const parsedDistanceSpacingZ = parsePositiveNumber(generalSegmentationDistanceSpacingZ);
+      const parsedDistanceSpacingY = parsePositiveNumber(generalSegmentationDistanceSpacingY);
+      const parsedDistanceSpacingX = parsePositiveNumber(generalSegmentationDistanceSpacingX);
+      if (parsedDistanceSpacingZ === null || parsedDistanceSpacingY === null || parsedDistanceSpacingX === null) {
+        setRunFeedback({ tone: "error", message: "Enter valid positive distance-transform spacing values." });
+        return;
+      }
+      const parsedIntensityProminence = parseNonnegativeNumber(generalSegmentationIntensityProminence);
+      if (parsedIntensityProminence === null || parsedIntensityProminence > 1) {
+        setRunFeedback({ tone: "error", message: "Enter an intensity prominence between 0 and 1." });
+        return;
+      }
+      const parsedIntensitySmoothingSigma = parseNonnegativeNumber(generalSegmentationIntensitySmoothingSigma);
+      if (parsedIntensitySmoothingSigma === null) {
+        setRunFeedback({ tone: "error", message: "Enter a valid nonnegative intensity smoothing sigma." });
+        return;
+      }
+      const parsedIntensityLowPercentile = parseNonnegativeNumber(generalSegmentationIntensityLowPercentile);
+      const parsedIntensityHighPercentile = parseNonnegativeNumber(generalSegmentationIntensityHighPercentile);
+      if (
+        parsedIntensityLowPercentile === null ||
+        parsedIntensityHighPercentile === null ||
+        parsedIntensityLowPercentile > 100 ||
+        parsedIntensityHighPercentile > 100 ||
+        parsedIntensityLowPercentile >= parsedIntensityHighPercentile
+      ) {
+        setRunFeedback({ tone: "error", message: "Enter ordered intensity normalization percentiles between 0 and 100." });
+        return;
+      }
 
       const maxComponent = Math.max(0, selectedGeneralSegmentationSource.componentCount - 1);
       const thresholdComponent = clampInteger(generalSegmentationThresholdComponent, 0, maxComponent);
@@ -1250,6 +1558,16 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
         instance_method: generalSegmentationInstanceMethod,
         voronoi_spot_sigma: parsedVoronoiSpotSigma,
         voronoi_outline_sigma: parsedVoronoiOutlineSigma,
+        distance_transform_dynamic: parsedDistanceDynamic,
+        distance_transform_connectivity: generalSegmentationDistanceConnectivity,
+        distance_transform_spacing_z: parsedDistanceSpacingZ,
+        distance_transform_spacing_y: parsedDistanceSpacingY,
+        distance_transform_spacing_x: parsedDistanceSpacingX,
+        intensity_prominence: parsedIntensityProminence,
+        intensity_smoothing_sigma: parsedIntensitySmoothingSigma,
+        intensity_low_percentile: parsedIntensityLowPercentile,
+        intensity_high_percentile: parsedIntensityHighPercentile,
+        intensity_connectivity: generalSegmentationIntensityConnectivity,
         gaussian_blur_sigma: 3,
         rolling_ball_radius: 10,
         run_density_estimation: false,
@@ -2034,6 +2352,26 @@ export default function PostProcessingPage({ pageKind = "post_processing" }: Pos
                 onVoronoiSpotSigmaChange={setGeneralSegmentationVoronoiSpotSigma}
                 voronoiOutlineSigma={generalSegmentationVoronoiOutlineSigma}
                 onVoronoiOutlineSigmaChange={setGeneralSegmentationVoronoiOutlineSigma}
+                distanceDynamic={generalSegmentationDistanceDynamic}
+                onDistanceDynamicChange={setGeneralSegmentationDistanceDynamic}
+                distanceConnectivity={generalSegmentationDistanceConnectivity}
+                onDistanceConnectivityChange={setGeneralSegmentationDistanceConnectivity}
+                distanceSpacingZ={generalSegmentationDistanceSpacingZ}
+                onDistanceSpacingZChange={setGeneralSegmentationDistanceSpacingZ}
+                distanceSpacingY={generalSegmentationDistanceSpacingY}
+                onDistanceSpacingYChange={setGeneralSegmentationDistanceSpacingY}
+                distanceSpacingX={generalSegmentationDistanceSpacingX}
+                onDistanceSpacingXChange={setGeneralSegmentationDistanceSpacingX}
+                intensityProminence={generalSegmentationIntensityProminence}
+                onIntensityProminenceChange={setGeneralSegmentationIntensityProminence}
+                intensitySmoothingSigma={generalSegmentationIntensitySmoothingSigma}
+                onIntensitySmoothingSigmaChange={setGeneralSegmentationIntensitySmoothingSigma}
+                intensityLowPercentile={generalSegmentationIntensityLowPercentile}
+                onIntensityLowPercentileChange={setGeneralSegmentationIntensityLowPercentile}
+                intensityHighPercentile={generalSegmentationIntensityHighPercentile}
+                onIntensityHighPercentileChange={setGeneralSegmentationIntensityHighPercentile}
+                intensityConnectivity={generalSegmentationIntensityConnectivity}
+                onIntensityConnectivityChange={setGeneralSegmentationIntensityConnectivity}
                 thresholdDescription={POST_PROCESSING_PARAMETER_HELP.simpleProbabilityThreshold}
               />
             </div>
@@ -2628,6 +2966,26 @@ function GeneralSegmentationPreview({
   onVoronoiSpotSigmaChange,
   voronoiOutlineSigma,
   onVoronoiOutlineSigmaChange,
+  distanceDynamic,
+  onDistanceDynamicChange,
+  distanceConnectivity,
+  onDistanceConnectivityChange,
+  distanceSpacingZ,
+  onDistanceSpacingZChange,
+  distanceSpacingY,
+  onDistanceSpacingYChange,
+  distanceSpacingX,
+  onDistanceSpacingXChange,
+  intensityProminence,
+  onIntensityProminenceChange,
+  intensitySmoothingSigma,
+  onIntensitySmoothingSigmaChange,
+  intensityLowPercentile,
+  onIntensityLowPercentileChange,
+  intensityHighPercentile,
+  onIntensityHighPercentileChange,
+  intensityConnectivity,
+  onIntensityConnectivityChange,
   thresholdDescription,
 }: {
   inputPath: string | null;
@@ -2659,6 +3017,26 @@ function GeneralSegmentationPreview({
   onVoronoiSpotSigmaChange: (value: string) => void;
   voronoiOutlineSigma: string;
   onVoronoiOutlineSigmaChange: (value: string) => void;
+  distanceDynamic: string;
+  onDistanceDynamicChange: (value: string) => void;
+  distanceConnectivity: 6 | 26;
+  onDistanceConnectivityChange: (value: 6 | 26) => void;
+  distanceSpacingZ: string;
+  onDistanceSpacingZChange: (value: string) => void;
+  distanceSpacingY: string;
+  onDistanceSpacingYChange: (value: string) => void;
+  distanceSpacingX: string;
+  onDistanceSpacingXChange: (value: string) => void;
+  intensityProminence: string;
+  onIntensityProminenceChange: (value: string) => void;
+  intensitySmoothingSigma: string;
+  onIntensitySmoothingSigmaChange: (value: string) => void;
+  intensityLowPercentile: string;
+  onIntensityLowPercentileChange: (value: string) => void;
+  intensityHighPercentile: string;
+  onIntensityHighPercentileChange: (value: string) => void;
+  intensityConnectivity: 6 | 26;
+  onIntensityConnectivityChange: (value: 6 | 26) => void;
   thresholdDescription: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -2712,6 +3090,24 @@ function GeneralSegmentationPreview({
   const previewMaskOperationsKey = JSON.stringify(previewMaskOperations);
   const previewVoronoiSpotSigma = parseNonnegativeNumber(voronoiSpotSigma) ?? 2;
   const previewVoronoiOutlineSigma = parseNonnegativeNumber(voronoiOutlineSigma) ?? 2;
+  const previewDistanceDynamic = parseNonnegativeNumber(distanceDynamic) ?? 1;
+  const previewDistanceSpacingZ = parsePositiveNumber(distanceSpacingZ) ?? 1;
+  const previewDistanceSpacingY = parsePositiveNumber(distanceSpacingY) ?? 1;
+  const previewDistanceSpacingX = parsePositiveNumber(distanceSpacingX) ?? 1;
+  const parsedIntensityProminence = parseNonnegativeNumber(intensityProminence);
+  const previewIntensityProminence =
+    parsedIntensityProminence !== null && parsedIntensityProminence <= 1 ? parsedIntensityProminence : 0.15;
+  const previewIntensitySmoothingSigma = parseNonnegativeNumber(intensitySmoothingSigma) ?? 0;
+  const parsedIntensityLowPercentile = parseNonnegativeNumber(intensityLowPercentile);
+  const parsedIntensityHighPercentile = parseNonnegativeNumber(intensityHighPercentile);
+  const validIntensityPercentiles =
+    parsedIntensityLowPercentile !== null &&
+    parsedIntensityHighPercentile !== null &&
+    parsedIntensityLowPercentile <= 100 &&
+    parsedIntensityHighPercentile <= 100 &&
+    parsedIntensityLowPercentile < parsedIntensityHighPercentile;
+  const previewIntensityLowPercentile = validIntensityPercentiles ? parsedIntensityLowPercentile : 1;
+  const previewIntensityHighPercentile = validIntensityPercentiles ? parsedIntensityHighPercentile : 99;
   const currentZIndex = selectedView === "slice" ? clampInteger(zIndex, 0, zMax) : null;
   const requestedDataProcessorKey = previewDataOperations.length > 0 && gpuIndex !== null ? `gpu:${gpuIndex}` : "cpu";
   const dataBaseKey = JSON.stringify({
@@ -2765,6 +3161,16 @@ function GeneralSegmentationPreview({
     instanceMethod,
     voronoiSpotSigma: previewVoronoiSpotSigma,
     voronoiOutlineSigma: previewVoronoiOutlineSigma,
+    distanceDynamic: previewDistanceDynamic,
+    distanceConnectivity,
+    distanceSpacingZ: previewDistanceSpacingZ,
+    distanceSpacingY: previewDistanceSpacingY,
+    distanceSpacingX: previewDistanceSpacingX,
+    intensityProminence: previewIntensityProminence,
+    intensitySmoothingSigma: previewIntensitySmoothingSigma,
+    intensityLowPercentile: previewIntensityLowPercentile,
+    intensityHighPercentile: previewIntensityHighPercentile,
+    intensityConnectivity,
   });
   const validBinaryMaskFrame = binaryMaskFrame?.key === binaryMaskKey ? binaryMaskFrame : null;
   const fallbackBinaryMaskFrame =
@@ -3387,6 +3793,16 @@ function GeneralSegmentationPreview({
         instance_method: instanceMethod,
         voronoi_spot_sigma: previewVoronoiSpotSigma,
         voronoi_outline_sigma: previewVoronoiOutlineSigma,
+        distance_transform_dynamic: previewDistanceDynamic,
+        distance_transform_connectivity: distanceConnectivity,
+        distance_transform_spacing_z: previewDistanceSpacingZ,
+        distance_transform_spacing_y: previewDistanceSpacingY,
+        distance_transform_spacing_x: previewDistanceSpacingX,
+        intensity_prominence: previewIntensityProminence,
+        intensity_smoothing_sigma: previewIntensitySmoothingSigma,
+        intensity_low_percentile: previewIntensityLowPercentile,
+        intensity_high_percentile: previewIntensityHighPercentile,
+        intensity_connectivity: intensityConnectivity,
         timepoint: selectedTimepoint,
         view: selectedView,
         z_index: currentZIndex,
@@ -3466,6 +3882,95 @@ function GeneralSegmentationPreview({
     [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
     onMaskOperationsChange(next);
   };
+  const dataScalePatch = (
+    key: "radius" | "sigma" | "sigma2",
+    value: string,
+    axis: "Z" | "Y" | "X" | null = null
+  ): Partial<GeneralSegmentationDataOperation> => {
+    if (key === "radius") {
+      if (axis === "Z") return { radiusZ: value };
+      if (axis === "Y") return { radiusY: value };
+      if (axis === "X") return { radiusX: value };
+      return { radius: value };
+    }
+    if (key === "sigma") {
+      if (axis === "Z") return { sigmaZ: value };
+      if (axis === "Y") return { sigmaY: value };
+      if (axis === "X") return { sigmaX: value };
+      return { sigma: value };
+    }
+    if (axis === "Z") return { sigma2Z: value };
+    if (axis === "Y") return { sigma2Y: value };
+    if (axis === "X") return { sigma2X: value };
+    return { sigma2: value };
+  };
+  const renderDataAnisotropyToggle = (operation: GeneralSegmentationDataOperation) => (
+    <label className="inferenceCheckboxLabel">
+      <input
+        type="checkbox"
+        checked={operation.anisotropic}
+        onChange={(event) => updateDataOperation(operation.id, { anisotropic: event.target.checked })}
+      />
+      <span>Anisotropic</span>
+    </label>
+  );
+  const renderDataScaleInputs = (
+    operation: GeneralSegmentationDataOperation,
+    key: "radius" | "sigma" | "sigma2",
+    label: string
+  ) =>
+    operation.anisotropic ? (
+      <>
+        <div className="inferenceInlineLabel isStrong">{`${label} Z`}</div>
+        <PostProcessingNumberInput
+          value={dataScaleAxisValue(operation, key, "Z")}
+          onChange={(value) => updateDataOperation(operation.id, dataScalePatch(key, value, "Z"))}
+          min={0}
+          step={0.1}
+        />
+        <div className="inferenceInlineLabel isStrong">{`${label} Y`}</div>
+        <PostProcessingNumberInput
+          value={dataScaleAxisValue(operation, key, "Y")}
+          onChange={(value) => updateDataOperation(operation.id, dataScalePatch(key, value, "Y"))}
+          min={0}
+          step={0.1}
+        />
+        <div className="inferenceInlineLabel isStrong">{`${label} X`}</div>
+        <PostProcessingNumberInput
+          value={dataScaleAxisValue(operation, key, "X")}
+          onChange={(value) => updateDataOperation(operation.id, dataScalePatch(key, value, "X"))}
+          min={0}
+          step={0.1}
+        />
+      </>
+    ) : (
+      <>
+        <div className="inferenceInlineLabel isStrong">{label}</div>
+        <PostProcessingNumberInput
+          value={dataScaleValue(operation, key)}
+          onChange={(value) => updateDataOperation(operation.id, dataScalePatch(key, value))}
+          min={0}
+          step={0.1}
+        />
+      </>
+    );
+  const renderResponseSelect = (operation: GeneralSegmentationDataOperation) => (
+    <>
+      <div className="inferenceInlineLabel isStrong">Response</div>
+      <select
+        className="inferenceSelect inferenceCompactSelect"
+        value={operation.response}
+        onChange={(event) =>
+          updateDataOperation(operation.id, {
+            response: event.target.value as GeneralSegmentationLogResponse,
+          })
+        }
+      >
+        <option value="bright">Bright blobs</option>
+        <option value="dark">Dark blobs</option>
+      </select>
+    </>
+  );
 
   return (
     <div className="probabilityMapPreview">
@@ -3638,47 +4143,83 @@ function GeneralSegmentationPreview({
                       }
                     >
                       <option value="invert_lut">Invert LUT</option>
+                      <option value="percentile_clipping">Percentile clip</option>
                       <option value="subtract_background">Subtract background</option>
                       <option value="gaussian_smoothing">Gaussian smoothing</option>
+                      <option value="median_filter">Median filter</option>
                       <option value="laplacian_of_gaussian">Laplacian of Gaussian</option>
+                      <option value="difference_of_gaussians">Difference of Gaussians</option>
+                      <option value="top_hat">Top-hat</option>
+                      <option value="black_hat">Black-hat</option>
                     </select>
-                    {operation.type === "subtract_background" ? (
+                    {operation.type === "percentile_clipping" ? (
                       <>
-                        <div className="inferenceInlineLabel isStrong">Radius</div>
+                        <div className="inferenceInlineLabel isStrong">Low %</div>
                         <PostProcessingNumberInput
-                          value={operation.radius}
-                          onChange={(value) => updateDataOperation(operation.id, { radius: value })}
+                          value={operation.lowPercentile}
+                          onChange={(value) => updateDataOperation(operation.id, { lowPercentile: value })}
                           min={0}
+                          max={100}
                           step={0.1}
                         />
+                        <div className="inferenceInlineLabel isStrong">High %</div>
+                        <PostProcessingNumberInput
+                          value={operation.highPercentile}
+                          onChange={(value) => updateDataOperation(operation.id, { highPercentile: value })}
+                          min={0}
+                          max={100}
+                          step={0.1}
+                        />
+                        <label className="inferenceCheckboxLabel">
+                          <input
+                            type="checkbox"
+                            checked={operation.rescale}
+                            onChange={(event) => updateDataOperation(operation.id, { rescale: event.target.checked })}
+                          />
+                          <span>Rescale</span>
+                        </label>
+                        {operation.rescale ? (
+                          <>
+                            <div className="inferenceInlineLabel isStrong">Out min</div>
+                            <PostProcessingNumberInput
+                              value={operation.outputMin}
+                              onChange={(value) => updateDataOperation(operation.id, { outputMin: value })}
+                              step={0.1}
+                            />
+                            <div className="inferenceInlineLabel isStrong">Out max</div>
+                            <PostProcessingNumberInput
+                              value={operation.outputMax}
+                              onChange={(value) => updateDataOperation(operation.id, { outputMax: value })}
+                              step={0.1}
+                            />
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {operation.type === "subtract_background" ||
+                    operation.type === "median_filter" ||
+                    operation.type === "top_hat" ||
+                    operation.type === "black_hat" ? (
+                      <>
+                        {renderDataAnisotropyToggle(operation)}
+                        {renderDataScaleInputs(operation, "radius", "Radius")}
                       </>
                     ) : null}
                     {operation.type === "gaussian_smoothing" || operation.type === "laplacian_of_gaussian" ? (
                       <>
-                        <div className="inferenceInlineLabel isStrong">Sigma</div>
-                        <PostProcessingNumberInput
-                          value={operation.sigma}
-                          onChange={(value) => updateDataOperation(operation.id, { sigma: value })}
-                          min={0}
-                          step={0.1}
-                        />
+                        {renderDataAnisotropyToggle(operation)}
+                        {renderDataScaleInputs(operation, "sigma", "Sigma")}
                       </>
                     ) : null}
                     {operation.type === "laplacian_of_gaussian" ? (
+                      renderResponseSelect(operation)
+                    ) : null}
+                    {operation.type === "difference_of_gaussians" ? (
                       <>
-                        <div className="inferenceInlineLabel isStrong">Response</div>
-                        <select
-                          className="inferenceSelect inferenceCompactSelect"
-                          value={operation.response}
-                          onChange={(event) =>
-                            updateDataOperation(operation.id, {
-                              response: event.target.value as GeneralSegmentationLogResponse,
-                            })
-                          }
-                        >
-                          <option value="bright">Bright blobs</option>
-                          <option value="dark">Dark blobs</option>
-                        </select>
+                        {renderDataAnisotropyToggle(operation)}
+                        {renderDataScaleInputs(operation, "sigma", "Small sigma")}
+                        {renderDataScaleInputs(operation, "sigma2", "Large sigma")}
+                        {renderResponseSelect(operation)}
                       </>
                     ) : null}
                     <button
@@ -3792,17 +4333,70 @@ function GeneralSegmentationPreview({
               ? maskOperations.map((operation, index) => (
                   <div key={operation.id} className="inferenceFormRow">
                     <div className="inferenceFieldLabel">{`Mask op ${index + 1}`}</div>
-                    <select className="inferenceSelect inferenceCompactSelect" value={operation.type} disabled>
+                    <select
+                      className="inferenceSelect inferenceCompactSelect"
+                      value={operation.type}
+                      onChange={(event) =>
+                        updateMaskOperation(operation.id, {
+                          type: event.target.value as GeneralSegmentationMaskOperationType,
+                        })
+                      }
+                    >
                       <option value="remove_small_objects">Remove small objects</option>
+                      <option value="fill_small_holes">Fill small holes</option>
+                      <option value="binary_closing">Binary closing</option>
+                      <option value="binary_opening">Binary opening</option>
+                      <option value="dilate">Dilate</option>
+                      <option value="erode">Erode</option>
+                      <option value="remove_border_objects">Remove border objects</option>
+                      <option value="size_range">Size range filter</option>
                     </select>
-                    <div className="inferenceInlineLabel isStrong">Size</div>
-                    <PostProcessingNumberInput
-                      value={operation.size}
-                      onChange={(value) => updateMaskOperation(operation.id, { size: value })}
-                      min={0}
-                      step={1}
-                    />
-                    <div className="inferenceInlineLabel">voxels</div>
+                    {operation.type === "remove_small_objects" || operation.type === "fill_small_holes" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Size</div>
+                        <PostProcessingNumberInput
+                          value={operation.size}
+                          onChange={(value) => updateMaskOperation(operation.id, { size: value })}
+                          min={0}
+                          step={1}
+                        />
+                        <div className="inferenceInlineLabel">voxels</div>
+                      </>
+                    ) : null}
+                    {operation.type === "binary_closing" ||
+                    operation.type === "binary_opening" ||
+                    operation.type === "dilate" ||
+                    operation.type === "erode" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Radius</div>
+                        <PostProcessingNumberInput
+                          value={operation.radius}
+                          onChange={(value) => updateMaskOperation(operation.id, { radius: value })}
+                          min={0}
+                          step={0.1}
+                        />
+                        <div className="inferenceInlineLabel">voxels</div>
+                      </>
+                    ) : null}
+                    {operation.type === "size_range" ? (
+                      <>
+                        <div className="inferenceInlineLabel isStrong">Min</div>
+                        <PostProcessingNumberInput
+                          value={operation.minSize}
+                          onChange={(value) => updateMaskOperation(operation.id, { minSize: value })}
+                          min={0}
+                          step={1}
+                        />
+                        <div className="inferenceInlineLabel isStrong">Max</div>
+                        <PostProcessingNumberInput
+                          value={operation.maxSize}
+                          onChange={(value) => updateMaskOperation(operation.id, { maxSize: value })}
+                          min={0}
+                          step={1}
+                        />
+                        <div className="inferenceInlineLabel">0 = no max</div>
+                      </>
+                    ) : null}
                     <button
                       type="button"
                       className="pickerSecondaryButton"
@@ -3845,6 +4439,8 @@ function GeneralSegmentationPreview({
                 <option value="none">None</option>
                 <option value="connected_components">Connected-component labelling</option>
                 <option value="voronoi_otsu">Voronoi-Otsu</option>
+                <option value="distance_transform_watershed">Distance-transform watershed</option>
+                <option value="intensity_prominence_watershed">Intensity-prominence watershed</option>
               </select>
               {instanceMethod === "voronoi_otsu" ? (
                 <>
@@ -3862,6 +4458,95 @@ function GeneralSegmentationPreview({
                     min={0}
                     step={0.1}
                   />
+                </>
+              ) : null}
+              {instanceMethod === "distance_transform_watershed" ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Dynamic</div>
+                  <PostProcessingNumberInput
+                    value={distanceDynamic}
+                    onChange={onDistanceDynamicChange}
+                    min={0}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Connectivity</div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={distanceConnectivity}
+                    onChange={(event) =>
+                      onDistanceConnectivityChange(Number.parseInt(event.target.value, 10) === 26 ? 26 : 6)
+                    }
+                  >
+                    <option value={6}>6</option>
+                    <option value={26}>26</option>
+                  </select>
+                  <div className="inferenceInlineLabel isStrong">Z spacing</div>
+                  <PostProcessingNumberInput
+                    value={distanceSpacingZ}
+                    onChange={onDistanceSpacingZChange}
+                    min={0.000001}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Y spacing</div>
+                  <PostProcessingNumberInput
+                    value={distanceSpacingY}
+                    onChange={onDistanceSpacingYChange}
+                    min={0.000001}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">X spacing</div>
+                  <PostProcessingNumberInput
+                    value={distanceSpacingX}
+                    onChange={onDistanceSpacingXChange}
+                    min={0.000001}
+                    step={0.1}
+                  />
+                </>
+              ) : null}
+              {instanceMethod === "intensity_prominence_watershed" ? (
+                <>
+                  <div className="inferenceInlineLabel isStrong">Prominence</div>
+                  <PostProcessingNumberInput
+                    value={intensityProminence}
+                    onChange={onIntensityProminenceChange}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Smoothing sigma</div>
+                  <PostProcessingNumberInput
+                    value={intensitySmoothingSigma}
+                    onChange={onIntensitySmoothingSigmaChange}
+                    min={0}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Low %</div>
+                  <PostProcessingNumberInput
+                    value={intensityLowPercentile}
+                    onChange={onIntensityLowPercentileChange}
+                    min={0}
+                    max={100}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">High %</div>
+                  <PostProcessingNumberInput
+                    value={intensityHighPercentile}
+                    onChange={onIntensityHighPercentileChange}
+                    min={0}
+                    max={100}
+                    step={0.1}
+                  />
+                  <div className="inferenceInlineLabel isStrong">Connectivity</div>
+                  <select
+                    className="inferenceSelect inferenceCompactSelect"
+                    value={intensityConnectivity}
+                    onChange={(event) =>
+                      onIntensityConnectivityChange(Number.parseInt(event.target.value, 10) === 26 ? 26 : 6)
+                    }
+                  >
+                    <option value={6}>6</option>
+                    <option value={26}>26</option>
+                  </select>
                 </>
               ) : null}
               {instanceMethod !== "none" ? (
@@ -3985,7 +4670,7 @@ function PostProcessingNumberInput({
 }: {
   value: string;
   onChange: (value: string) => void;
-  min: number;
+  min?: number;
   step: number;
   max?: number;
   ariaLabel?: string;

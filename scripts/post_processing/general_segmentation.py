@@ -24,8 +24,15 @@ from spatialdino.segmentation.general import (
     apply_mask_operations,
     instance_segmentation,
     normalize_data_operations,
+    normalize_distance_transform_connectivity,
+    normalize_distance_transform_dynamic,
+    normalize_distance_transform_spacing,
+    normalize_intensity_normalization_percentiles,
+    normalize_intensity_prominence,
+    normalize_intensity_smoothing_sigma,
     normalize_instance_method,
     normalize_mask_operations,
+    normalize_watershed_connectivity,
     threshold_to_semantic,
 )
 
@@ -74,6 +81,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voronoi-spot-sigma", type=float, default=2.0)
     parser.add_argument("--voronoi-outline-sigma", type=float, default=2.0)
+    parser.add_argument("--distance-transform-dynamic", type=float, default=1.0)
+    parser.add_argument("--distance-transform-connectivity", type=int, choices=[6, 26], default=6)
+    parser.add_argument("--distance-transform-spacing-z", type=float, default=1.0)
+    parser.add_argument("--distance-transform-spacing-y", type=float, default=1.0)
+    parser.add_argument("--distance-transform-spacing-x", type=float, default=1.0)
+    parser.add_argument("--intensity-prominence", type=float, default=0.15)
+    parser.add_argument("--intensity-smoothing-sigma", type=float, default=0.0)
+    parser.add_argument("--intensity-low-percentile", type=float, default=1.0)
+    parser.add_argument("--intensity-high-percentile", type=float, default=99.0)
+    parser.add_argument("--intensity-connectivity", type=int, choices=[6, 26], default=6)
     parser.add_argument("--run-ccl", dest="run_ccl", action="store_true", help="Save connected-component labels.")
     parser.add_argument("--skip-ccl", dest="run_ccl", action="store_false", help="Save binary semantic masks.")
     parser.set_defaults(run_ccl=True)
@@ -131,6 +148,7 @@ def read_scalar_volume(path: Path, *, source_kind: str, component_index: int) ->
         raise ValueError(f"{path.name} must be a 3D volume.")
     return np.asarray(array, dtype=np.float32)
 
+
 def source_directory(input_path: Path, *, source_kind: str, source_folder: str | None) -> Path:
     if source_folder:
         return input_path / source_folder
@@ -158,6 +176,13 @@ def segment_general(
     instance_method: str | None = None,
     voronoi_spot_sigma: float = 2.0,
     voronoi_outline_sigma: float = 2.0,
+    distance_transform_dynamic: float = 1.0,
+    distance_transform_connectivity: int = 6,
+    distance_transform_spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    intensity_prominence: float = 0.15,
+    intensity_smoothing_sigma: float = 0.0,
+    intensity_percentiles: tuple[float, float] = (1.0, 99.0),
+    intensity_connectivity: int = 6,
 ) -> Path:
     if source_kind not in SOURCE_KINDS:
         raise ValueError(f"Unsupported source kind: {source_kind}.")
@@ -178,6 +203,16 @@ def segment_general(
         raise ValueError("Voronoi-Otsu spot sigma must be nonnegative.")
     if not np.isfinite(voronoi_outline_sigma) or voronoi_outline_sigma < 0:
         raise ValueError("Voronoi-Otsu outline sigma must be nonnegative.")
+    normalized_distance_dynamic = normalize_distance_transform_dynamic(distance_transform_dynamic)
+    normalized_distance_connectivity = normalize_distance_transform_connectivity(distance_transform_connectivity)
+    normalized_distance_spacing = normalize_distance_transform_spacing(*distance_transform_spacing)
+    normalized_intensity_prominence = normalize_intensity_prominence(intensity_prominence)
+    normalized_intensity_smoothing_sigma = normalize_intensity_smoothing_sigma(intensity_smoothing_sigma)
+    normalized_intensity_percentiles = normalize_intensity_normalization_percentiles(*intensity_percentiles)
+    normalized_intensity_connectivity = normalize_watershed_connectivity(
+        intensity_connectivity,
+        label="Intensity-prominence watershed connectivity",
+    )
     if not input_path.is_dir():
         raise FileNotFoundError(f"Input folder does not exist or is not a directory: {input_path}")
     if output_path.exists() and not output_path.is_dir():
@@ -229,6 +264,14 @@ def segment_general(
             method=resolved_instance_method,
             voronoi_spot_sigma=voronoi_spot_sigma,
             voronoi_outline_sigma=voronoi_outline_sigma,
+            distance_dynamic=normalized_distance_dynamic,
+            distance_connectivity=normalized_distance_connectivity,
+            distance_spacing_zyx=normalized_distance_spacing,
+            intensity_prominence=normalized_intensity_prominence,
+            intensity_smoothing_sigma=normalized_intensity_smoothing_sigma,
+            intensity_low_percentile=normalized_intensity_percentiles[0],
+            intensity_high_percentile=normalized_intensity_percentiles[1],
+            intensity_connectivity=normalized_intensity_connectivity,
         )
         mask_path = output_root / f"{timepoint_name}.tif"
         tifffile.imwrite(mask_path, output_array, bigtiff=True, metadata=None, photometric="minisblack")
@@ -259,6 +302,20 @@ def main() -> None:
         instance_method=instance_method,
         voronoi_spot_sigma=float(args.voronoi_spot_sigma),
         voronoi_outline_sigma=float(args.voronoi_outline_sigma),
+        distance_transform_dynamic=float(args.distance_transform_dynamic),
+        distance_transform_connectivity=int(args.distance_transform_connectivity),
+        distance_transform_spacing=(
+            float(args.distance_transform_spacing_z),
+            float(args.distance_transform_spacing_y),
+            float(args.distance_transform_spacing_x),
+        ),
+        intensity_prominence=float(args.intensity_prominence),
+        intensity_smoothing_sigma=float(args.intensity_smoothing_sigma),
+        intensity_percentiles=(
+            float(args.intensity_low_percentile),
+            float(args.intensity_high_percentile),
+        ),
+        intensity_connectivity=int(args.intensity_connectivity),
     )
 
 
