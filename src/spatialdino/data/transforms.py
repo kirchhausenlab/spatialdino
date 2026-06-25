@@ -1977,8 +1977,9 @@ def make_inference_transform(
     device: Union[torch.device, str] = "cpu",
     interpolate_chunk_size: Tuple[int, int, int, int] = (1, 448, 448, 448),
     pad_value: float = 0.0,
+    padding_mode: str = "constant",
     image_key: str = "image",
-    mask_key: str = "mask",
+    mask_key: Optional[str] = "mask",
     in_chans: int = 3,
     mean: Sequence[float] = IMAGENET_DEFAULT_MEAN,
     std: Sequence[float] = IMAGENET_DEFAULT_STD,
@@ -2024,6 +2025,10 @@ def make_inference_transform(
             ),
         )
 
+    pad_kwargs: Dict[str, Any] = {}
+    if padding_mode == "constant":
+        pad_kwargs["constant_values"] = pad_value
+
     transforms_list.extend([
         AddChannelsd(
             num_channels=in_chans,
@@ -2033,9 +2038,9 @@ def make_inference_transform(
         ResizeWithPadOrCropd(
             keys=image_key,
             spatial_size=target_img_size,
-            mode="constant",  # "median" is passed in as a constant for efficiency
-            constant_values=pad_value,
+            mode=padding_mode,
             allow_missing_keys=allow_missing_keys,
+            **pad_kwargs,
         ),
     ])
     if normalize:

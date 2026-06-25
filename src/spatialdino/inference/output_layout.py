@@ -11,8 +11,12 @@ LR_FEATS_DIRNAME = "lr_feats"
 RAW_DIRNAME = "raw"
 TMP_DIRNAME = "tmp"
 HR_FEATS_DIRNAME = "hr_feats"
+FEATURE_STATS_DIRNAME = "feature_stats"
 SEG_VORONOI_DIRNAME = "seg_voronoi"
+SEG_GENERAL_DIRNAME = "seg_general"
 SEG_PROBMAP_DIRNAME = "seg_probmap"
+SEG_PROBMAP_LEGACY_DIRNAME = "seg_probmap_legacy"
+PROBMAP_DIRNAME = "probmap"
 PROBMAP_DENSITIES_FILENAME = "probmap_densities.npz"
 TRACKS_FILENAME = "tracks.csv"
 NORM_PER_VOL_FILENAME = "norm_per_vol.txt"
@@ -65,6 +69,10 @@ def process_features_hr_timepoint_dir(root: str | Path, timepoint_name: str) -> 
     return Path(root) / HR_FEATS_DIRNAME / timepoint_name
 
 
+def process_features_statistics_dir(root: str | Path) -> Path:
+    return Path(root) / FEATURE_STATS_DIRNAME
+
+
 def process_features_pca_dir(root: str | Path, n_components: int) -> Path:
     return Path(root) / f"pca_{int(n_components)}"
 
@@ -73,8 +81,20 @@ def segmentation_voronoi_dir(root: str | Path) -> Path:
     return Path(root) / SEG_VORONOI_DIRNAME
 
 
+def segmentation_general_dir(root: str | Path) -> Path:
+    return Path(root) / SEG_GENERAL_DIRNAME
+
+
 def segmentation_probmap_dir(root: str | Path) -> Path:
     return Path(root) / SEG_PROBMAP_DIRNAME
+
+
+def segmentation_probmap_legacy_dir(root: str | Path) -> Path:
+    return Path(root) / SEG_PROBMAP_LEGACY_DIRNAME
+
+
+def probability_map_dir(root: str | Path) -> Path:
+    return Path(root) / PROBMAP_DIRNAME
 
 
 def probability_map_densities_path(root: str | Path) -> Path:
@@ -170,7 +190,7 @@ def list_process_features_output_paths(root: str | Path) -> list[Path]:
         for entry in entries:
             if entry.name.startswith("."):
                 continue
-            if entry.name == HR_FEATS_DIRNAME or PCA_DIR_RE.fullmatch(entry.name):
+            if entry.name in {HR_FEATS_DIRNAME, FEATURE_STATS_DIRNAME} or PCA_DIR_RE.fullmatch(entry.name):
                 paths.append(Path(entry.path))
     paths.sort(key=lambda path: natural_sort_key(path.name))
     return paths

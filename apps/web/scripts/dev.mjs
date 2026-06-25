@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(scriptDir, "../../..");
 const serverDir = resolve(monorepoRoot, "apps/server");
 const webDir = resolve(monorepoRoot, "apps/web");
+const viteBin = resolve(webDir, "node_modules/vite/bin/vite.js");
 const backendHost = process.env.SPATIALDINO_DEV_API_HOST ?? "127.0.0.1";
 const backendPortRaw = process.env.SPATIALDINO_DEV_API_PORT ?? "8000";
 const hasPinnedBackendPort = process.env.SPATIALDINO_DEV_API_PORT != null;
@@ -29,6 +31,29 @@ function startProcess(command, args, cwd, envExtras = {}) {
 
 let backend;
 let frontend;
+
+function ensureFrontendOptionalModuleStubs() {
+  if (process.platform === "darwin") return;
+
+  const fseventsDir = resolve(webDir, "node_modules/fsevents");
+  let existingStats = null;
+  try {
+    existingStats = lstatSync(fseventsDir);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  if (existingStats && !existingStats.isSymbolicLink()) return;
+  if (existingStats) {
+    rmSync(fseventsDir, { force: true, recursive: true });
+  }
+  mkdirSync(fseventsDir, { recursive: true });
+  writeFileSync(
+    resolve(fseventsDir, "package.json"),
+    JSON.stringify({ name: "fsevents", version: "0.0.0-spatialdino-linux-stub", main: "index.js" }, null, 2) + "\n"
+  );
+  writeFileSync(resolve(fseventsDir, "index.js"), "throw new Error(\"fsevents is unavailable on this platform\");\n");
+}
 
 async function isPortAvailable(host, port) {
   return await new Promise((resolvePromise) => {
@@ -115,7 +140,12 @@ async function main() {
     ],
     monorepoRoot
   );
-  frontend = startProcess("npm", ["run", "dev:ui"], webDir, { SPATIALDINO_DEV_API_TARGET: backendTarget });
+  ensureFrontendOptionalModuleStubs();
+  frontend = startProcess(process.execPath, [viteBin], webDir, {
+    SPATIALDINO_DEV_API_TARGET: backendTarget,
+    WS_NO_BUFFER_UTIL: "1",
+    WS_NO_UTF_8_VALIDATE: "1"
+  });
 
   watchProcess("backend", backend);
   watchProcess("frontend", frontend);

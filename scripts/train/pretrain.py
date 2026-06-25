@@ -26,6 +26,8 @@ from spatialdino.logging.wandb import init_wandb
 from spatialdino.loss.dino_clstoken_loss import DINOLoss, split_sample_major_batch
 from spatialdino.loss.ibot_patch_loss import iBOTPatchLoss
 from spatialdino.loss.koleo_loss import KoLeoLoss
+from spatialdino.loss.position_decorrelation_loss import PositionDecorrelationLoss
+from spatialdino.loss.rotation_equivariance_loss import RotationEquivarianceLoss
 from spatialdino.models.ssl import SSL
 from spatialdino.models.utils import build_ssl_model
 from spatialdino.optim import lr_sched
@@ -104,7 +106,7 @@ def _log_pretrain_step(
                 time=str(step_time),
                 data=str(data_time),
             )
-            )
+        )
 
 
 def _should_update_optimizer_step(
@@ -127,6 +129,12 @@ def _wrap_model_for_training(
         device_ids=[local_rank],
         find_unused_parameters=find_unused_parameters,
     )
+
+
+def _unwrap_model(model: Union[SSL, DDP]) -> SSL:
+    if isinstance(model, DDP):
+        return model.module
+    return model
 
 
 def _pairwise_dino_loss(
@@ -181,12 +189,15 @@ def _compute_weighted_loss_total(
         + config.dino_loss_weight * loss_dict.get("dino_local_cls_loss", 0.0)
         + config.koleo_loss_weight * loss_dict.get("koleo_loss", 0.0)
         + config.ibot_loss_weight * loss_dict.get("ibot_patch_loss", 0.0)
+        + getattr(config, "pos_decorr_loss_weight", 0.0) * loss_dict.get("pos_decorr_loss", 0.0)
+        + getattr(config, "equiv_loss_weight", 0.0) * loss_dict.get("equiv_loss", 0.0)
     )
 
 
 def _build_latent_loss_fn(
     config: DictConfig,
     device: Union[int, str, torch.device],
+    grid_size: Optional[Tuple[int, ...]] = None,
 ) -> Dict[str, Callable]:
     latent_loss_fn: Dict[str, Callable] = {}
 
@@ -206,6 +217,14 @@ def _build_latent_loss_fn(
             student_temp=config.student_temp,
             center_momentum=config.center_momentum,
         ).to(device)
+
+    if config.pos_decorr_loss_weight > 0 and grid_size is not None:
+        latent_loss_fn["pos_decorr"] = PositionDecorrelationLoss(
+            grid_size=grid_size,
+        ).to(device)
+
+    if getattr(config, "equiv_loss_weight", 0.0) > 0:
+        latent_loss_fn["equiv"] = RotationEquivarianceLoss().to(device)
 
     return latent_loss_fn
 
@@ -359,7 +378,9 @@ def main():
     loss_scaler = (
         torch.amp.GradScaler(device=config.device_type) if config.use_amp else None
     )
-    latent_loss_fn = _build_latent_loss_fn(config=config, device=device)
+    latent_loss_fn = _build_latent_loss_fn(
+        config=config, device=device, grid_size=grid_size,
+    )
 
     step = 0
     if config.resume and config.ckpt_path:
@@ -379,7 +400,6 @@ def main():
     train(
         config=config,
         step=step,
-        model=model,
         train_model=train_model,
         optimizer=optimizer,
         loss_scaler=loss_scaler,
@@ -396,7 +416,6 @@ def main():
 def train(
     config: DictConfig,
     step: int,
-    model: SSL,
     train_model: Union[SSL, DDP],
     optimizer: torch.optim.Optimizer,
     train_dataloader: DataLoader,
@@ -407,7 +426,7 @@ def train(
     run: Optional[Run] = None,
 ) -> Dict[str, float]:
     start_time = time.time()
-    model.train()
+    train_model.train()
 
     (
         lr_schedule,
@@ -438,9 +457,21 @@ def train(
     do_dino = config.dino_loss_weight > 0
     do_ibot = config.ibot_loss_weight > 0
     do_koleo = config.koleo_loss_weight > 0
+    do_pos_decorr = config.pos_decorr_loss_weight > 0
+    do_equiv = getattr(config, "equiv_loss_weight", 0.0) > 0
+    do_rot_ibot = getattr(config, "rot_ibot", False) and do_ibot
+    do_equiv_forward = do_equiv or do_rot_ibot
+
+    global_crop_size = make_3tuple(config.global_crop_size)
+    patch_size = make_3tuple(config.patch_size)
+    grid_size = tuple(
+        global_crop_size[i] // patch_size[i] for i in range(3)
+    )
 
     if latent_loss_fn is None:
-        latent_loss_fn = _build_latent_loss_fn(config=config, device=device)
+        latent_loss_fn = _build_latent_loss_fn(
+            config=config, device=device, grid_size=grid_size,
+        )
 
     optimizer.zero_grad(set_to_none=True)
     step_loss_sums: Dict[str, float] = defaultdict(float)
@@ -473,6 +504,10 @@ def train(
         if micro_steps_in_step == 0:
             apply_optim_scheduler(optimizer, lr, wd, last_layer_lr)
 
+        first_global_n_masked_patches = int(
+            batch["collated_masks"][: config.batch_size].sum().item()
+        )
+
         collated_global_crops = batch["collated_global_crops"].to(
             device, non_blocking=True
         )
@@ -503,6 +538,17 @@ def train(
             micro_steps_in_step=micro_steps_in_step,
         )
 
+        # Prepare rotation-equivariance crop (first global crop only).
+        # Used by both the cosine equiv loss and the rotational iBOT loss.
+        equiv_crop = None
+        equiv_meta = None
+        if do_equiv_forward:
+            _, input_dims, feat_dims, equiv_k = RotationEquivarianceLoss.sample_rotation()
+            equiv_meta = (feat_dims, equiv_k)
+            # Use only the first global crop: collated_global_crops[:batch_size]
+            first_global = collated_global_crops[: config.batch_size]
+            equiv_crop = torch.rot90(first_global, equiv_k, input_dims)
+
         # Avoid per-microbatch all-reduces when accumulating gradients with DDP.
         with dist.maybe_no_sync(train_model, should_sync=should_sync_gradients):
             student_global_output, student_local_output = train_model(
@@ -520,9 +566,13 @@ def train(
                 device_type=config.device_type,
                 dtype=dtype,
                 enabled=config.use_amp,
+                equiv_crop=equiv_crop,
+                equiv_feat_dims=equiv_meta[0] if equiv_meta is not None else None,
+                equiv_k=equiv_meta[1] if equiv_meta is not None else None,
+                first_global_n_masked_patches=first_global_n_masked_patches,
             )
 
-            teacher_global_output = model.forward_teacher(
+            teacher_global_output = _unwrap_model(train_model).forward_teacher(
                 x=collated_global_crops,
                 masks=None,
                 upperbound=upperbound,
@@ -559,32 +609,37 @@ def train(
                     config.n_local_crops,
                 )
 
-                dino_global_cls_loss = _pairwise_dino_loss(
-                    loss_fn=latent_loss_fn["cls_token"],
-                    student_views=student_global_cls_outputs,
-                    teacher_views=teacher_global_cls_outputs,
-                    skip_matching_teacher_view=True,
-                ) / n_dino_loss_terms
+                dino_global_cls_loss = (
+                    _pairwise_dino_loss(
+                        loss_fn=latent_loss_fn["cls_token"],
+                        student_views=student_global_cls_outputs,
+                        teacher_views=teacher_global_cls_outputs,
+                        skip_matching_teacher_view=True,
+                    )
+                    / n_dino_loss_terms
+                )
                 loss_dict["dino_global_cls_loss"] = dino_global_cls_loss
                 latent_loss += config.dino_loss_weight * dino_global_cls_loss
 
-                dino_local_cls_loss = _pairwise_dino_loss(
-                    loss_fn=latent_loss_fn["cls_token"],
-                    student_views=student_local_cls_outputs,
-                    teacher_views=teacher_global_cls_outputs,
-                ) / n_dino_loss_terms
+                dino_local_cls_loss = (
+                    _pairwise_dino_loss(
+                        loss_fn=latent_loss_fn["cls_token"],
+                        student_views=student_local_cls_outputs,
+                        teacher_views=teacher_global_cls_outputs,
+                    )
+                    / n_dino_loss_terms
+                )
                 loss_dict["dino_local_cls_loss"] = dino_local_cls_loss
 
                 latent_loss += config.dino_loss_weight * dino_local_cls_loss
 
                 if do_koleo:
-                    for p in student_global_cls_outputs:
-                        assert p.ndim == 2, (
-                            f"Expected KoLeo input chunks to be 2D [B, D], got shape {tuple(p.shape)}"
-                        )
+                    student_global_backbone_cls = split_sample_major_batch(
+                        student_global_output["x_norm_clstoken"],
+                        config.n_global_crops,
+                    )
                     koleo_loss = sum(
-                        latent_loss_fn["koleo"](p)
-                        for p in student_global_cls_outputs
+                        latent_loss_fn["koleo"](p) for p in student_global_backbone_cls
                     ) / max(config.n_global_crops, 1)
                     loss_dict["koleo_loss"] = koleo_loss
                     latent_loss += config.koleo_loss_weight * koleo_loss
@@ -597,10 +652,46 @@ def train(
                     n_masked_patches=n_masked_patches,
                     masks_weight=masks_weight,
                 )
-
+                if (
+                    do_rot_ibot
+                    and "equiv_patch_tokens_after_head" in student_global_output
+                    and first_global_n_masked_patches > 0
+                ):
+                    first_B_mask = collated_masks[: config.batch_size]
+                    ibot_patch_loss = ibot_patch_loss + latent_loss_fn[
+                        "patch_tokens"
+                    ].forward_masked(
+                        student_global_output["equiv_patch_tokens_after_head"],
+                        teacher_global_output["patch_tokens_softmaxed_centered"][
+                            :first_global_n_masked_patches
+                        ],
+                        student_masks_flat=first_B_mask,
+                        n_masked_patches=first_global_n_masked_patches,
+                        masks_weight=None,
+                    )
                 loss_dict["ibot_patch_loss"] = ibot_patch_loss
-
                 latent_loss += config.ibot_loss_weight * ibot_patch_loss
+
+            if do_pos_decorr:
+                pos_decorr_loss = latent_loss_fn["pos_decorr"](
+                    student_global_output["x_norm_patchtokens"],
+                )
+                loss_dict["pos_decorr_loss"] = pos_decorr_loss
+                latent_loss += config.pos_decorr_loss_weight * pos_decorr_loss
+
+            if do_equiv and equiv_meta is not None:
+                feat_dims, equiv_k = equiv_meta
+                # Original first-global-crop tokens as target (detached)
+                orig_tokens = student_global_output["x_norm_patchtokens"][
+                    : config.batch_size
+                ].detach()
+                rot_tokens = student_global_output["equiv_patchtokens"]
+                equiv_loss = latent_loss_fn["equiv"](
+                    orig_tokens, rot_tokens, grid_size, feat_dims, equiv_k,
+                )
+                loss_dict["equiv_loss"] = equiv_loss
+                latent_loss += config.equiv_loss_weight * equiv_loss
+
 
             loss += latent_loss
 
@@ -645,18 +736,22 @@ def train(
             if loss_scaler is not None:
                 if config.clip_grad:
                     loss_scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        train_model.parameters(), config.clip_grad
+                    )
                 loss_scaler.step(optimizer)
                 loss_scaler.update()
             else:
                 if config.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.clip_grad)
+                    torch.nn.utils.clip_grad_norm_(
+                        train_model.parameters(), config.clip_grad
+                    )
                 optimizer.step()
 
             optimizer.zero_grad(set_to_none=True)
 
             # perform teacher EMA update
-            model.update_teacher(teacher_momentum=mom)
+            _unwrap_model(train_model).update_teacher(teacher_momentum=mom)
 
         loss_dict_reduced = _reduce_loss_dict(loss_dict)
         loss_dict_reduced["latent_loss"] = _compute_weighted_loss_total(
@@ -717,7 +812,7 @@ def train(
                 save_model(
                     output_dir=ckpt_dir,
                     step=completed_step,
-                    model=model,
+                    model=_unwrap_model(train_model),
                     optimizer=optimizer,
                     loss_scaler=loss_scaler,
                     extra_modules=latent_loss_fn,
@@ -746,14 +841,14 @@ def train(
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logger.info("No optimizer steps were run.")
         logger.info("Training time {}".format(total_time_str))
-        model.eval()
+        train_model.eval()
         return {}
 
     logger.info("Averaged stats: %s", metric_logger)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info("Training time {}".format(total_time_str))
-    model.eval()
+    train_model.eval()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 

@@ -37,6 +37,9 @@ def _make_config(
     isotropic_scale_factor: tuple[float, float, float] = (1.0, 1.0, 1.0),
     crop_params: tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0),
     chunk_size: tuple[int, int, int] = (4, 4, 4),
+    patch_size: tuple[int, int, int] = (2, 2, 2),
+    stride: tuple[int, int, int] = (2, 2, 2),
+    padding_mode: str = "reflect",
     global_hist_min: float | None = None,
     global_hist_max: float | None = None,
 ):
@@ -46,10 +49,11 @@ def _make_config(
             "save_path": str(output_path),
             "upsample_factor": float(upsample_factor),
             "isotropic_scale_factor": list(isotropic_scale_factor),
-            "patch_size": [2, 2, 2],
-            "stride": [2, 2, 2],
+            "patch_size": list(patch_size),
+            "stride": list(stride),
             "crop_params": list(crop_params),
             "chunk_size": list(chunk_size),
+            "padding_mode": padding_mode,
             "dtype": "fp32",
             "global_hist_min": global_hist_min,
             "global_hist_max": global_hist_max,
@@ -92,6 +96,26 @@ class InferencePipelineTests(unittest.TestCase):
         self.assertEqual(samples[0][1]["save_path"], "sample_a")
         self.assertEqual(samples[1][1]["save_path"], "sample_b")
 
+    def test_save_feature_metadata_writes_json_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            feats_path = Path(tmp) / "sample.npy"
+
+            inference_script.save_feature_metadata(
+                feats_path,
+                {
+                    "padding_mode": "reflect",
+                    "pad_before": (3, 0, 0),
+                    "pad_after": (3, 0, 0),
+                },
+                model_input_shape=(216, 12, 12),
+                lr_feats_shape=(27, 6, 6, 390),
+            )
+
+            metadata_path = feats_path.with_name("sample_metadata.json")
+            self.assertTrue(metadata_path.exists())
+            self.assertIn('"padding_mode": "reflect"', metadata_path.read_text())
+            self.assertIn('"model_input_shape": [', metadata_path.read_text())
+
     def test_inference_dataset_saves_cropped_volume_unnorm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -121,6 +145,68 @@ class InferencePipelineTests(unittest.TestCase):
             self.assertEqual(item["vol_metadata"]["timepoint_name"], "sample")
             self.assertEqual(Path(item["vol_metadata"]["raw_path"]).parts[-2:], ("raw", "sample.tif"))
             self.assertEqual(Path(item["vol_metadata"]["lr_feats_path"]).parts[-2:], ("lr_feats", "sample.npy"))
+
+    def test_inference_dataset_uses_minimal_patch_padding_not_chunk_padding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            volume = np.arange(5 * 7 * 9, dtype=np.uint16).reshape(5, 7, 9)
+            input_path = root / "sample.tiff"
+
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                chunk_size=(8, 8, 8),
+                global_hist_min=0.0,
+                global_hist_max=500.0,
+            )
+            dataset = InferenceDataset(config=config, fnames=[input_path])
+
+            with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
+                "spatialdino.data.inference.io.imsave"
+            ):
+                item = dataset[0]
+
+            self.assertEqual(item["vol_metadata"]["pre_pad_shape"], (5, 7, 9))
+            self.assertEqual(item["vol_metadata"]["target_vol_size"], (6, 8, 10))
+            self.assertEqual(item["vol_metadata"]["padding"], (1, 1, 1))
+            self.assertEqual(item["vol_metadata"]["pad_before"], (0, 0, 0))
+            self.assertEqual(item["vol_metadata"]["pad_after"], (1, 1, 1))
+
+    def test_inference_dataset_records_reflect_padding_for_70_plane_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            volume = np.full((70, 4, 4), 100, dtype=np.uint16)
+            input_path = root / "sample.tiff"
+
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                upsample_factor=3.0,
+                patch_size=(8, 2, 2),
+                stride=(8, 2, 2),
+                chunk_size=(8, 2, 2),
+                global_hist_min=0.0,
+                global_hist_max=200.0,
+            )
+            dataset = InferenceDataset(config=config, fnames=[input_path])
+
+            with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
+                "spatialdino.data.inference.io.imsave"
+            ):
+                item = dataset[0]
+
+            self.assertEqual(item["vol_metadata"]["pre_pad_shape"], (210, 12, 12))
+            self.assertEqual(item["vol_metadata"]["target_vol_size"], (216, 12, 12))
+            self.assertEqual(item["vol_metadata"]["padding"], (6, 0, 0))
+            self.assertEqual(item["vol_metadata"]["pad_before"], (3, 0, 0))
+            self.assertEqual(item["vol_metadata"]["pad_after"], (3, 0, 0))
+            self.assertEqual(item["vol_metadata"]["effective_padding_mode"], "reflect")
 
     def test_inference_dataset_sanitizes_non_finite_voxels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,7 +312,7 @@ class InferencePipelineTests(unittest.TestCase):
                 atol=1e-5,
             )
 
-    def test_inference_transform_uses_whole_volume_median_when_mask_is_empty(self) -> None:
+    def test_inference_transform_does_not_delete_planes_when_mask_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output_dir = root / "output"
@@ -251,5 +337,80 @@ class InferencePipelineTests(unittest.TestCase):
                 device="cpu",
             )
 
-            expected = np.full((1, *image.shape), np.median(image), dtype=np.float32)
+            expected = image[None]
             np.testing.assert_allclose(res["volume"].numpy(), expected)
+
+    def test_inference_transform_reflect_pads_volume_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            image = np.stack(
+                [
+                    np.full((2, 2), 1, dtype=np.float32),
+                    np.full((2, 2), 2, dtype=np.float32),
+                ],
+                axis=0,
+            )
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                chunk_size=(2, 2, 2),
+                global_hist_min=0.0,
+                global_hist_max=2.0,
+            )
+            transform = InferenceTransform(config=config)
+            res = transform(
+                data={"image": image, "mask": np.zeros(image.shape[0], dtype=bool)},
+                vol_metadata={
+                    "target_vol_size": (4, 2, 2),
+                    "effective_padding_mode": "reflect",
+                    "save_path": str(output_dir / "sample"),
+                },
+                chunk_interpolate=False,
+                device="cpu",
+            )
+
+            expected_z = np.array([2, 1, 2, 1], dtype=np.float32)
+            np.testing.assert_allclose(res["volume"].numpy()[0, :, 0, 0], expected_z)
+
+    def test_inference_transform_falls_back_to_replicate_for_tiny_reflect_axis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            output_dir.mkdir()
+
+            volume = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float32)
+            input_path = root / "sample.tiff"
+
+            config = _make_config(
+                input_path=root,
+                output_path=output_dir,
+                patch_size=(2, 2, 2),
+                stride=(2, 2, 2),
+                chunk_size=(2, 2, 2),
+                global_hist_min=0.0,
+                global_hist_max=4.0,
+            )
+            dataset = InferenceDataset(config=config, fnames=[input_path])
+            with patch("spatialdino.data.inference.io.imread", return_value=volume), patch(
+                "spatialdino.data.inference.io.imsave"
+            ):
+                item = dataset[0]
+
+            self.assertEqual(item["vol_metadata"]["effective_padding_mode"], "replicate")
+
+            transform = InferenceTransform(config=config)
+            res = transform(
+                data={"image": item["image"], "mask": item["mask"]},
+                vol_metadata=item["vol_metadata"],
+                chunk_interpolate=False,
+                device="cpu",
+            )
+
+            self.assertEqual(tuple(res["volume"].shape), (1, 2, 2, 2))
+            np.testing.assert_allclose(
+                res["volume"].numpy()[0, 0],
+                res["volume"].numpy()[0, 1],
+            )

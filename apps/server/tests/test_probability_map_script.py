@@ -245,6 +245,7 @@ class ProbabilityMapScriptTests(unittest.TestCase):
                 fg_prob_threshold=0.95,
                 seed=1337,
                 device_name="cpu",
+                stage_2_output="probmap",
             )
 
             densities_path = probability_map_script.run_probability_map(root, params=params)
@@ -252,11 +253,13 @@ class ProbabilityMapScriptTests(unittest.TestCase):
             self.assertEqual(densities_path, output_dir / "probmap_densities.npz")
             self.assertTrue(densities_path.is_file())
             for name in ("sample_a", "sample_b"):
-                instance_seg_path = output_dir / "seg_probmap" / f"{name}.tif"
-                self.assertTrue(instance_seg_path.is_file())
-                instance_seg = tifffile.imread(instance_seg_path)
-                self.assertEqual(instance_seg.shape, (4, 4, 4))
-                self.assertEqual(instance_seg.dtype, np.uint32)
+                probmap_path = output_dir / "probmap" / f"{name}.tif"
+                self.assertTrue(probmap_path.is_file())
+                probmap = tifffile.imread(probmap_path)
+                self.assertEqual(probmap.shape, (4, 4, 4))
+                self.assertEqual(probmap.dtype, np.float32)
+                self.assertGreater(float(probmap.max()), 0.0)
+                self.assertLessEqual(float(probmap.max()), 1.0)
 
 
 if __name__ == "__main__":

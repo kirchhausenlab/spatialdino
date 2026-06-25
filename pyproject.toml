@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.2.1",
+    "h5py>=3.16.0",
     "imagecodecs>=2026.3.6",
     "matplotlib>=3.10.6",
     "monai>=1.4.0",
@@ -14,9 +15,11 @@ dependencies = [
     "omegaconf>=2.3.0",
     "openpyxl>=3.1.5",
     "pandas>=2.3.2",
+    "pyarrow>=19.0.0",
     "pyclesperanto>=0.18.3",
     "pyparsing>=3.2.4",
     "rich>=14.1.0",
+    "scipy>=1.17.0",
     "scikit-image>=0.25.2",
     "scikit-learn>=1.7.2",
     "stackview>=0.18.0",
@@ -27,6 +30,7 @@ dependencies = [
     "wandb>=0.25.1",
     "webdataset>=1.0.2",
     "xformers>=0.0.32.post2",
+    "zarr>=2.18.0,<3",
 ]
 
 [tool.uv.workspace]

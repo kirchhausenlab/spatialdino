@@ -12,11 +12,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
 
 import torch
 import torch.nn as nn
-
+import logging
 from .attention import Attention, MemEffAttention
 from .drop_path import DropPath
 from .layer_scale import LayerScale
 from .mlp import Mlp
+from .rope import RoPECache, concat_rope_for_nested
 
 XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
 if XFORMERS_ENABLED:
@@ -26,7 +27,10 @@ if XFORMERS_ENABLED:
         XFORMERS_AVAILABLE = True
 
     except ImportError:
-        raise ImportError("xFormers is not available (Block)")
+        logging.warning(
+            "xFormers is not installed. falling back to non-xformer pathways"
+        )
+        XFORMERS_AVAILABLE = False
 else:
     XFORMERS_AVAILABLE = False
 
@@ -85,9 +89,10 @@ class Block(nn.Module):
         self,
         x: torch.Tensor,
         vit_feat: Literal["patch", "patch_attn", "attn"] = "patch",
+        rope: Optional[RoPECache] = None,
     ) -> torch.Tensor:
         def attn_residual_func(x: torch.Tensor) -> torch.Tensor:
-            x_attn = self.attn(self.norm1(x), vit_feat=vit_feat)
+            x_attn = self.attn(self.norm1(x), vit_feat=vit_feat, rope=rope)
             if vit_feat == "patch_attn":
                 x_attn, attn = (
                     x_attn[..., : -self.attn.num_heads],
@@ -102,7 +107,7 @@ class Block(nn.Module):
             return self.ls2(self.mlp(self.norm2(x)))
 
         if vit_feat == "attn":
-            return self.attn(self.norm1(x), vit_feat=vit_feat)
+            return self.attn(self.norm1(x), vit_feat=vit_feat, rope=rope)
 
         if self.training and self.sample_drop_ratio > 0.1:
             # the overhead is compensated only for a drop path rate larger than 0.1
@@ -118,7 +123,7 @@ class Block(nn.Module):
             )
         elif self.training and self.sample_drop_ratio > 0.0:
             x = x + self.drop_path1(attn_residual_func(x))
-            x = x + self.drop_path1(ffn_residual_func(x))  # FIXME: drop_path2
+            x = x + self.drop_path2(ffn_residual_func(x))
         else:
             x_attn = attn_residual_func(x)
             if vit_feat == "patch_attn":
@@ -236,6 +241,7 @@ def drop_add_residual_stochastic_depth_list(
     residual_func: Callable[[torch.Tensor, Any], torch.Tensor],
     sample_drop_ratio: float = 0.0,
     scaling_vector: Optional[torch.Tensor] = None,
+    rope_list: Optional[List[RoPECache]] = None,
 ) -> List[torch.Tensor]:
     # 1) generate random set of indices for dropping samples in the batch
     branges_scales = [
@@ -247,8 +253,15 @@ def drop_add_residual_stochastic_depth_list(
     # 2) get attention bias and index+concat the tensors
     attn_bias, x_cat = get_attn_bias_and_cat(x_list, branges)
 
-    # 3) apply residual_func to get residual, and split the result
-    residual_list = attn_bias.split(residual_func(x_cat, attn_bias=attn_bias))  # type: ignore
+    # 3) build concatenated rope matching the x_cat layout
+    rope_cat = None
+    if rope_list is not None:
+        batch_sizes = [b.shape[0] for b in branges]
+        seq_lens = [x.shape[1] for x in x_list]
+        rope_cat = concat_rope_for_nested(rope_list, batch_sizes, seq_lens)
+
+    # 4) apply residual_func to get residual, and split the result
+    residual_list = attn_bias.split(residual_func(x_cat, attn_bias=attn_bias, rope=rope_cat))  # type: ignore
 
     outputs = []
     for x, brange, residual, residual_scale_factor in zip(
@@ -263,7 +276,11 @@ def drop_add_residual_stochastic_depth_list(
 
 
 class NestedTensorBlock(Block):
-    def forward_nested(self, x_list: List[torch.Tensor]) -> List[torch.Tensor]:
+    def forward_nested(
+        self,
+        x_list: List[torch.Tensor],
+        rope_list: Optional[List[RoPECache]] = None,
+    ) -> List[torch.Tensor]:
         """
         x_list contains a list of tensors to nest together and run
         """
@@ -274,12 +291,14 @@ class NestedTensorBlock(Block):
             def attn_residual_func(
                 x: torch.Tensor,
                 attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                rope: Optional[RoPECache] = None,
             ) -> torch.Tensor:
-                return self.attn(self.norm1(x), attn_bias=attn_bias)
+                return self.attn(self.norm1(x), attn_bias=attn_bias, rope=rope)
 
             def ffn_residual_func(
                 x: torch.Tensor,
                 attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                rope: Optional[RoPECache] = None,
             ) -> torch.Tensor:
                 return self.mlp(self.norm2(x))
 
@@ -287,17 +306,18 @@ class NestedTensorBlock(Block):
                 x_list,
                 residual_func=attn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
-                scaling_vector=self.ls1.gamma
-                if isinstance(self.ls1, LayerScale)
-                else None,
+                scaling_vector=(
+                    self.ls1.gamma if isinstance(self.ls1, LayerScale) else None
+                ),
+                rope_list=rope_list,
             )
             x_list = drop_add_residual_stochastic_depth_list(
                 x_list,
                 residual_func=ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
-                scaling_vector=self.ls2.gamma
-                if isinstance(self.ls1, LayerScale)
-                else None,
+                scaling_vector=(
+                    self.ls2.gamma if isinstance(self.ls2, LayerScale) else None
+                ),
             )
             return x_list
         else:
@@ -305,8 +325,11 @@ class NestedTensorBlock(Block):
             def attn_residual_func(
                 x: torch.Tensor,
                 attn_bias: Optional[fmha.attn_bias.BlockDiagonalMask] = None,
+                rope: Optional[RoPECache] = None,
             ) -> torch.Tensor:
-                return self.ls1(self.attn(self.norm1(x), attn_bias=attn_bias))
+                return self.ls1(
+                    self.attn(self.norm1(x), attn_bias=attn_bias, rope=rope)
+                )
 
             def ffn_residual_func(
                 x: torch.Tensor,
@@ -315,7 +338,14 @@ class NestedTensorBlock(Block):
                 return self.ls2(self.mlp(self.norm2(x)))
 
             attn_bias, x = get_attn_bias_and_cat(x_list)
-            x = x + attn_residual_func(x, attn_bias=attn_bias)
+
+            rope_cat = None
+            if rope_list is not None:
+                batch_sizes = [xi.shape[0] for xi in x_list]
+                seq_lens = [xi.shape[1] for xi in x_list]
+                rope_cat = concat_rope_for_nested(rope_list, batch_sizes, seq_lens)
+
+            x = x + attn_residual_func(x, attn_bias=attn_bias, rope=rope_cat)
             x = x + ffn_residual_func(x)
             return attn_bias.split(x)
 
@@ -323,13 +353,13 @@ class NestedTensorBlock(Block):
         self,
         x_or_x_list: Union[torch.Tensor, List[torch.Tensor]],
         vit_feat: Literal["patch", "patch_attn", "attn"] = "patch",
+        rope: Optional[Union[RoPECache, List[RoPECache]]] = None,
     ) -> Union[torch.Tensor, List[torch.Tensor]]:
         if isinstance(x_or_x_list, torch.Tensor):
-            # return super().forward(x_or_x_list)
-            return super().forward(x_or_x_list, vit_feat=vit_feat)
+            return super().forward(x_or_x_list, vit_feat=vit_feat, rope=rope)
         elif isinstance(x_or_x_list, list):
             if not XFORMERS_AVAILABLE:
                 raise AssertionError("xFormers is required for using nested tensors")
-            return self.forward_nested(x_or_x_list)
+            return self.forward_nested(x_or_x_list, rope_list=rope)
         else:
             raise AssertionError(f"Invalid input type: {type(x_or_x_list)}")

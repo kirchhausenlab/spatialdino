@@ -1,5 +1,6 @@
-experiment_name: vits8-mlp-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot_no-pos-emb-bs_336
-ckpt_step: 249999
+experiment_name: vits8-swiglu-pretrain-sknopp-8_local_crops-minmr_0.1-maxmr_0.5-block_mask-32k_prototypes-resize_112_48-teacher_temp_0.07-flip-rot-learned_pos_embed-dp_0.3-bs_336
+ckpt_step: 60000
+# ckpt_step: 27000
 backbone_path: /raid3/shared_image_recog_ml/output/${experiment_name}/checkpoints/step=${ckpt_step}/backbone.pth # step=249999 for 250k steps, step=140999 for 150k steps
 seed: 0
 file_path: null
@@ -9,7 +10,7 @@ file_end: null
 global_hist_min: null
 global_hist_max: null
 model: vits8
-num_tt_register_tokens: 1
+num_tt_register_tokens: 0
 
 device_type: "cuda"
 dtype: "bf16"
@@ -25,23 +26,34 @@ persistent_workers: true
 
 upsample_factor: 3.0
 chunk_size: [8,8,8]
+padding_mode: "reflect" # "reflect", "replicate", "edge", or "constant"; reflect falls back to replicate when invalid
 isotropic_scale_factor: [1.0, 1.0, 1.0] # use e.g. [2.404, 1.0, 1.0] if data is anisotropic
 crop_params: [0, 0, 0, 0, 0, 0] # (z_start, z_end, y_start, y_end, x_start, x_end) - when [0,0,0,0,0,0], uses full volume
 norm_feat: norm
 chunk_interpolate: true
 interpolate_volume_chunk_size: [1, 448, 448, 448]
 
-inference_route: "streaming" # "default" or "streaming"
+inference_route: "default" # "default" or "streaming"
 
 streaming_storage: "gpu" # "gpu", "cpu", or "disk"
-streaming_q_block_tokens: 16384
+streaming_q_block_tokens: 16384 #16384 #32768
+streaming_kv_block_tokens: 32768
 streaming_patch_chunk_size: [224,448,448] # when null, uses vol_metadata["chunk_size"]
 streaming_pin_memory: true
 streaming_kv_storage: "gpu" # "gpu", "cpu", or "disk"
 
-streaming_use_triton: true
+streaming_use_triton: false
+streaming_triton_optimized: true
+streaming_triton_async_kv_copy: true
+streaming_triton_fused_finalize: true
+streaming_log_q_blocks: false
 streaming_triton_block_m: 128
 streaming_triton_block_n: 256
 streaming_triton_block_d: 64
-streaming_triton_num_warps: 4
-streaming_triton_num_stages: 3
+streaming_triton_num_warps: 8
+streaming_triton_num_stages: 2
+
+# Set to true to also save CLS and register token features alongside patch features.
+# CLS token     → {timepoint}_cls.npy        shape [embed_dim]
+# Register tokens → {timepoint}_registers.npy  shape [num_registers, embed_dim]
+save_special_tokens: false

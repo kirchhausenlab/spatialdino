@@ -873,6 +873,75 @@ button {
   color: var(--muted);
 }
 
+.probabilityMapPreview {
+  display: grid;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.probabilityMapPreviewControls {
+  display: grid;
+  gap: 10px;
+}
+
+.probabilityMapPreviewSlider {
+  flex: 1 1 220px;
+  min-width: 160px;
+  max-width: 420px;
+  accent-color: var(--accent);
+}
+
+.probabilityMapPreviewCanvasFrame {
+  position: relative;
+  width: 100%;
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  border-radius: var(--radius);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--surface-2) 80%, #000) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--surface-2) 80%, #000) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--surface-2) 80%, #000) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--surface-2) 80%, #000) 75%);
+  background-color: var(--surface);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.probabilityMapPreviewCanvas {
+  display: block;
+  max-width: 100%;
+  max-height: min(62vh, 680px);
+  width: auto;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.probabilityMapPreviewOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+}
+
+.probabilityMapPreviewOverlay.isError {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--surface) 88%, var(--danger) 8%);
+}
+
 .inferenceFormRow {
   display: flex;
   align-items: center;
@@ -984,9 +1053,22 @@ button {
   min-width: 200px;
 }
 
+.postProcessingPcaFormatSelect {
+  min-width: 100px;
+  width: 100px;
+}
+
+.inferenceBackboneModelSelect {
+  min-width: 140px;
+}
+
 .inferenceNumberInput {
   width: 88px;
   padding: 0 8px;
+}
+
+.inferenceTextInputWide {
+  width: min(264px, 100%);
 }
 
 .inferenceCheckboxOption {
